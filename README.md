@@ -80,8 +80,13 @@ de duplicados. Escribe partos de prueba: borrar esas filas de
 
 ## Contrato de datos
 
-`POST` al `/exec` con el JSON en el body. **Sin header `Content-Type`** — así queda
-`text/plain` y no se dispara el preflight `OPTIONS`, que Apps Script no responde.
+`POST` al `/exec` con el JSON en el body, con `Content-Type: text/plain`. Es una
+"simple request" y por lo tanto no dispara el preflight `OPTIONS`, que Apps Script no
+sabe responder. Cualquier otro tipo (`application/json`) rompe el CORS desde el navegador.
+
+Desde `curl`, además, **nunca usar `-X POST` junto con `-L`**: Apps Script responde el POST
+con un 302 a `googleusercontent.com`, y `-X POST` obliga a repetir el POST contra ese
+destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañoso.
 
 ```jsonc
 {
