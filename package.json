@@ -1,0 +1,19 @@
+{
+  "name": "preparto",
+  "version": "1.0.0",
+  "description": "App de carga de partos en tablet. El operario carga en el corral (funciona sin señal) y el renglón cae limpio en la planilla de Google, listo para DairyComp.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "puppeteer-core": "^25.8.0"
+  }
+}

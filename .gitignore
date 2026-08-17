@@ -1,0 +1,6 @@
+# Config local: la URL del /exec es un endpoint no listado, no va al repo.
+# El TOKEN no se guarda en ningun archivo — vive en Script Properties
+# y en el gestor de contraseñas.
+config.local
+node_modules/
+.DS_Store
