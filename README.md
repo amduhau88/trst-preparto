@@ -148,3 +148,32 @@ valor para ese campo. Es a propósito, para poder completar la planilla de a poc
 
 Hoy están vacías: **Rodeo** (col. R) y **Vaca que Provee Calostro** (col. P).
 Y falta **Adrián** en Operarios (382 partos cargados en 2026).
+
+## La PWA de la tablet
+
+Pantalla del operario en `pwa/`: HTML/CSS/JS estático, sin build step ni dependencias.
+
+- **URL:** https://amduhau88.github.io/trst-preparto/pwa/ (GitHub Pages, rama `main`)
+- **Puesta en tablet:** ver [`docs/puesta-en-tablet.md`](docs/puesta-en-tablet.md)
+
+Guardar un parto escribe **primero en IndexedDB** y confirma al operario al instante;
+la red viene después. Un parto cargado en el corral no se pierde aunque no haya señal,
+aunque se cierre la app o se apague la tablet.
+
+### Probar la PWA
+
+```bash
+node pwa/test_pwa.js
+```
+
+Levanta un backend simulado (con la misma idempotencia por uuid que Apps Script) y maneja
+Chrome de verdad para reproducir el escenario del corral: cargar sin señal, cerrar la app,
+reabrirla sin señal, recuperar la señal y verificar que cada parto llegue **una sola vez**.
+También cubre servidor caído, reintentos y datos incompletos.
+
+Requiere `npm install` una vez (usa `puppeteer-core` contra el Chrome ya instalado).
+
+### Al publicar cambios en la PWA
+
+Subir la versión del cache en `pwa/sw.js` (`preparto-v1` → `v2`). Si no, las tablets
+siguen sirviendo la versión vieja desde el cache y el cambio no llega nunca.
