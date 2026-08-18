@@ -260,6 +260,15 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('no hay selector de fecha libre',
           await page.evaluate(() => !document.querySelector('input[type="date"]')));
 
+    console.log('\n3b. Rodeo: campo abierto, pero numerico');
+    check('sin lista en Maestro seria campo libre; con lista, desplegable',
+          await page.evaluate(() => !!document.querySelector('#wrapRodeo select')));
+    check('acepta un rodeo nuevo', await page.evaluate(() => rodeoValido('209')));
+    check('acepta vacio', await page.evaluate(() => rodeoValido('')));
+    check('rechaza el "-" de la planilla vieja', await page.evaluate(() => !rodeoValido('-')));
+    check('rechaza "---"', await page.evaluate(() => !rodeoValido('---')));
+    check('rechaza texto', await page.evaluate(() => !rodeoValido('campo')));
+
     console.log('\n4. Carga con señal');
     await cargarParto(page, '4115', '24543');
     let c = await esperarSync(page);

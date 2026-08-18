@@ -477,11 +477,23 @@ function faltantes(p) {
   return f;
 }
 
+/**
+ * El rodeo es campo abierto a proposito: se van definiendo sobre la marcha.
+ * Pero abierto no es cualquier cosa: en la planilla vieja la columna de rodeo
+ * junta "-", "---" y numeros sueltos. Un rodeo siempre es un numero.
+ */
+function rodeoValido(v) {
+  return v === '' || /^\d{1,4}$/.test(v);
+}
+
 async function guardarParto() {
   const p = armarPayload();
   const faltan = faltantes(p);
   if (faltan.length) {
     return avisar('Falta: ' + faltan.join(', '), true);
+  }
+  if (!rodeoValido(p.rodeo)) {
+    return avisar('El rodeo tiene que ser un número: "' + p.rodeo + '"', true);
   }
 
   await guardarLocal({

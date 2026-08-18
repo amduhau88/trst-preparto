@@ -57,9 +57,25 @@ C como fecha `dd/MM/yyyy`; W como `dd/MM/yyyy HH:mm`.
 
 | # | Qué | Estado hoy |
 |---|---|---|
-| 1 | Lista de **rodeos** (col. R) | `Maestro` vacía. Histórico 2026: 21, 23, 26, 201–208 |
-| 2 | Códigos de **sexo 3 y 5** | La lista salta 1, 2, 4, 6, 7, 8 |
-| 3 | Dónde vive **`campo`** como tipo de parto | Anotado en el propio `Maestro`; hoy aparece en MELLIZOS |
-| 4 | **Operarios** faltantes | Falta Adrián (382 partos en 2026) y Jorge (5) |
-| 5 | **Vaca origen calostro**: ¿existe pool/banco? | Si existe, necesita su propio valor |
-| 6 | Validar que el **ID de vaca** exista | Requiere cruzar contra el padrón de DairyComp |
+| 1 | Códigos de **sexo 3 y 5** | La lista salta 1, 2, 4, 6, 7, 8 |
+| 2 | Dónde vive **`campo`** como tipo de parto | Anotado en el propio `Maestro`; hoy aparece en MELLIZOS |
+| 3 | **Vaca origen calostro**: ¿existe pool/banco? | Si existe, necesita su propio valor |
+| 4 | Validar que el **ID de vaca** exista | Requiere cruzar contra el padrón de DairyComp |
+
+## Decisiones ya tomadas
+
+**Rodeo (col. R): campo abierto, a propósito.** Los rodeos se van definiendo sobre la
+marcha, así que `Maestro!R` queda vacía y el operario escribe el número. Lo único que se
+exige es que **sea un número**, para que no vuelvan los `-` y `---` de la planilla vieja.
+
+Si algún día se quiere cerrar la lista, se cargan los valores en `Maestro!R` y el campo
+se convierte solo en un desplegable.
+
+**Operarios: son cuatro** — Julio, Griselda, Martin, Trini. Adrián (382 partos) y Jorge (5)
+aparecen en el histórico 2026 pero ya no están en el tambo.
+
+## Cómo se agrega un operario o un rodeo
+
+Se escribe en la hoja `Maestro`, en la columna que corresponda. **Nada más.** Las tablets
+lo toman solas la próxima vez que abren con señal: no hace falta redeployar, ni tocar el
+código, ni reinstalar nada.
