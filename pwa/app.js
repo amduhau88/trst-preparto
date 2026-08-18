@@ -644,11 +644,57 @@ async function guardarParto() {
     creado: Date.now(), payload: p
   });
 
-  avisar('Parto guardado' + (navigator.onLine ? '' : ' — se sincroniza al volver la señal'));
+  mostrarExito(p);          // antes de limpiar: el resumen sale del parto recien guardado
   limpiar();
   await refrescar();
   sincronizar();
 }
+
+/* ------------------------------------------------------------------ */
+/* Cartel de confirmacion                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Un aviso que se desvanece se puede perder de vista con la tablet en la mano.
+ * Este cartel obliga a un toque, asi el operario confirma que el parto entro
+ * y ve exactamente que quedo registrado.
+ */
+function mostrarExito(p) {
+  const crias = (p.terneros || []).map((t) => {
+    if (t.vive === false) return `${t.sexo || 'cría'} — nació muerta`;
+    const partes = [t.id_ternero || 'sin ID'];
+    if (t.sexo) partes.push(t.sexo);
+    partes.push(`${t.peso} kg`);
+    return partes.join(' · ');
+  });
+
+  $('okDetalle').innerHTML =
+    `Vaca <b>${p.id_vaca}</b> · ${aDDMMAAAA(p.fecha_parto)} · ${p.hora_nacimiento}` +
+    (crias.length ? '<br>' + crias.map((c) => `<b>${c}</b>`).join('<br>')
+                  : '<br><b>Sin cría viva</b>');
+
+  const enEspera = !navigator.onLine || sesionVencida;
+  const est = $('okEstado');
+  est.className = 'estado' + (enEspera ? ' espera' : '');
+  est.textContent = enEspera
+    ? 'Guardado en la tablet — se sincroniza al volver la señal'
+    : 'Guardado y sincronizado';
+
+  $('modalOk').classList.remove('hidden');
+  $('btnOtroParto').focus();
+}
+
+function cerrarExito() {
+  $('modalOk').classList.add('hidden');
+  $('fVaca').focus();
+}
+
+$('btnOtroParto').onclick = cerrarExito;
+// Tocar fuera de la caja tambien cierra; adentro, no.
+$('modalOk').addEventListener('click', (e) => { if (e.target === $('modalOk')) cerrarExito(); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('modalOk').classList.contains('hidden')) cerrarExito();
+});
 
 function limpiar() {
   $('fVaca').value = '';

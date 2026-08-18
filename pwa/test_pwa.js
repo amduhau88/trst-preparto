@@ -172,7 +172,14 @@ async function cargarParto(page, vaca, ternero) {
   }, vaca, ternero);
   await page.click('#btnGuardar');
   await new Promise((r) => setTimeout(r, 350));
+  await cerrarCartel(page);
 }
+
+/** El cartel de exito tapa el formulario: hay que cerrarlo para seguir cargando. */
+const cerrarCartel = (page) => page.evaluate(() => {
+  const m = document.getElementById('modalOk');
+  if (m && !m.classList.contains('hidden')) document.getElementById('btnOtroParto').click();
+});
 
 /** Elige el código de sexo del parto por su número inicial. */
 const elegirSexo = (page, codigo) => page.evaluate((c) => {
@@ -211,9 +218,14 @@ const esperarSync = async (page, seg = 12) => {
 };
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+// Nada de offsetParent: en elementos position:fixed (el cartel) siempre da null,
+// asi que los daria por invisibles aunque esten en pantalla.
 const visible = (page, sel) => page.evaluate((s) => {
   const e = document.querySelector(s);
-  return !!e && !e.classList.contains('hidden') && e.offsetParent !== null;
+  if (!e) return false;
+  const cs = getComputedStyle(e);
+  const r = e.getBoundingClientRect();
+  return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0;
 }, sel);
 
 /* ---------- prueba ---------- */
@@ -327,6 +339,15 @@ const visible = (page, sel) => page.evaluate((s) => {
     });
     await page.click('#btnGuardar');
     await esperar(500);
+    check('el cartel de confirmacion aparece', await visible(page, '#modalOk'));
+    const textoCartel = await page.$eval('#okDetalle', (e) => e.textContent);
+    check('el cartel nombra la vaca', /5514/.test(textoCartel), textoCartel);
+    check('el cartel lista las dos crias',
+          /9101/.test(textoCartel) && /9102/.test(textoCartel), textoCartel);
+    check('el cartel dice el sexo de cada una',
+          /Macho/.test(textoCartel) && /Hembra/.test(textoCartel), textoCartel);
+    await cerrarCartel(page);
+    check('se cierra al tocar el boton', !(await visible(page, '#modalOk')));
     const doble = await leerPayload(page, '5514');
     check('guarda 2 terneros', doble && doble.terneros.length === 2, JSON.stringify(doble && doble.terneros));
     check('cada uno con su sexo',
@@ -359,6 +380,10 @@ const visible = (page, sel) => page.evaluate((s) => {
           await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
     await page.click('#btnGuardar');
     await esperar(500);
+    check('el cartel avisa la cria muerta',
+          /muerta/i.test(await page.$eval('#okDetalle', (e) => e.textContent)),
+          await page.$eval('#okDetalle', (e) => e.textContent));
+    await cerrarCartel(page);
     const conMuerta = await leerPayload(page, '5515');
     check('guarda igual las 2 crias', conMuerta && conMuerta.terneros.length === 2);
     check('la muerta va marcada', conMuerta.terneros[1].vive === false);
@@ -380,7 +405,17 @@ const visible = (page, sel) => page.evaluate((s) => {
     const filasAntes = filas.length;
     await page.setOfflineMode(true);
     await page.evaluate(() => dispatchEvent(new Event('offline')));
-    await cargarParto(page, '208', '9093');
+    await page.evaluate((v, t) => {
+      document.getElementById('fVaca').value = v;
+      const i = document.querySelector('[data-ternero]');
+      i.value = t; i.dispatchEvent(new Event('input', { bubbles: true }));
+    }, '208', '9093');
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('sin señal el cartel avisa que queda en espera',
+          /se sincroniza/i.test(await page.$eval('#okEstado', (e) => e.textContent)),
+          await page.$eval('#okEstado', (e) => e.textContent));
+    await cerrarCartel(page);
     await cargarParto(page, '214', '9094');
     await cargarParto(page, '123', '9095');
     c = await contarLocal(page);
