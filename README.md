@@ -113,11 +113,20 @@ el deploy no tomó. **Subir `VERSION` en cada cambio de `Codigo.gs`.**
 
 ## Verificar el deploy
 
+Guardar el token una vez en el Llavero (lo pide sin mostrarlo):
+
 ```bash
-URL='https://script.google.com/macros/s/.../exec'
-TOKEN='el-token-del-paso-4'
-./scripts/verificar.sh "$URL" "$TOKEN"
+security add-generic-password -a "$USER" -s trst-preparto-token -w
 ```
+
+Después alcanza con:
+
+```bash
+source config.local && ./scripts/verificar.sh "$URL"
+```
+
+Lo primero que hace es comparar la versión publicada contra `VERSION_ESPERADA`, y
+**corta si no coinciden**: seguir probando contra un deploy viejo sólo genera confusión.
 
 Corre los mismos casos que `test_local.js` pero contra la planilla real, incluida la prueba
 de duplicados. Escribe partos de prueba: borrar esas filas de
@@ -147,19 +156,23 @@ destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañ
   "tipo_parto": "1 Normal",
   "sexo": "6 Macho Vivo",
 
-  "terneros": [                    // 2 elementos si el sexo es de parto doble (2 u 8)
-    { "id_ternero": "24543", "raza": "Holando", "peso": 42 }
-  ],
+  "lts_madre": "5",               // del PARTO, no de la cría: se repite en las dos filas
 
-  "calostro": {
-    "calidad_sin_mejorar": "26",   // número, o "mastitis" / "sangre" / "campo"
-    "mejorado": "No",
-    "calidad_mejorado": "---",     // solo si mejorado = "Si"
-    "consumido": "Si",
-    "lts_madre": "5",
-    "lts_ternero": "4",
-    "id_vaca_origen": "119"
-  },
+  "terneros": [                    // 2 elementos si el sexo es de parto doble (2 u 8)
+    {
+      "id_ternero": "24543", "raza": "Holando", "peso": 42,
+      "sexo": "Macho",             // obligatorio sólo con el código 8, que es ambiguo
+      "vive": true,                // false = nació muerta: su fila va en "---"
+      "calostro": {                // cada cría lleva el suyo
+        "calidad_sin_mejorar": "26",   // número, o "mastitis" / "sangre" / "campo"
+        "mejorado": "No",
+        "calidad_mejorado": "---",     // solo si mejorado = "Si"
+        "consumido": "Si",
+        "lts_ternero": "4",
+        "id_vaca_origen": "119"
+      }
+    }
+  ],
 
   "tambo": "2",
   "rodeo": "26",
@@ -175,6 +188,7 @@ Respuestas:
 | UUID repetido | `{"ok":true,"duplicado":true}` — la tablet lo saca de la cola igual |
 | Datos inválidos | `{"ok":false,"error":"validacion","detalles":[…]}` |
 | Token mal | `{"ok":false,"error":"token invalido"}` |
+| Sin credencial | `{"ok":false,"error":"falta sesion","sesion":false}` |
 
 `GET ?action=ping` · `?action=maestro&token=…` · `?action=partos&token=…&fecha=YYYY-MM-DD`
 
