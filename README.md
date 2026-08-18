@@ -73,6 +73,26 @@ idempotencia, mellizos, cría muerta y fechas. **No** reemplaza la prueba con `c
    - Quién tiene acceso: **Cualquier usuario** (la tablet no tiene sesión de Google)
 6. Copiar la URL `/exec`.
 
+### Actualizar el backend, en 4 pasos
+
+1. Pegar `apps-script/Codigo.gs` en el editor y guardar (`Cmd+S`).
+2. **Implementar → Gestionar implementaciones**.
+3. **✏️ lápiz** sobre la implementación activa. **Nunca "Nueva implementación".**
+4. Desplegable **Versión → "Nueva versión"** → **Implementar**.
+
+Debe haber **una sola implementación** sin archivar. Con una sola, el lápiz es el
+único camino y la URL no cambia nunca. Si aparece otra, archivar las viejas
+(⋮ → Archivar): no borra código ni datos, sólo apaga esa URL.
+
+Verificar siempre después de deployar:
+
+```bash
+source config.local && curl -sSL "$URL?action=ping"
+```
+
+Tiene que devolver el mismo `version` que `VERSION` en `Codigo.gs`. Si no coincide,
+el deploy no tomó. **Subir `VERSION` en cada cambio de `Codigo.gs`.**
+
 ### Trampas del deploy (las tres nos pasaron)
 
 1. **Guardar no publica.** Cada implementación queda clavada a una *versión*, que es una foto
@@ -81,9 +101,10 @@ idempotencia, mellizos, cría muerta y fechas. **No** reemplaza la prueba con `c
    versión es anterior al primer pegado.
    Para actualizar: **Implementar → Gestionar implementaciones → ✏️ → Versión: Nueva versión**.
 
-2. **"Nueva implementación" cambia la URL.** Editar la existente la conserva. Si la tablet deja
-   de sincronizar después de un cambio, lo primero es comparar la URL configurada contra la de
-   *Gestionar implementaciones*.
+2. **"Nueva implementación" cambia la URL.** Nos pasó cuatro veces. Editar la existente con el
+   lápiz la conserva. Como la URL está incrustada en `pwa/config.js`, una URL nueva obliga a
+   actualizar la PWA y republicarla; mientras tanto la tablet le habla a un deploy viejo.
+   Por eso conviene dejar **una sola implementación activa**.
 
 3. **El acceso tiene que ser "Cualquier usuario"**, no *"Cualquier usuario con una Cuenta de
    Google"*. Con la segunda, el `/exec` redirige al login y la tablet nunca llega al script.
