@@ -10,6 +10,13 @@
  *   _log                   — auditoria append-only + control de duplicados
  */
 
+/* Version del codigo. Se devuelve en ?action=ping, para poder confirmar de un
+ * vistazo QUE version esta realmente publicada. En Apps Script guardar no
+ * publica: cada implementacion queda clavada a una foto del codigo, y sin este
+ * marcador la unica forma de notar que el deploy no tomo es que los datos
+ * salgan mal. Subirla en cada cambio de Codigo.gs. */
+var VERSION = 'r3-cria-2026-08-18';
+
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
 var HOJA_FORMATO = 'NUEVO FORMATO PREPARTO';
 var HOJA_MAESTRO = 'Maestro';
@@ -128,7 +135,8 @@ function doGet(e) {
     var ss = SpreadsheetApp.openById(SS_ID);
 
     if (p.action === 'ping') {
-      return json_({ ok: true, hoja: ss.getName(), ts: new Date().toISOString() });
+      return json_({ ok: true, version: VERSION, hoja: ss.getName(),
+                     ts: new Date().toISOString() });
     }
 
     // Camino para scripts (verificar.sh, crons). El navegador usa POST, para no

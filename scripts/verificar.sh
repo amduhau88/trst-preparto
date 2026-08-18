@@ -89,9 +89,25 @@ parto() { # <uuid> <id_vaca> <sexo> <terneros_json> <nota>   [TOK=... para forza
 JSON
 }
 
+# Version que espera este script. Tiene que coincidir con VERSION en Codigo.gs:
+# si no, lo que esta publicado no es el codigo de este repo.
+VERSION_ESPERADA='r3-cria-2026-08-18'
+
 echo
 echo "1. Conectividad"
-check "ping responde" "$(get 'action=ping')" '"ok":true'
+PING="$(get 'action=ping')"
+check "ping responde" "$PING" '"ok":true'
+if ! grep -q "\"version\":\"$VERSION_ESPERADA\"" <<<"$PING"; then
+  FALLOS=$((FALLOS + 1))
+  printf '  FALLA la version publicada no es la de este repo\n'
+  printf '        esperaba  %s\n' "$VERSION_ESPERADA"
+  printf '        publicado %s\n' "$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' <<<"$PING" | head -1 || echo '(sin version: codigo viejo)')"
+  printf '        >> Implementar -> Gestionar implementaciones -> lapiz -> Version: NUEVA\n'
+  echo
+  echo "Se corta aca: seguir probando contra un deploy viejo solo genera confusion."
+  exit 1
+fi
+printf '  ok    version publicada: %s\n' "$VERSION_ESPERADA"
 check "token invalido rechazado" \
       "$(post "$(TOK=token-que-no-es parto "tok-$RUN" 4115 '6 Macho Vivo' '[]' x)")" \
       'token invalido'
