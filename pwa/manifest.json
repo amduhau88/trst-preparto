@@ -1,6 +1,6 @@
 {
-  "name": "Preparto — carga de partos",
-  "short_name": "Preparto",
+  "name": "TRST Partos",
+  "short_name": "TRST Partos",
   "description": "Carga de partos en el tambo. Funciona sin señal.",
   "start_url": "./index.html",
   "scope": "./",
