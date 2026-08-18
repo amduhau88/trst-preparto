@@ -32,17 +32,15 @@ if [[ ! "$URL" =~ ^https://script\.google\.com/(a/macros/[^/]+|macros)/s/[^/]+/e
   exit 2
 fi
 
-# Con TOKEN="$(pbpaste)" es facil que el portapapeles tenga otra cosa
-# (tipicamente la propia URL). Sin este control, fallan las 16 pruebas
-# con "token invalido" y el motivo real queda tapado.
-if [[ "$TOKEN" == http* || "$TOKEN" == */* ]]; then
-  echo "El TOKEN parece una URL, no un token:" >&2
-  echo "  '${TOKEN:0:40}...'" >&2
+# Con TOKEN="$(pbpaste)" es facil que el portapapeles tenga otra cosa: la URL,
+# un pedazo de codigo, lo ultimo que se copio. Sin este control fallan las 16
+# pruebas con un error enganoso y el motivo real queda tapado.
+# El token es un chorizo de caracteres sin espacios; cualquier otra cosa no lo es.
+if [[ ! "$TOKEN" =~ ^[A-Za-z0-9._-]{16,}$ ]]; then
+  echo "Lo que hay en TOKEN no tiene forma de token." >&2
+  printf '  largo: %s caracteres, %s lineas\n' "${#TOKEN}" "$(grep -c '' <<<"$TOKEN")" >&2
+  echo "  (se esperan 40 caracteres hexadecimales, sin espacios ni comillas)" >&2
   echo "Copia el token al portapapeles y volve a correrlo." >&2
-  exit 2
-fi
-if [[ ${#TOKEN} -lt 16 ]]; then
-  echo "TOKEN demasiado corto (${#TOKEN} caracteres); se esperan 40." >&2
   exit 2
 fi
 
@@ -146,7 +144,8 @@ check "cria viva sin ternero" \
 echo
 echo "7. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
-check "maestro sin token" "$(get 'action=maestro')" 'token invalido'
+check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
+check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'
 check "partos del dia" "$(get "action=partos&token=$TOKEN&fecha=$FECHA")" '"ok":true'
 
 echo
