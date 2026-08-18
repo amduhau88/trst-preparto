@@ -444,6 +444,38 @@ function num_(v) {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Diagnostico: verifica que el script pueda hablar con Google.
+ * Correrla desde el editor y mirar el Registro de ejecucion.
+ *
+ * Si pide autorizacion al ejecutarla, es exactamente lo que faltaba:
+ * el permiso script.external_request no estaba concedido y sin el
+ * NINGUN inicio de sesion puede validarse.
+ */
+function diagnostico() {
+  var props = PropertiesService.getScriptProperties();
+  Logger.log('TOKEN configurado : ' + (props.getProperty('TOKEN') ? 'si' : 'NO'));
+  Logger.log('ADMINS            : ' + (props.getProperty('ADMINS') || '(vacio)'));
+  Logger.log('CLIENT_ID         : ' + CLIENT_ID);
+
+  try {
+    var res = UrlFetchApp.fetch(TOKENINFO + 'token-de-prueba', { muteHttpExceptions: true });
+    Logger.log('Llamada a Google  : OK (codigo ' + res.getResponseCode() + ')');
+    Logger.log('>> El permiso esta bien. Un 400 aca es lo esperado: Google');
+    Logger.log('>> rechaza el token de mentira, que es justo lo que queriamos probar.');
+  } catch (err) {
+    Logger.log('Llamada a Google  : FALLO -> ' + err);
+    Logger.log('>> Falta el permiso script.external_request en appsscript.json,');
+    Logger.log('>> o no se autorizo. Sin eso no se puede validar ninguna sesion.');
+  }
+
+  try {
+    Logger.log('Planilla          : ' + SpreadsheetApp.openById(SS_ID).getName());
+  } catch (err) {
+    Logger.log('Planilla          : FALLO -> ' + err);
+  }
+}
+
+/**
  * Genera el token compartido y lo guarda en Script Properties.
  * Copiar el valor que imprime y cargarlo en la tablet. No se guarda en el repo.
  */
