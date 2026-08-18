@@ -8,9 +8,33 @@ es un Apps Script adjunto a la planilla, y el frontend es una PWA estática.
 
 ```
 Tablet (PWA, GitHub Pages)  →  Apps Script /exec  →  Google Sheet «TRST — Partos»
-   guarda en IndexedDB          LockService + UUID       NUEVO FORMATO PREPARTO
-   cola offline + reintentos    sin duplicados           Maestro · _log
+   guarda en IndexedDB          verifica identidad       NUEVO FORMATO PREPARTO
+   cola offline + reintentos    LockService + UUID       Maestro · _log
+   sesion Google cacheada       sin duplicados
 ```
+
+## Quién puede entrar
+
+Sólo cuentas de Google **@admin.com.ar**. La PWA obtiene un ID token de Google y el
+backend lo verifica contra `oauth2.googleapis.com/tokeninfo`, exigiendo tres cosas:
+firma válida, `aud` == nuestro Client ID, y `hd` == el dominio. Sin las tres, no escribe.
+
+**Autenticar y usar son cosas distintas.** Se inicia sesión una vez con señal; después la
+sesión queda cacheada 30 días y la app abre y guarda partos en el corral sin conexión.
+El ID token fresco se pide recién **al sincronizar**, no al guardar — así un parto que
+estuvo dos días en la cola nunca viaja con una credencial vencida, y si la sesión se cayó
+los partos **quedan en la cola en vez de perderse**.
+
+Dos caminos de entrada:
+
+| Quién | Cómo se autentica |
+|---|---|
+| Tablet / navegador | ID token de Google, dominio `@admin.com.ar` |
+| Scripts (`verificar.sh`, crons) | Token compartido en Script Properties |
+
+La pestaña **Ajustes** se le muestra sólo a los mails de la propiedad `ADMINS`. Esconder
+la pestaña es cosmético; lo que protege de verdad es que `ver()` bloquea la vista y que
+**el servidor valida cada request por su cuenta**.
 
 Planilla: [`TRST — Partos`](https://docs.google.com/spreadsheets/d/12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8/edit)
 · ID `12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8`

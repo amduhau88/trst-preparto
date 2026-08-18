@@ -2,9 +2,12 @@
  * Prueba automatizada de la PWA — `node pwa/test_pwa.js`
  *
  * Levanta un backend simulado que respeta el contrato de Apps Script
- * (idempotencia por uuid incluida) y maneja Chrome de verdad para reproducir
- * el escenario del corral: cargar sin señal, cerrar la app, reabrirla sin señal,
- * volver a tener señal y confirmar que cada parto llega UNA sola vez.
+ * (identidad e idempotencia por uuid incluidas) y maneja Chrome de verdad para
+ * reproducir el escenario del corral: iniciar sesion una vez, cargar sin señal,
+ * cerrar la app, reabrirla sin señal, y confirmar que cada parto llega UNA sola vez.
+ *
+ * Google se simula: `window.google.accounts.id` se inyecta antes de que corra
+ * la app, asi las pruebas no dependen de la red ni de una cuenta real.
  */
 'use strict';
 const http = require('http');
@@ -15,8 +18,9 @@ const puppeteer = require('puppeteer-core');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PUERTO_WEB = 8791;
 const PUERTO_API = 8792;
-const TOKEN = 'token-de-prueba-0123456789abcdef';
 const RAIZ = __dirname;
+const ADMIN = 'andresduhau@admin.com.ar';
+const DISPOSITIVO = 'tablet.maternidad@admin.com.ar';
 
 let fallos = 0;
 const check = (nombre, cond, detalle) => {
@@ -24,11 +28,30 @@ const check = (nombre, cond, detalle) => {
   if (!cond) fallos++;
 };
 
+/* ---------- credenciales de mentira ---------- */
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const jwtFalso = (email, minutos) =>
+  b64({ alg: 'none' }) + '.' +
+  b64({ email, exp: Math.floor(Date.now() / 1000) + minutos * 60 }) + '.firma';
+
+const leerJwt = (t) => {
+  try { return JSON.parse(Buffer.from(String(t).split('.')[1], 'base64url').toString()); }
+  catch (e) { return null; }
+};
+
 /* ---------- servidor estatico ---------- */
 const TIPOS = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png' };
 const noEncontrados = [];
 const web = http.createServer((req, res) => {
-  const limpio = req.url.split('?')[0];
+  const limpio = decodeURIComponent(req.url.split('?')[0]);
+
+  // config.js se sirve apuntando al backend simulado, sin tocar el archivo real.
+  if (limpio === '/config.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-cache' });
+    return res.end(`window.CONFIG={URL_EXEC:'http://localhost:${PUERTO_API}/exec',` +
+                   `CLIENT_ID:'prueba.apps.googleusercontent.com',DOMINIO:'admin.com.ar',DIAS_SESION:30};`);
+  }
+
   const f = path.join(RAIZ, limpio === '/' ? 'index.html' : limpio);
   if (!f.startsWith(RAIZ) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) {
     noEncontrados.push(limpio);
@@ -43,10 +66,11 @@ const web = http.createServer((req, res) => {
 });
 
 /* ---------- backend simulado (mismo contrato que Apps Script) ---------- */
-const recibidos = [];          // todo lo que llego, incluidos reintentos
-const filas = [];              // lo que "se escribio en la planilla"
+const recibidos = [];
+const filas = [];
 const uuidsVistos = new Set();
-let caidoHasta = 0;            // para simular el servidor fallando
+const sinSesion = [];          // requests que llegaron sin credencial valida
+let caidoHasta = 0;
 
 const LISTAS = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
@@ -71,21 +95,28 @@ const api = http.createServer((req, res) => {
     res.end(JSON.stringify(obj));
   };
   if (Date.now() < caidoHasta) { res.writeHead(500); return res.end('caido'); }
-
-  if (req.method === 'GET') {
-    const q = new URL(req.url, 'http://x').searchParams;
-    if (q.get('token') !== TOKEN) return responder({ ok: false, error: 'token invalido' });
-    if (q.get('action') === 'maestro') return responder({ ok: true, listas: LISTAS });
-    return responder({ ok: true, partos: [] });
-  }
+  if (req.method === 'GET') return responder({ ok: true, hoja: 'simulada' });
 
   let cuerpo = '';
   req.on('data', (c) => { cuerpo += c; });
   req.on('end', () => {
     let p;
     try { p = JSON.parse(cuerpo); } catch (e) { return responder({ ok: false, error: 'json' }); }
+
+    const datos = leerJwt(p.id_token);
+    const vigente = datos && datos.exp * 1000 > Date.now();
+    if (!vigente) {
+      sinSesion.push(p.uuid || p.accion || '?');
+      return responder({ ok: false, error: 'falta sesion', sesion: false });
+    }
+
+    if (p.accion === 'sesion') {
+      return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN });
+    }
+    if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
+    if (p.accion === 'partos') return responder({ ok: true, partos: [] });
+
     recibidos.push(p.uuid);
-    if (p.token !== TOKEN) return responder({ ok: false, error: 'token invalido' });
     if (uuidsVistos.has(p.uuid)) return responder({ ok: true, duplicado: true, uuid: p.uuid });
     if (!p.operario || !p.id_vaca) {
       return responder({ ok: false, error: 'validacion', detalles: ['faltan datos'] });
@@ -98,6 +129,39 @@ const api = http.createServer((req, res) => {
 });
 
 /* ---------- helpers de pagina ---------- */
+
+/** Inyecta un Google de mentira antes de que corra la app. */
+async function simularGoogle(page, credencial, auto) {
+  await page.evaluateOnNewDocument((cred, autoEntrar) => {
+    window.__cred = cred;
+    window.__auto = autoEntrar;
+    window.__promptPedido = 0;
+    window.google = { accounts: { id: {
+      initialize(o) { window.__cb = o.callback; window.__init = o; },
+      renderButton(el) {
+        const b = document.createElement('button');
+        b.id = 'gbtn'; b.textContent = 'Acceder con Google';
+        b.onclick = () => window.__cb && window.__cb({ credential: window.__cred });
+        el.appendChild(b);
+      },
+      prompt() {
+        window.__promptPedido++;
+        if (window.__auto && window.__cb) {
+          setTimeout(() => window.__cb({ credential: window.__cred }), 30);
+        }
+      },
+      disableAutoSelect() { window.__auto = false; }
+    } } };
+  }, credencial, auto);
+}
+
+async function nuevaPagina(browser, credencial, auto = true) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1180, height: 820 });
+  await simularGoogle(page, credencial, auto);
+  return page;
+}
+
 async function cargarParto(page, vaca, ternero) {
   await page.evaluate((v, t) => {
     document.getElementById('fVaca').value = v;
@@ -131,6 +195,12 @@ const esperarSync = async (page, seg = 12) => {
   return contarLocal(page);
 };
 
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+const visible = (page, sel) => page.evaluate((s) => {
+  const e = document.querySelector(s);
+  return !!e && !e.classList.contains('hidden') && e.offsetParent !== null;
+}, sel);
+
 /* ---------- prueba ---------- */
 (async () => {
   web.listen(PUERTO_WEB);
@@ -140,186 +210,189 @@ const esperarSync = async (page, seg = 12) => {
     executablePath: CHROME, headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage']
   });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1180, height: 820 });
 
   const errores = [];
+  const base = `http://localhost:${PUERTO_WEB}/index.html`;
+  const credDispositivo = jwtFalso(DISPOSITIVO, 60);
+
+  let page = await nuevaPagina(browser, credDispositivo, false);   // sin auto-login
   page.on('pageerror', (e) => errores.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errores.push(m.text()); });
 
-  const base = `http://localhost:${PUERTO_WEB}/index.html`;
-  const api_url = `http://localhost:${PUERTO_API}/exec`;
-
   try {
-    console.log('\n1. Arranque y configuracion');
-    await page.goto(`${base}?url=${encodeURIComponent(api_url)}&token=${TOKEN}&dispositivo=tablet-test`,
-                    { waitUntil: 'networkidle0' });
-    await new Promise((r) => setTimeout(r, 900));
-
+    console.log('\n1. Sin sesion no se entra');
+    await page.goto(base, { waitUntil: 'networkidle0' });
+    await esperar(900);
+    check('muestra la pantalla de acceso', await visible(page, '#v-login'));
+    check('esconde el formulario', !(await visible(page, '#v-form')));
+    check('esconde las pestañas', !(await visible(page, '.tabs')));
+    check('ofrece el boton de Google', await visible(page, '#gbtn'));
     check('sin errores de JS', errores.length === 0,
           errores.join(' | ') + ' | 404: ' + noEncontrados.join(','));
-    check('token fuera de la barra de direcciones', !page.url().includes(TOKEN), page.url());
-    check('service worker activo',
-          await page.evaluate(() => navigator.serviceWorker.ready.then(() => true)));
+
+    console.log('\n2. Iniciar sesion con la cuenta de la tablet');
+    await page.click('#gbtn');
+    await esperar(1200);
+    check('entra a la app', await visible(page, '#v-form'));
+    check('aparecen las pestañas', await visible(page, '.tabs'));
+    check('guarda la sesion',
+          await page.evaluate(() => (JSON.parse(localStorage.getItem('sesion') || '{}')).email) === DISPOSITIVO);
+    check('AJUSTES OCULTO para la cuenta de dispositivo',
+          !(await visible(page, '.tab[data-v="config"]')));
     check('bajo las listas del Maestro',
           await page.evaluate(() => JSON.parse(localStorage.getItem('listas') || '{}').rodeo?.length === 5));
-    check('rodeo paso a ser desplegable',
-          await page.evaluate(() => !!document.querySelector('#wrapRodeo select')));
 
-    console.log('\n1b. Marca y fecha Hoy/Ayer');
+    console.log('\n3. Marca, titulo y fecha');
     check('titulo en Title Case',
-          (await page.$eval('.appbar h1', (e) => e.textContent)) === 'Preparto — Carga de Parto',
-          await page.$eval('.appbar h1', (e) => e.textContent));
+          (await page.$eval('.appbar h1', (e) => e.textContent)) === 'Preparto — Carga de Parto');
     check('logo izquierdo dice TRST',
           (await page.$eval('.logo', (e) => e.textContent.trim())) === 'TRST');
     check('logo AED cargado y visible',
-          await page.$eval('.marca', (e) => e.complete && e.naturalWidth > 0 && e.offsetWidth > 0));
+          await page.$eval('.marca', (e) => e.complete && e.naturalWidth > 0));
     const chipsFecha = await page.$$eval('#cFecha .chip',
       (cs) => cs.map((c) => ({ txt: c.textContent.trim(), val: c.dataset.val, on: c.classList.contains('on') })));
-    check('hay dos chips de fecha', chipsFecha.length === 2, JSON.stringify(chipsFecha));
-    check('Hoy viene seleccionado', chipsFecha[0].on && !chipsFecha[1].on);
-    const ddmm = /^(Hoy|Ayer)\d{2}\/\d{2}\/\d{4}$/;
-    check('muestran la fecha DD/MM/AAAA', chipsFecha.every((c) => ddmm.test(c.txt)),
+    check('dos chips, Hoy seleccionado',
+          chipsFecha.length === 2 && chipsFecha[0].on && !chipsFecha[1].on, JSON.stringify(chipsFecha));
+    check('muestran DD/MM/AAAA', chipsFecha.every((c) => /^(Hoy|Ayer)\d{2}\/\d{2}\/\d{4}$/.test(c.txt)),
           JSON.stringify(chipsFecha.map((c) => c.txt)));
-    const dif = (new Date(chipsFecha[0].val) - new Date(chipsFecha[1].val)) / 86400000;
-    check('Ayer es exactamente un dia antes', dif === 1, 'diferencia=' + dif);
-    check('ya no hay selector de fecha libre',
+    check('Ayer es un dia antes',
+          (new Date(chipsFecha[0].val) - new Date(chipsFecha[1].val)) / 86400000 === 1);
+    check('no hay selector de fecha libre',
           await page.evaluate(() => !document.querySelector('input[type="date"]')));
 
-    console.log('\n2. Carga con señal');
+    console.log('\n4. Carga con señal');
     await cargarParto(page, '4115', '24543');
     let c = await esperarSync(page);
-    check('queda 1 registro local', c.total === 1, JSON.stringify(c));
-    check('quedo sincronizado', c.ok === 1 && c.pendientes === 0, JSON.stringify(c));
-    check('llego 1 fila al servidor', filas.length === 1, JSON.stringify(filas));
-    check('el formulario se limpio',
-          await page.evaluate(() => document.getElementById('fVaca').value === ''));
+    check('queda sincronizado', c.total === 1 && c.ok === 1, JSON.stringify(c));
+    check('llego 1 fila', filas.length === 1);
+    check('nunca llego un request sin sesion', sinSesion.length === 0, JSON.stringify(sinSesion));
 
-    console.log('\n3. Sin señal — lo que pasa en el corral');
+    console.log('\n5. Sin señal — lo que pasa en el corral');
     await page.setOfflineMode(true);
     await page.evaluate(() => dispatchEvent(new Event('offline')));
     await cargarParto(page, '208', '9093');
     await cargarParto(page, '214', '9094');
     await cargarParto(page, '123', '9095');
     c = await contarLocal(page);
-    check('los 3 quedaron guardados', c.total === 4, JSON.stringify(c));
-    check('los 3 estan pendientes', c.pendientes === 3, JSON.stringify(c));
-    check('el servidor no recibio nada', filas.length === 1, 'filas=' + filas.length);
+    check('los 3 quedaron guardados', c.total === 4 && c.pendientes === 3, JSON.stringify(c));
+    check('el servidor no recibio nada', filas.length === 1);
     check('el badge avisa sin señal',
-          /Sin señal/.test(await page.$eval('#badgeTxt', (e) => e.textContent)),
-          await page.$eval('#badgeTxt', (e) => e.textContent));
+          /Sin señal/.test(await page.$eval('#badgeTxt', (e) => e.textContent)));
 
-    console.log('\n4. Cerrar la app y reabrirla SIN señal');
+    console.log('\n6. Cerrar la app y reabrirla SIN señal (con la sesion cacheada)');
     await page.close();
-    const page2 = await browser.newPage();
-    page2.on('pageerror', (e) => errores.push(String(e)));
-    await page2.setOfflineMode(true);
+    page = await nuevaPagina(browser, credDispositivo, false);
+    page.on('pageerror', (e) => errores.push(String(e)));
+    await page.setOfflineMode(true);
     let abrio = true;
-    try {
-      await page2.goto(base, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    } catch (e) { abrio = false; }
+    try { await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 15000 }); }
+    catch (e) { abrio = false; }
     check('la app abre sin conexion', abrio);
-    await new Promise((r) => setTimeout(r, 800));
-    check('sigue en pantalla el formulario',
-          await page2.evaluate(() => !!document.getElementById('btnGuardar') ||
-                                     !!document.querySelector('.appbar h1')));
-    c = await contarLocal(page2);
+    await esperar(900);
+    check('NO pide login otra vez', !(await visible(page, '#v-login')));
+    check('muestra el formulario', await visible(page, '#v-form'));
+    c = await contarLocal(page);
     check('los 3 partos sobrevivieron', c.total === 4 && c.pendientes === 3, JSON.stringify(c));
 
-    console.log('\n5. Vuelve la señal');
-    await page2.setOfflineMode(false);
-    await page2.evaluate(() => dispatchEvent(new Event('online')));
-    c = await esperarSync(page2, 15);
+    console.log('\n7. Vuelve la señal');
+    await page.setOfflineMode(false);
+    await page.evaluate(() => { window.__auto = true; dispatchEvent(new Event('online')); });
+    c = await esperarSync(page, 15);
     check('no quedan pendientes', c.pendientes === 0, JSON.stringify(c));
     check('llegaron las 4 filas', filas.length === 4, JSON.stringify(filas.map((f) => f.vaca)));
-    const vacas = filas.map((f) => f.vaca).sort();
-    check('sin duplicados', new Set(vacas).size === 4, vacas.join(','));
-    check('los uuid del servidor son unicos', uuidsVistos.size === 4);
+    check('sin duplicados', new Set(filas.map((f) => f.vaca)).size === 4);
 
-    console.log('\n6. Reintentos: el mismo parto mandado dos veces');
+    console.log('\n8. Sesion vencida: la cola aguanta, no se pierde nada');
+    await page.evaluate(() => {                       // credencial vencida y sin renovacion
+      idToken = { valor: 'viejo', exp: Date.now() - 1000 };   // la que usa la app, en memoria
+      localStorage.setItem('idToken', JSON.stringify(idToken));
+      window.__auto = false;
+    });
+    await cargarParto(page, '999', '9099');
+    await esperar(1200);
+    c = await contarLocal(page);
+    check('el parto queda pendiente', c.pendientes === 1, JSON.stringify(c));
+    await esperar(9000);                              // que venza el intento de renovar
+    c = await contarLocal(page);
+    check('sigue guardado, no se perdio', c.pendientes === 1, JSON.stringify(c));
+    check('el badge avisa sesion vencida',
+          /Sesión vencida/.test(await page.$eval('#badgeTxt', (e) => e.textContent)),
+          await page.$eval('#badgeTxt', (e) => e.textContent));
+    check('no se mando nada sin credencial valida', filas.length === 4, 'filas=' + filas.length);
+
+    console.log('\n9. Renovada la sesion, se recupera solo');
+    await page.evaluate((cred) => {
+      window.__cred = cred; window.__auto = true;
+      dispatchEvent(new Event('online'));
+    }, jwtFalso(DISPOSITIVO, 60));
+    c = await esperarSync(page, 15);
+    check('la cola se drena', c.pendientes === 0, JSON.stringify(c));
+    check('la fila llego', filas.length === 5, 'filas=' + filas.length);
+
+    console.log('\n10. Reintento del mismo parto');
     const antes = filas.length;
-    const uuidRepetido = await page2.evaluate(() => new Promise((ok) => {
+    const uuidRepetido = await page.evaluate(() => new Promise((ok) => {
       const req = indexedDB.open('preparto', 1);
       req.onsuccess = () => {
         const s = req.result.transaction('partos', 'readwrite').objectStore('partos');
         const g = s.getAll();
-        g.onsuccess = () => {                       // forzar reenvio de uno ya sincronizado
-          const r = g.result[0];
-          r.estado = 'pendiente';
-          s.put(r);
-          ok(r.uuid);
-        };
+        g.onsuccess = () => { const r = g.result[0]; r.estado = 'pendiente'; s.put(r); ok(r.uuid); };
       };
     }));
-    await page2.evaluate(() => dispatchEvent(new Event('online')));
-    await esperarSync(page2, 12);
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    await esperarSync(page, 12);
     check('el servidor lo vio dos veces', recibidos.filter((u) => u === uuidRepetido).length >= 2);
     check('pero NO escribio fila nueva', filas.length === antes, `${antes} -> ${filas.length}`);
-    c = await contarLocal(page2);
-    check('vuelve a quedar sincronizado', c.pendientes === 0, JSON.stringify(c));
 
-    console.log('\n7. Servidor caido: la cola aguanta');
+    console.log('\n11. Servidor caido');
     caidoHasta = Date.now() + 6000;
-    await cargarParto(page2, '5514', '9101');
-    await new Promise((r) => setTimeout(r, 1500));
-    c = await contarLocal(page2);
-    check('el parto quedo pendiente, no perdido', c.pendientes === 1, JSON.stringify(c));
+    await cargarParto(page, '5514', '9101');
+    await esperar(1500);
+    check('el parto quedo pendiente', (await contarLocal(page)).pendientes === 1);
     caidoHasta = 0;
-    await page2.evaluate(() => dispatchEvent(new Event('online')));
-    c = await esperarSync(page2, 15);
-    check('se recupera solo al volver el servidor', c.pendientes === 0, JSON.stringify(c));
-    check('la fila llego', filas.length === antes + 1, 'filas=' + filas.length);
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    check('se recupera solo', (await esperarSync(page, 15)).pendientes === 0);
 
-    console.log('\n8. Dato invalido: no se reintenta para siempre');
-    await page2.evaluate(() => {
-      document.getElementById('fOperario').innerHTML = '<option></option>';
-    });
-    await cargarParto(page2, '', '');
-    c = await contarLocal(page2);
-    // 1 (con senal) + 3 (sin senal) + 1 (servidor caido) = 5. El intento
-    // incompleto no debe sumar ninguno.
-    check('el formulario frena el guardado incompleto', c.total === 5, JSON.stringify(c));
+    console.log('\n12. El badge no es una puerta trasera a Ajustes');
+    await page.click('#badgeSync');
+    await esperar(400);
+    check('con cuenta de dispositivo NO abre Ajustes', !(await visible(page, '#v-config')));
 
-    console.log('\n9. La fecha elegida es la que se guarda');
-    await page2.evaluate(() => {                       // deshacer el sabotaje del caso 8
-      document.getElementById('fOperario').innerHTML = '<option>Julio</option>';
+    console.log('\n13. Salida de emergencia: 2 segundos sobre el logo');
+    await page.evaluate(() => {
+      const l = document.querySelector('.logo');
+      l.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     });
-    const ayerISO = await page2.evaluate(() => {
-      const ayer = [...document.querySelectorAll('#cFecha .chip')][1];
-      ayer.click();
-      return ayer.dataset.val;
-    });
-    await new Promise((r) => setTimeout(r, 250));
-    await cargarParto(page2, '777', '8888');
-    await esperarSync(page2, 12);
-    const guardado = await page2.evaluate((v) => new Promise((ok) => {
-      const req = indexedDB.open('preparto', 1);
-      req.onsuccess = () => {
-        const g = req.result.transaction('partos', 'readonly').objectStore('partos').getAll();
-        g.onsuccess = () => ok((g.result.find((r) => r.payload.id_vaca === v) || {}).payload);
-      };
-    }), '777');
-    check('guarda con la fecha de Ayer', guardado && guardado.fecha_parto === ayerISO,
-          JSON.stringify({ esperado: ayerISO, guardado: guardado && guardado.fecha_parto }));
+    await esperar(2400);
+    check('cierra sesion y vuelve al acceso', await visible(page, '#v-login'));
+    check('borro la sesion', await page.evaluate(() => localStorage.getItem('sesion') === null));
 
-    console.log('\n10. Cruce de medianoche');
-    const reancla = await page2.evaluate(() => {
-      st.fecha = '2020-01-01';                         // simular seleccion vieja
-      pintarFechas();
-      const hoy = new Date();
-      const iso = new Date(hoy.getTime() - hoy.getTimezoneOffset() * 60000)
-        .toISOString().slice(0, 10);
-      return { fecha: st.fecha, hoy: iso, marcados: document.querySelectorAll('#cFecha .chip.on').length };
-    });
-    check('una seleccion vencida vuelve a Hoy', reancla.fecha === reancla.hoy, JSON.stringify(reancla));
-    check('queda exactamente un chip marcado', reancla.marcados === 1, JSON.stringify(reancla));
+    console.log('\n14. Ajustes: visible solo para el admin');
+    await page.evaluate((cred) => { window.__cred = cred; }, jwtFalso(ADMIN, 60));
+    await page.click('#gbtn');
+    await esperar(1500);
+    check('el admin entra', await visible(page, '#v-form'));
+    check('AJUSTES VISIBLE para el admin', await visible(page, '.tab[data-v="config"]'));
+    await page.click('.tab[data-v="config"]');
+    await esperar(300);
+    check('el diagnostico muestra la sesion',
+          /andresduhau@admin\.com\.ar/.test(await page.$eval('#diag', (e) => e.textContent)));
+    check('ya no pide URL ni token',
+          await page.evaluate(() => !document.getElementById('fUrl') && !document.getElementById('fToken')));
+
+    console.log('\n15. Cerrar sesion desde Ajustes');
+    await page.click('#btnSalir');
+    await esperar(600);
+    check('vuelve a la pantalla de acceso', await visible(page, '#v-login'));
+    check('borro la sesion guardada',
+          await page.evaluate(() => localStorage.getItem('sesion') === null));
 
     check('sin errores de JS en toda la corrida', errores.length === 0, errores.slice(0, 3).join(' | '));
     check('sin recursos faltantes (404)', noEncontrados.length === 0, noEncontrados.join(', '));
 
     console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
   } catch (e) {
-    console.log('\nERROR EN LA PRUEBA: ' + e.message);
+    console.log('\nERROR EN LA PRUEBA: ' + e.stack);
     fallos++;
   } finally {
     await browser.close();

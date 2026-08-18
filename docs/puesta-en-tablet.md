@@ -2,8 +2,8 @@
 
 **URL de la app:** https://amduhau88.github.io/trst-preparto/pwa/
 
-Se hace una vez por tablet, en unos 5 minutos. Hace falta tener a mano el **token**
-(el que está guardado en Script Properties del Apps Script y en el gestor de contraseñas).
+Se hace una vez por tablet, en unos 3 minutos. **No hay tokens que tipear**: alcanza con
+iniciar sesión con una cuenta `@admin.com.ar`.
 
 ## 1. Abrir e instalar
 
@@ -15,29 +15,32 @@ Se hace una vez por tablet, en unos 5 minutos. Hace falta tener a mano el **toke
 Si no aparece la opción de instalar, es que el service worker no se registró.
 Casi siempre es porque se abrió por `http://` en vez de `https://`.
 
-## 2. Configurar la conexión
+## 2. Iniciar sesión
 
-En la pestaña **Ajustes**:
+La app abre en la pantalla de acceso. **Acceder con Google** → elegir la cuenta de la
+tablet (por ejemplo `tablet.maternidad@admin.com.ar`).
 
-| Campo | Qué va |
-|---|---|
-| URL del servicio | La del `/exec` (está en `config.local` del repo) |
-| Token | Los 40 caracteres |
-| Nombre de esta tablet | `tablet-maternidad`, `tablet-2`, … — sirve para saber de dónde vino cada parto |
+Sólo entran cuentas del dominio **@admin.com.ar**. Una cuenta de Gmail personal es
+rechazada, y ni siquiera llega al código de la app: la bloquea Google.
 
-**Guardar y probar.** Tiene que decir *"Conectado. Listas actualizadas desde la planilla."*
-Si dice que no pudo conectar, revisar URL y token (o si hay señal).
+**Este paso necesita señal.** Es la única vez. Después la app abre y guarda partos en el
+corral aunque no haya conexión, durante 30 días sin volver a ver a Google.
 
-### Atajo: configurar por link
+### Nombre de la tablet
 
-También se puede abrir una sola vez una URL con los datos incluidos:
+Sirve para saber de qué dispositivo vino cada parto. Se puede fijar al instalar:
 
 ```
-https://amduhau88.github.io/trst-preparto/pwa/?url=<URL_EXEC>&token=<TOKEN>&dispositivo=tablet-maternidad
+https://amduhau88.github.io/trst-preparto/pwa/?dispositivo=tablet-maternidad
 ```
 
-La app guarda los valores y **borra el token de la barra de direcciones** para que no
-quede en el historial. Cómodo para configurar varias tablets iguales.
+o después desde **Ajustes**, si iniciaste sesión con una cuenta de administrador.
+
+### Si la tablet quedó con la cuenta equivocada
+
+La opción «Cerrar sesión» vive en Ajustes, que no se le muestra a las cuentas comunes.
+Para eso está la salida de emergencia: **mantener apretado el logo TRST 2 segundos**
+cierra la sesión y vuelve a la pantalla de acceso.
 
 ## 3. Probar en modo avión — la prueba que importa
 
@@ -79,10 +82,12 @@ vieja guardada y el cambio no llega nunca.
 | Síntoma | Causa probable |
 |---|---|
 | No aparece "Instalar aplicación" | Se abrió por `http://`, no `https://` |
-| "No se pudo conectar" en Ajustes | URL o token mal, o sin señal |
-| Todos los partos quedan "Revisar" | Token mal, o falta un valor en `Maestro` (p. ej. el operario) |
-| No sincroniza y hay señal | La URL cambió: se creó una implementación nueva en vez de versionar |
+| El badge dice **"Sesión vencida"** | Pasaron los 30 días, o se revocó la cuenta. Tocar el badge y volver a entrar. **Los partos en cola no se pierden.** |
+| No deja entrar con una cuenta | No es `@admin.com.ar`. Es lo esperado. |
+| Todos los partos quedan "Revisar" | Falta un valor en `Maestro` (p. ej. el operario que eligieron) |
+| No sincroniza y hay señal | La URL del `/exec` cambió: se creó una implementación nueva en vez de versionar |
 | La app no abre sin señal | No se instaló como app, o el service worker no se registró |
+| Quedó con la cuenta equivocada | Mantener apretado el logo TRST 2 segundos |
 
 En **Ajustes → Diagnóstico** se ve el estado de conexión, cuántos registros hay
 locales, si la app está instalada y cuántos valores tiene cada lista.

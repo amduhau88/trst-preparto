@@ -190,6 +190,20 @@
 
 <main class="body" id="body">
 
+  <!-- ========== LOGIN ========== -->
+  <section class="view hidden" id="v-login">
+    <div class="card" style="max-width:520px;margin:32px auto;text-align:center">
+      <h2>Acceso</h2>
+      <p class="hint">Solo cuentas de Grupo Duhau (<b>@admin.com.ar</b>).</p>
+      <div id="btnGoogle" style="display:flex;justify-content:center;margin:20px 0;min-height:44px"></div>
+      <p class="kv" id="estadoLogin"></p>
+      <p class="kv" style="margin-top:16px;color:var(--ink-3)">
+        Se inicia sesión una sola vez por tablet. Después la app abre y guarda
+        partos aunque no haya señal.
+      </p>
+    </div>
+  </section>
+
   <!-- ========== FORMULARIO ========== -->
   <section class="view" id="v-form">
     <div class="card">
@@ -322,22 +336,14 @@
   <!-- ========== AJUSTES ========== -->
   <section class="view hidden" id="v-config">
     <div class="card">
-      <h2>Conexión con la planilla</h2>
-      <p class="hint">Se configura una sola vez por tablet.</p>
-      <label class="f" style="margin-bottom:14px">
-        <div class="lab">URL del servicio (termina en /exec)</div>
-        <input type="text" id="fUrl" placeholder="https://script.google.com/macros/s/.../exec">
-      </label>
-      <label class="f" style="margin-bottom:14px">
-        <div class="lab">Token</div>
-        <input type="text" id="fToken" placeholder="40 caracteres">
-      </label>
+      <h2>Esta tablet</h2>
+      <p class="hint">Solo lo ve el administrador.</p>
       <label class="f" style="margin-bottom:14px">
         <div class="lab">Nombre de esta tablet</div>
         <input type="text" id="fDispositivo" placeholder="tablet-maternidad">
       </label>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn primary" id="btnGuardarConfig" type="button">Guardar y probar</button>
+        <button class="btn primary" id="btnGuardarConfig" type="button">Guardar</button>
         <button class="btn" id="btnBajarMaestro" type="button">Actualizar listas</button>
       </div>
       <p class="kv" id="estadoConfig" style="margin-top:14px"></p>
@@ -345,7 +351,10 @@
     <div class="card">
       <h2>Diagnóstico</h2>
       <p class="kv" id="diag"></p>
-      <button class="btn" id="btnReintentar" type="button" style="margin-top:12px">Reintentar sincronización</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn" id="btnReintentar" type="button">Reintentar sincronización</button>
+        <button class="btn" id="btnSalir" type="button">Cerrar sesión</button>
+      </div>
     </div>
   </section>
 
@@ -354,6 +363,7 @@
 <footer class="footbar" id="foot"></footer>
 <div class="toast" id="toast"></div>
 
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

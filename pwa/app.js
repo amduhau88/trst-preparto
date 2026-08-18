@@ -15,22 +15,126 @@ const SEXO_MELLIZO = ['2', '8'];
 /* Configuracion                                                       */
 /* ------------------------------------------------------------------ */
 
+const CONFIG = window.CONFIG || {};
 const cfg = {
-  url: localStorage.getItem('url') || '',
-  token: localStorage.getItem('token') || '',
+  url: CONFIG.URL_EXEC || '',
   dispositivo: localStorage.getItem('dispositivo') || 'tablet-maternidad'
 };
 
-// Permite configurar abriendo un link: index.html?url=...&token=...
+// El nombre del dispositivo se puede fijar al instalar: index.html?dispositivo=tablet-2
 (function configDesdeURL() {
   const q = new URLSearchParams(location.search);
-  let cambio = false;
-  ['url', 'token', 'dispositivo'].forEach((k) => {
-    if (q.get(k)) { cfg[k] = q.get(k); localStorage.setItem(k, q.get(k)); cambio = true; }
-  });
-  // Sacar el token de la barra de direcciones para que no quede en el historial.
-  if (cambio) history.replaceState({}, '', location.pathname);
+  if (q.get('dispositivo')) {
+    cfg.dispositivo = q.get('dispositivo');
+    localStorage.setItem('dispositivo', cfg.dispositivo);
+    history.replaceState({}, '', location.pathname);
+  }
 })();
+
+/* ------------------------------------------------------------------ */
+/* Sesion — quien puede usar la app                                    */
+/* ------------------------------------------------------------------ */
+
+/* Autenticar y usar son dos cosas distintas: se inicia sesion UNA vez con
+   señal, y a partir de ahi la app abre y guarda partos en el corral sin red.
+   La sesion cacheada habilita la pantalla; el ID token fresco, la escritura. */
+
+let sesion = null;                    // { email, admin, hasta }
+let idToken = { valor: '', exp: 0 };
+let sesionVencida = false;
+
+(function cargarSesion() {
+  try {
+    sesion = JSON.parse(localStorage.getItem('sesion') || 'null');
+    if (sesion && !(sesion.hasta > Date.now())) sesion = null;
+  } catch (e) { sesion = null; }
+  try {
+    idToken = JSON.parse(localStorage.getItem('idToken') || 'null') || { valor: '', exp: 0 };
+  } catch (e) { idToken = { valor: '', exp: 0 }; }
+})();
+
+/** Vencimiento del JWT, leido del propio token (sin verificarlo: eso lo hace el backend). */
+function vencimientoDe(jwt) {
+  try {
+    const cuerpo = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return (JSON.parse(atob(cuerpo)).exp || 0) * 1000;
+  } catch (e) { return 0; }
+}
+
+function cargarGoogle() {
+  if (window.google && google.accounts && google.accounts.id) return Promise.resolve();
+  return new Promise((ok, err) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true; s.defer = true;
+    s.onload = ok;
+    s.onerror = () => err(new Error('sin conexion con Google'));
+    document.head.appendChild(s);
+  });
+}
+
+let entregarCredencial = null;
+async function prepararGoogle() {
+  await cargarGoogle();
+  google.accounts.id.initialize({
+    client_id: CONFIG.CLIENT_ID,
+    callback: (r) => { if (entregarCredencial) entregarCredencial(r.credential); },
+    auto_select: true,
+    cancel_on_tap_outside: false,
+    hd: CONFIG.DOMINIO
+  });
+}
+
+/** Valida la credencial contra el backend y abre la sesion local. */
+async function abrirSesion(jwt) {
+  idToken = { valor: jwt, exp: vencimientoDe(jwt) };
+  localStorage.setItem('idToken', JSON.stringify(idToken));
+
+  let r;
+  try { r = await enviar({ accion: 'sesion' }); }
+  catch (e) { return { ok: false, error: 'sin conexion' }; }
+  if (!r.ok) return r;
+
+  sesion = { email: r.email, admin: !!r.admin,
+             hasta: Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
+  localStorage.setItem('sesion', JSON.stringify(sesion));
+  sesionVencida = false;
+  return { ok: true };
+}
+
+function cerrarSesion() {
+  sesion = null;
+  idToken = { valor: '', exp: 0 };
+  localStorage.removeItem('sesion');
+  localStorage.removeItem('idToken');
+  try { google.accounts.id.disableAutoSelect(); } catch (e) { /* sin red */ }
+  ver('login');
+  pintarLogin();
+}
+
+/**
+ * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
+ * Solo se usa al sincronizar: guardar un parto nunca depende de esto.
+ */
+async function tokenVigente() {
+  if (idToken.valor && idToken.exp - 60000 > Date.now()) return idToken.valor;
+  if (!navigator.onLine) return '';
+
+  try {
+    await prepararGoogle();
+    const jwt = await new Promise((ok) => {
+      const cortar = setTimeout(() => { entregarCredencial = null; ok(''); }, 8000);
+      entregarCredencial = (c) => { clearTimeout(cortar); entregarCredencial = null; ok(c); };
+      google.accounts.id.prompt();
+    });
+    if (!jwt) return '';
+    idToken = { valor: jwt, exp: vencimientoDe(jwt) };
+    localStorage.setItem('idToken', JSON.stringify(idToken));
+    return jwt;
+  } catch (e) {
+    return '';
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Listas (Maestro)                                                    */
@@ -325,7 +429,6 @@ function armarPayload() {
   const p = {
     uuid: (crypto.randomUUID ? crypto.randomUUID()
            : Date.now() + '-' + Math.random().toString(16).slice(2)),
-    token: cfg.token,
     dispositivo: cfg.dispositivo,
     cargado_en: new Date().toISOString(),
     operario: $('fOperario').value,
@@ -409,26 +512,36 @@ function limpiar() {
 
 let sincronizando = false;
 
+/**
+ * El ID token se adjunta en el momento de enviar, no al guardar: un parto que
+ * estuvo dos dias en la cola no puede llevar una credencial vencida.
+ */
 async function enviar(payload) {
   // text/plain = "simple request": no dispara el preflight OPTIONS,
   // que Apps Script no sabe responder.
   const r = await fetch(cfg.url, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
     redirect: 'follow'
   });
   return r.json();
 }
 
 async function sincronizar() {
-  if (sincronizando || !cfg.url || !cfg.token || !navigator.onLine) return;
+  if (sincronizando || !cfg.url || !sesion || !navigator.onLine) return;
   sincronizando = true;
   pintarBadge();
   try {
     const pendientes = (await todosLocal())
       .filter((r) => r.estado === 'pendiente')
       .sort((a, b) => a.creado - b.creado);
+    if (!pendientes.length) { sesionVencida = false; return; }
+
+    // Sin credencial vigente no se intenta: los partos quedan en la cola,
+    // intactos, y el badge avisa que hay que iniciar sesion.
+    if (!(await tokenVigente())) { sesionVencida = true; return; }
+    sesionVencida = false;
 
     for (const reg of pendientes) {
       let res;
@@ -450,7 +563,8 @@ async function sincronizar() {
         reg.estado = 'error';
         reg.error = (res.detalles || []).join(' · ');
       } else {
-        // Token mal o error del servidor: cortar, no quemar la cola entera.
+        // Sesion caida o error del servidor: cortar, no quemar la cola entera.
+        if (res && res.sesion === false) sesionVencida = true;
         reg.intentos++;
         reg.error = (res && res.error) || 'error del servidor';
         await guardarLocal(reg);
@@ -512,10 +626,20 @@ async function refrescar() {
 function pintarBadge(pend, err) {
   const b = $('badgeSync');
   const p = pend === undefined ? null : pend;
-  b.className = 'badge ' + (!navigator.onLine ? 'off-line' : p ? 'pend' : 'on-line');
+  const mal = sesionVencida || !navigator.onLine;
+  b.className = 'badge ' + (mal ? 'off-line' : p ? 'pend' : 'on-line');
   $('badgeTxt').textContent = sincronizando ? 'Sincronizando…'
+    : sesionVencida ? (p ? `Sesión vencida · ${p} en espera` : 'Sesión vencida')
     : !navigator.onLine ? (p ? `Sin señal · ${p} en espera` : 'Sin señal')
     : p ? `${p} en espera` : (err ? `${err} para revisar` : 'Sincronizado');
+}
+
+/** La pestaña Ajustes solo se le muestra a los administradores. */
+function pintarPermisos() {
+  const tab = document.querySelector('.tab[data-v="config"]');
+  const admin = !!(sesion && sesion.admin);
+  tab.classList.toggle('hidden', !admin);
+  if (!admin && vistaActual() === 'config') ver('form');
 }
 
 /* ------------------------------------------------------------------ */
@@ -523,15 +647,27 @@ function pintarBadge(pend, err) {
 /* ------------------------------------------------------------------ */
 
 function ver(v) {
+  // Puerta unica: esconder la pestaña no alcanza si cualquier otro camino
+  // (el badge, un link) puede abrir la vista igual.
+  if (v === 'config' && !(sesion && sesion.admin)) v = 'form';
+
   document.querySelectorAll('.view').forEach((x) => x.classList.add('hidden'));
   $('v-' + v).classList.remove('hidden');
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.v === v));
   $('body').scrollTop = 0;
+
+  // Sin sesion no hay pestañas ni botones: solo la pantalla de acceso.
+  const enLogin = v === 'login';
+  document.querySelector('.tabs').classList.toggle('hidden', enLogin);
+  $('foot').classList.toggle('hidden', enLogin);
+  $('badgeSync').classList.toggle('hidden', enLogin);
+  if (enLogin) return;
+
   pintarPie(v);
   if (v === 'config') pintarDiagnostico();
 }
 
-const vistaActual = () => document.querySelector('.tab.on').dataset.v;
+const vistaActual = () => (document.querySelector('.tab.on') || { dataset: {} }).dataset.v;
 
 function pintarPie(v) {
   const vista = v || vistaActual();
@@ -568,10 +704,10 @@ function avisar(txt, malo) {
 /* ------------------------------------------------------------------ */
 
 async function bajarMaestro() {
-  if (!cfg.url || !cfg.token) return false;
+  if (!cfg.url || !sesion) return false;
   try {
-    const r = await fetch(`${cfg.url}?action=maestro&token=${encodeURIComponent(cfg.token)}`);
-    const j = await r.json();
+    if (!(await tokenVigente())) { sesionVencida = true; return false; }
+    const j = await enviar({ accion: 'maestro' });
     if (!j.ok) { $('estadoConfig').textContent = 'El servicio respondió: ' + j.error; return false; }
     listas = Object.assign({}, LISTAS_BASE, j.listas);
     localStorage.setItem('listas', JSON.stringify(j.listas));
@@ -582,12 +718,45 @@ async function bajarMaestro() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Pantalla de acceso                                                  */
+/* ------------------------------------------------------------------ */
+
+async function pintarLogin() {
+  const estado = $('estadoLogin');
+  $('btnGoogle').innerHTML = '';
+
+  if (!navigator.onLine) {
+    estado.innerHTML = 'Sin señal. Para iniciar sesión por primera vez hace falta conexión — ' +
+                       'acercá la tablet al WiFi de la oficina.';
+    return;
+  }
+  estado.textContent = '';
+
+  try {
+    await prepararGoogle();
+  } catch (e) {
+    estado.textContent = 'No se pudo contactar a Google. Revisá la conexión.';
+    return;
+  }
+
+  entregarCredencial = async (jwt) => {
+    estado.textContent = 'Verificando…';
+    const r = await abrirSesion(jwt);
+    if (!r.ok) { estado.textContent = r.error || 'No se pudo iniciar sesión.'; return; }
+    arrancarApp();
+  };
+
+  google.accounts.id.renderButton($('btnGoogle'),
+    { theme: 'outline', size: 'large', text: 'signin_with', locale: 'es', width: 260 });
+  google.accounts.id.prompt();     // si ya hay sesion de Google, entra solo
+}
+
 function pintarDiagnostico() {
-  $('fUrl').value = cfg.url;
-  $('fToken').value = cfg.token;
   $('fDispositivo').value = cfg.dispositivo;
   todosLocal().then((t) => {
     $('diag').innerHTML = [
+      `Sesión: <b>${sesion ? sesion.email : 'ninguna'}</b>${sesion && sesion.admin ? ' (admin)' : ''}`,
       `Conexión: <b>${navigator.onLine ? 'con señal' : 'sin señal'}</b>`,
       `Registros locales: ${t.length} (pendientes ${t.filter((r) => r.estado === 'pendiente').length},
        con error ${t.filter((r) => r.estado === 'error').length})`,
@@ -599,24 +768,38 @@ function pintarDiagnostico() {
 }
 
 $('btnGuardarConfig').onclick = async () => {
-  cfg.url = $('fUrl').value.trim();
-  cfg.token = $('fToken').value.trim();
   cfg.dispositivo = $('fDispositivo').value.trim() || 'tablet';
-  ['url', 'token', 'dispositivo'].forEach((k) => localStorage.setItem(k, cfg[k]));
-  $('estadoConfig').textContent = 'Probando…';
-  const ok = await bajarMaestro();
-  $('estadoConfig').textContent = ok
-    ? 'Conectado. Listas actualizadas desde la planilla.'
-    : 'No se pudo conectar. Revisá URL y token (o puede ser falta de señal).';
+  localStorage.setItem('dispositivo', cfg.dispositivo);
+  $('estadoConfig').textContent = 'Guardado.';
   pintarDiagnostico();
-  sincronizar();
 };
+$('btnSalir').onclick = cerrarSesion;
 $('btnBajarMaestro').onclick = async () => {
   $('estadoConfig').textContent = (await bajarMaestro())
     ? 'Listas actualizadas.' : 'No se pudieron actualizar.';
 };
 $('btnReintentar').onclick = () => { sincronizar(); avisar('Reintentando…'); };
-$('badgeSync').onclick = () => ver('config');
+
+$('badgeSync').onclick = () => {
+  if (sesion && sesion.admin) return ver('config');
+  if (sesionVencida) { ver('login'); return pintarLogin(); }
+  sincronizar();
+  avisar('Sincronizando…');
+};
+
+/* Salida de emergencia: mantener apretado el logo 2 segundos cierra la sesion.
+   Sin esto, una tablet con la cuenta de dispositivo queda trabada para siempre:
+   "Cerrar sesion" vive en Ajustes, y Ajustes no se le muestra a esa cuenta. */
+(function salidaPorLogo() {
+  const logo = document.querySelector('.logo');
+  let reloj = null;
+  const soltar = () => { clearTimeout(reloj); reloj = null; };
+  logo.addEventListener('pointerdown', () => {
+    reloj = setTimeout(() => { avisar('Cerrando sesión…'); cerrarSesion(); }, 2000);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) =>
+    logo.addEventListener(ev, soltar));
+})();
 
 /* ------------------------------------------------------------------ */
 /* Arranque                                                            */
@@ -655,15 +838,18 @@ setInterval(sincronizar, 30000);
     refrescar();
   }, 60000);
 
-  if (!cfg.url || !cfg.token) {
-    ver('config');
-    $('estadoConfig').textContent = 'Falta configurar la conexión con la planilla.';
-  } else {
-    bajarMaestro();
-    sincronizar();
-  }
+  if (sesion) arrancarApp();
+  else { ver('login'); pintarLogin(); }
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 })();
+
+/** Se llama al arrancar con sesion valida, o apenas se inicia sesion. */
+function arrancarApp() {
+  pintarPermisos();
+  ver('form');
+  bajarMaestro();
+  sincronizar();
+}

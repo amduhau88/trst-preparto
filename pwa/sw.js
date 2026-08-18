@@ -6,11 +6,12 @@
  * Subir CACHE cuando cambie index.html / app.js, si no la tablet
  * sigue sirviendo la version vieja desde el cache.
  */
-const CACHE = 'preparto-v2';
+const CACHE = 'preparto-v3';
 const SHELL = [
   './',
   './index.html',
   './app.js',
+  './config.js',
   './manifest.json',
   './img/aed.png',
   './img/aed@2x.png',
@@ -36,7 +37,11 @@ self.addEventListener('fetch', (e) => {
 
   // Nunca cachear las llamadas a Apps Script: son datos, no shell.
   // Si se cachearan, la tablet leeria listas viejas y creeria haber sincronizado.
-  if (req.url.includes('script.google.com') || req.url.includes('googleusercontent.com')) return;
+  // Tampoco la libreria de Google: una copia vieja rompe el login en silencio.
+  if (req.url.includes('script.google.com') ||
+      req.url.includes('googleusercontent.com') ||
+      req.url.includes('accounts.google.com') ||
+      req.url.includes('gstatic.com')) return;
 
   // Cache-first: el shell no cambia y asi abre instantaneo y sin red.
   e.respondWith(

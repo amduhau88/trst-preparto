@@ -20,6 +20,11 @@ var SEXO_MUERTO = ['4', '7'];
 var SEXO_MELLIZO = ['2', '8'];
 var LOCK_MS = 30000;
 
+// Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
+var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
+var DOMINIO = 'admin.com.ar';
+var TOKENINFO = 'https://oauth2.googleapis.com/tokeninfo?id_token=';
+
 /** Clave logica -> encabezado en la hoja Maestro (los nombres no coinciden con el formato). */
 var MAESTRO_MAP = {
   operario: 'Operario',
@@ -46,7 +51,21 @@ function doPost(e) {
   try {
     var payload = JSON.parse((e && e.postData && e.postData.contents) || '{}');
 
-    if (!tokenValido_(payload.token)) return json_({ ok: false, error: 'token invalido' });
+    var auth = autorizar_(payload);
+    if (!auth.ok) return json_({ ok: false, error: auth.error, sesion: false });
+
+    // Consultas de solo lectura. Van por POST para que el ID token no viaje
+    // en la URL, donde quedaria escrito en los logs de Google.
+    if (payload.accion === 'sesion') {
+      return json_({ ok: true, email: auth.email, admin: auth.admin });
+    }
+    if (payload.accion === 'maestro') {
+      return json_({ ok: true, listas: leerMaestro_(SpreadsheetApp.openById(SS_ID)) });
+    }
+    if (payload.accion === 'partos') {
+      return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha) });
+    }
+
     if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
 
     var lock = LockService.getScriptLock();
@@ -66,13 +85,13 @@ function doPost(e) {
       var errores = validar_(payload, listas);
       if (errores.length) {
         log.appendRow([payload.uuid, new Date(), JSON.stringify(payload), 0,
-                       'rechazado: ' + errores.join(' | ')]);
+                       'rechazado: ' + errores.join(' | '), auth.email]);
         return json_({ ok: false, error: 'validacion', detalles: errores });
       }
 
       // Se reclama el uuid en _log ANTES de escribir el formato: si algo falla
       // en el medio, el dato crudo quedo guardado y el renglon es diagnosticable.
-      log.appendRow([payload.uuid, new Date(), JSON.stringify(payload), 0, 'recibido']);
+      log.appendRow([payload.uuid, new Date(), JSON.stringify(payload), 0, 'recibido', auth.email]);
       var filaLog = log.getLastRow();
 
       var filas = construirFilas_(ss, payload);
@@ -104,13 +123,17 @@ function doGet(e) {
       return json_({ ok: true, hoja: ss.getName(), ts: new Date().toISOString() });
     }
 
+    // Camino para scripts (verificar.sh, crons). El navegador usa POST, para no
+    // dejar el ID token escrito en la URL.
     if (p.action === 'maestro') {
-      if (!tokenValido_(p.token)) return json_({ ok: false, error: 'token invalido' });
+      var a1 = autorizar_(p);
+      if (!a1.ok) return json_({ ok: false, error: a1.error });
       return json_({ ok: true, listas: leerMaestro_(ss) });
     }
 
     if (p.action === 'partos') {
-      if (!tokenValido_(p.token)) return json_({ ok: false, error: 'token invalido' });
+      var a2 = autorizar_(p);
+      if (!a2.ok) return json_({ ok: false, error: a2.error });
       return json_({ ok: true, partos: partosDelDia_(ss, p.fecha) });
     }
 
@@ -299,6 +322,77 @@ function json_(obj) {
 function tokenValido_(token) {
   var esperado = PropertiesService.getScriptProperties().getProperty('TOKEN');
   return !!esperado && token === esperado;
+}
+
+/* ------------------------------------------------------------------ */
+/* Identidad                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Dos caminos de entrada, ninguno opcional:
+ *   - navegador (tablet): ID token de Google, dominio DOMINIO
+ *   - scripts (verificar.sh, crons): token compartido de Script Properties
+ * Sin uno de los dos, no se escribe nada.
+ */
+function autorizar_(datos) {
+  datos = datos || {};
+
+  if (datos.token && tokenValido_(datos.token)) {
+    return { ok: true, email: 'script', admin: true, via: 'token' };
+  }
+  if (!datos.id_token) {
+    return { ok: false, error: datos.token ? 'token invalido' : 'falta sesion' };
+  }
+
+  var info = verificarIdToken_(datos.id_token);
+  if (!info.ok) return info;
+  return { ok: true, email: info.email, admin: esAdmin_(info.email), via: 'google' };
+}
+
+/**
+ * Valida el ID token contra Google: firma, para quien fue emitido (aud) y de
+ * que dominio es la cuenta (hd). Las tres tienen que dar; con dos no alcanza.
+ */
+function verificarIdToken_(idToken) {
+  var cache = CacheService.getScriptCache();
+  var clave = 'idt_' + Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken));
+
+  var guardado = cache.get(clave);
+  if (guardado) return JSON.parse(guardado);
+
+  var res;
+  try {
+    res = UrlFetchApp.fetch(TOKENINFO + encodeURIComponent(idToken), { muteHttpExceptions: true });
+  } catch (err) {
+    return { ok: false, error: 'no se pudo validar la sesion' };
+  }
+  if (res.getResponseCode() !== 200) return { ok: false, error: 'sesion invalida' };
+
+  var d;
+  try { d = JSON.parse(res.getContentText()); }
+  catch (err) { return { ok: false, error: 'respuesta ilegible de Google' }; }
+
+  if (d.aud !== CLIENT_ID) return { ok: false, error: 'token emitido para otra aplicacion' };
+  if (d.hd !== DOMINIO) return { ok: false, error: 'la cuenta no es de ' + DOMINIO };
+  if (String(d.email_verified) !== 'true') return { ok: false, error: 'mail sin verificar' };
+
+  var restanMs = Number(d.exp) * 1000 - Date.now();
+  if (!(restanMs > 0)) return { ok: false, error: 'sesion vencida' };
+
+  var r = { ok: true, email: String(d.email).toLowerCase() };
+  // Cachear evita una llamada a Google por cada parto al drenar una cola larga.
+  cache.put(clave, JSON.stringify(r), Math.max(1, Math.min(300, Math.floor(restanMs / 1000))));
+  return r;
+}
+
+/** Quienes ven la pestaña Ajustes. Se configura en Script Properties. */
+function esAdmin_(email) {
+  var lista = PropertiesService.getScriptProperties().getProperty('ADMINS') || '';
+  return lista.split(',')
+              .map(function (x) { return x.trim().toLowerCase(); })
+              .filter(String)
+              .indexOf(String(email).toLowerCase()) !== -1;
 }
 
 /** Acepta 'YYYY-MM-DD' o 'DD/MM/YYYY'. Devuelve Date local o null. */

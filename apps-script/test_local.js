@@ -132,6 +132,22 @@ let libro = nuevoLibro();
 
 const dosDigitos = (n) => String(n).padStart(2, '0');
 
+/* Identidad simulada: un "Google" de mentira que devuelve lo que le pidamos,
+   para poder probar cada forma de token invalido sin depender de la red. */
+const CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
+const ADMINS = 'andresduhau@admin.com.ar';
+const tokens = {};                 // id_token -> lo que contesta tokeninfo
+let llamadasAGoogle = 0;
+
+function registrarToken(nombre, campos) {
+  tokens[nombre] = Object.assign({
+    aud: CLIENT_ID, hd: 'admin.com.ar', email: 'tablet.maternidad@admin.com.ar',
+    email_verified: 'true', exp: String(Math.floor(Date.now() / 1000) + 3600)
+  }, campos);
+  return nombre;
+}
+
+const cacheFalso = {};
 const sandbox = {
   console,
   Date,   // compartir el Date del host para que `instanceof Date` funcione en las pruebas
@@ -139,9 +155,26 @@ const sandbox = {
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
   PropertiesService: {
     getScriptProperties: () => ({
-      getProperty: (k) => (k === 'TOKEN' ? TOKEN : null),
+      getProperty: (k) => (k === 'TOKEN' ? TOKEN : k === 'ADMINS' ? ADMINS : null),
       setProperty() {}
     })
+  },
+  CacheService: {
+    getScriptCache: () => ({
+      get: (k) => (cacheFalso[k] === undefined ? null : cacheFalso[k]),
+      put: (k, v) => { cacheFalso[k] = v; }
+    })
+  },
+  UrlFetchApp: {
+    fetch(url) {
+      llamadasAGoogle++;
+      const t = decodeURIComponent(url.split('id_token=')[1] || '');
+      const d = tokens[t];
+      return {
+        getResponseCode: () => (d ? 200 : 400),
+        getContentText: () => JSON.stringify(d || { error: 'invalid_token' })
+      };
+    }
   },
   ContentService: {
     MimeType: { JSON: 'json' },
@@ -149,6 +182,9 @@ const sandbox = {
   },
   Logger: { log: () => {} },
   Utilities: {
+    DigestAlgorithm: { SHA_256: 'sha256' },
+    computeDigest: (_alg, txt) => Array.from(String(txt)).map((c) => c.charCodeAt(0)),
+    base64EncodeWebSafe: (bytes) => Buffer.from(bytes).toString('base64url'),
     getUuid: () => 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
     formatDate(d, tz, fmt) {
       const s = {
@@ -271,6 +307,65 @@ r = post(partoBase({ uuid: 'u-fecha-0009', fecha_parto: '12/08/2026' }));
 check('acepta DD/MM/YYYY', r.ok === true && formato()[0][2].getDate() === 12, JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-fecha-0010', fecha_parto: '2026-13-45' }));
 check('rechaza fecha invalida', r.ok === false, JSON.stringify(r));
+
+console.log('\n9. Identidad: solo cuentas del dominio');
+libro = nuevoLibro();
+const conSesion = (idt, extra) => post(Object.assign(partoBase({ uuid: 'u-' + idt }), extra || {},
+  { token: undefined, id_token: idt }));
+
+registrarToken('bueno', {});
+registrarToken('otro-dominio', { hd: 'gmail.com', email: 'ajeno@gmail.com' });
+registrarToken('sin-hd', { hd: undefined, email: 'suelto@gmail.com' });
+registrarToken('otra-app', { aud: '999-otra.apps.googleusercontent.com' });
+registrarToken('vencido', { exp: String(Math.floor(Date.now() / 1000) - 60) });
+registrarToken('sin-verificar', { email_verified: 'false' });
+registrarToken('admin', { email: 'andresduhau@admin.com.ar' });
+
+check('acepta cuenta del dominio', conSesion('bueno').ok === true, JSON.stringify(conSesion('bueno')));
+check('rechaza otro dominio', /no es de admin.com.ar/.test(conSesion('otro-dominio').error || ''),
+      JSON.stringify(conSesion('otro-dominio')));
+check('rechaza cuenta sin dominio (Gmail personal)',
+      /no es de admin.com.ar/.test(conSesion('sin-hd').error || ''), JSON.stringify(conSesion('sin-hd')));
+check('rechaza token de otra aplicacion',
+      /otra aplicacion/.test(conSesion('otra-app').error || ''), JSON.stringify(conSesion('otra-app')));
+check('rechaza sesion vencida', /vencida/.test(conSesion('vencido').error || ''),
+      JSON.stringify(conSesion('vencido')));
+check('rechaza mail sin verificar', /sin verificar/.test(conSesion('sin-verificar').error || ''),
+      JSON.stringify(conSesion('sin-verificar')));
+check('rechaza token que Google no conoce', conSesion('inventado').ok === false);
+check('sin token ni sesion no entra',
+      /falta sesion/.test(post({ uuid: 'x', operario: 'Julio' }).error || ''));
+check('los rechazos no escribieron filas', formato().length === 1,
+      'filas=' + formato().length + ' (solo la de "bueno")');
+
+console.log('\n10. Admin y acciones por POST');
+let s = post({ accion: 'sesion', id_token: 'admin' });
+check('sesion de admin marca admin', s.ok === true && s.admin === true, JSON.stringify(s));
+s = post({ accion: 'sesion', id_token: 'bueno' });
+check('cuenta de dispositivo NO es admin', s.ok === true && s.admin === false, JSON.stringify(s));
+check('el mail vuelve normalizado', s.email === 'tablet.maternidad@admin.com.ar', s.email);
+s = post({ accion: 'maestro', id_token: 'bueno' });
+check('maestro por POST con sesion', s.ok === true && s.listas.operario.length === 4, JSON.stringify(s).slice(0, 90));
+check('maestro por POST sin sesion rechaza', post({ accion: 'maestro' }).ok === false);
+s = post({ accion: 'partos', id_token: 'bueno', fecha: '2026-08-12' });
+check('partos por POST con sesion', s.ok === true && Array.isArray(s.partos), JSON.stringify(s).slice(0, 80));
+
+console.log('\n11. Convivencia con el camino de scripts');
+check('el token compartido sigue entrando', post(partoBase({ uuid: 'u-script-99' })).ok === true);
+check('maestro por GET con token compartido', get({ action: 'maestro', token: TOKEN }).ok === true);
+check('maestro por GET con token malo', get({ action: 'maestro', token: 'no' }).ok === false);
+check('_log guarda quien cargo cada parto',
+      log().some((l) => l[5] === 'tablet.maternidad@admin.com.ar') && log().some((l) => l[5] === 'script'),
+      JSON.stringify(log().map((l) => l[5])));
+
+console.log('\n12. Cache de verificacion');
+Object.keys(cacheFalso).forEach((k) => delete cacheFalso[k]);   // arrancar en frio
+llamadasAGoogle = 0;
+post(partoBase({ uuid: 'u-cache-1', token: undefined, id_token: 'bueno' }));
+post(partoBase({ uuid: 'u-cache-2', token: undefined, id_token: 'bueno' }));
+post(partoBase({ uuid: 'u-cache-3', token: undefined, id_token: 'bueno' }));
+check('3 partos con el mismo token = 1 sola consulta a Google', llamadasAGoogle === 1,
+      'llamadas=' + llamadasAGoogle);
 
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);
