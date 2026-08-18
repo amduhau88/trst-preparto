@@ -462,7 +462,12 @@ document.addEventListener('click', (e) => {
   const chip = e.target.closest('[data-chip]');
   if (chip) return elegirChip(chip);
   const step = e.target.closest('[data-step]');
-  if (step) return mover(step.dataset.step);
+  if (step) {
+    // Con dedo o mouse ya actuo pointerdown; este click es el eco. Por teclado
+    // (Enter/Espacio) no hay pointerdown, asi que ahi si hay que moverlo.
+    if (veniaDePuntero) { veniaDePuntero = false; return; }
+    return mover(step.dataset.step, step);
+  }
   const tab = e.target.closest('.tab');
   if (tab) return ver(tab.dataset.v);
 });
@@ -502,27 +507,37 @@ function elegirChip(chip) {
   if (clave === 'sexo') pintarTerneros();
 }
 
-function mover(spec) {
+/**
+ * Mueve un stepper. Si se le pasa el boton, escribe el numero directo en pantalla
+ * en vez de repintar la tarjeta entera: repintar destruiria el boton que el
+ * operario esta manteniendo apretado, y ademas parpadea feo al repetir rapido.
+ */
+function mover(spec, boton) {
   const [campo, pasoTxt] = spec.split(':');
   const paso = +pasoTxt;
+  const celda = boton ? boton.parentElement.querySelector('.val') : null;
+  const escribir = (html) => { celda.innerHTML = html; };
 
   if (campo.startsWith('peso')) {
     const t = st.terneros[+campo.slice(4)];
     t.peso = acotar(t.peso + paso, numeros('peso'));
-    return pintarTerneros();
+    return celda ? escribir(`${t.peso}<span>kg</span>`) : pintarTerneros();
   }
   if (campo.startsWith('brix')) {
     const c = st.terneros[+campo.slice(4)].cal;
+    const teniaExcepcion = !!c.brixExc;
     c.brixExc = '';                              // tocar el numero descarta la excepcion
     c.brix = acotar(c.brix + paso, numeros('calidad_sin_mejorar'));
-    return pintarCalostros();
+    // Solo hace falta repintar la primera vez, para apagar el chip de excepcion.
+    if (teniaExcepcion || !celda) return pintarCalostros();
+    return escribir(`${c.brix}<span>Brix</span>`);
   }
   if (campo.startsWith('mej')) {
     const c = st.terneros[+campo.slice(3)].cal;
     if (c.mejorado !== 'Si') return;
     c.mej = acotar((c.mej === VACIO ? medio('calidad_mejorado') : c.mej + paso),
                    numeros('calidad_mejorado'));
-    return pintarCalostros();
+    return celda ? escribir(`${c.mej}<span>Brix</span>`) : pintarCalostros();
   }
   if (campo === 'ltsMadre') {
     st.lts_madre = acotar((st.lts_madre === null ? medio('lts_madre') : st.lts_madre + paso),
@@ -530,6 +545,46 @@ function mover(spec) {
   }
   pintarSteppers();
 }
+
+/* ---------- mantener apretado para avanzar rapido ---------- */
+
+const REPETICION = { espera: 450, inicial: 300, minimo: 55, freno: 0.82 };
+let relojRepeticion = null;
+let veniaDePuntero = false;
+
+function arrancarRepeticion(spec, boton) {
+  frenarRepeticion();
+  mover(spec, boton);                        // el primer paso es inmediato
+
+  let intervalo = REPETICION.inicial;
+  const seguir = () => {
+    relojRepeticion = setTimeout(() => {
+      mover(spec, boton);
+      intervalo = Math.max(REPETICION.minimo, intervalo * REPETICION.freno);
+      seguir();
+    }, intervalo);
+  };
+  // Espera antes de arrancar: un toque normal no debe disparar la repeticion.
+  relojRepeticion = setTimeout(seguir, REPETICION.espera);
+}
+
+function frenarRepeticion() {
+  clearTimeout(relojRepeticion);
+  relojRepeticion = null;
+}
+
+document.addEventListener('pointerdown', (e) => {
+  const boton = e.target.closest('[data-step]');
+  if (!boton) return;
+  veniaDePuntero = true;                     // que el click no repita el paso
+  arrancarRepeticion(boton.dataset.step, boton);
+});
+
+// En window, no en el boton: al repintar, el boton apretado puede dejar de
+// existir y su pointerup nunca llegaria — la repeticion quedaria corriendo sola.
+['pointerup', 'pointercancel', 'blur'].forEach((ev) =>
+  addEventListener(ev, frenarRepeticion));
+addEventListener('visibilitychange', frenarRepeticion);
 
 const acotar = (v, lista) => !lista.length ? v
   : Math.min(Math.max(v, Math.min(...lista)), Math.max(...lista));

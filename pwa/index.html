@@ -111,7 +111,11 @@
   .stepper{display:flex;align-items:center;border:1px solid var(--line);border-radius:10px;
     overflow:hidden;background:#fff}
   .stepper button{width:52px;min-height:48px;border:none;background:var(--soft);font-size:22px;
-    color:var(--accent);cursor:pointer;font-family:inherit;font-weight:700}
+    color:var(--accent);cursor:pointer;font-family:inherit;font-weight:700;
+    /* Mantener apretado avanza rapido: no debe seleccionar texto, no debe hacer
+       scroll, y no debe abrir el menu contextual del long-press en iOS. */
+    touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+  .stepper button:active{background:var(--accent-soft)}
   .stepper .val{flex:1;text-align:center;font-size:19px;font-weight:700}
   .stepper .val span{font-size:12px;color:var(--ink-3);font-weight:600;margin-left:3px}
 

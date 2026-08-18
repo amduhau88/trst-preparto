@@ -296,6 +296,59 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('rechaza "---"', await page.evaluate(() => !rodeoValido('---')));
     check('rechaza texto', await page.evaluate(() => !rodeoValido('campo')));
 
+    console.log('\n3c. Steppers: mantener apretado avanza rapido');
+    const pesoAhora = () => page.$eval('#terneros .stepper .val', (e) => parseInt(e.textContent, 10));
+    const apretar = (sel) => page.evaluate((s) => {
+      document.querySelector(s).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    }, sel);
+    const soltar = () => page.evaluate(() => dispatchEvent(new PointerEvent('pointerup')));
+    const MAS = '#terneros .stepper button[data-step$=":1"]';
+
+    const p0 = await pesoAhora();
+    await apretar(MAS); await soltar();
+    const p1 = await pesoAhora();
+    check('un toque suelto suma exactamente 1', p1 === p0 + 1, `${p0} -> ${p1}`);
+
+    await apretar(MAS);
+    await esperar(1600);
+    await soltar();
+    const p2 = await pesoAhora();
+    check('mantenerlo apretado suma varios', p2 - p1 >= 4, `${p1} -> ${p2} en 1,6s`);
+
+    await esperar(700);
+    check('al soltar, FRENA', (await pesoAhora()) === p2, `siguio hasta ${await pesoAhora()}`);
+
+    // El caso que rompe todo: repintar destruye el boton apretado. Si el pointerup
+    // se escuchara en el boton y no en window, la repeticion no pararia nunca.
+    await apretar(MAS);
+    await esperar(900);
+    await page.evaluate(() => pintarTerneros());     // repinta: el boton deja de existir
+    await soltar();
+    const p3 = await pesoAhora();
+    await esperar(800);
+    check('frena aunque el boton se haya repintado', (await pesoAhora()) === p3,
+          `siguio hasta ${await pesoAhora()}`);
+
+    // No pasarse del maximo de Maestro (60 kg)
+    await apretar(MAS);
+    await esperar(3000);
+    await soltar();
+    check('no se pasa del maximo de la lista', (await pesoAhora()) === 60, String(await pesoAhora()));
+
+    // Arrancar cerca del minimo: lo que se prueba es que corte en 25, no cuantos
+    // pasos entran en N segundos.
+    await page.evaluate(() => { st.terneros[0].peso = 28; pintarTerneros(); });
+    await page.evaluate(() => {
+      document.querySelector('#terneros .stepper button[data-step$=":-1"]')
+        .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    });
+    await esperar(2000);
+    await soltar();
+    check('no baja del minimo de la lista', (await pesoAhora()) === 25, String(await pesoAhora()));
+
+    // Dejarlo en un valor razonable para las pruebas que siguen
+    await page.evaluate(() => { st.terneros[0].peso = 42; pintarTerneros(); });
+
     console.log('\n4. Carga con señal');
     await cargarParto(page, '4115', '24543');
     let c = await esperarSync(page);
