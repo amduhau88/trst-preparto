@@ -11,15 +11,28 @@ set -uo pipefail
 URL="${1:-${URL:-}}"
 TOKEN="${2:-${TOKEN:-}}"
 
+# Sin token explicito, se busca en el Llavero de macOS. Es lo comodo y lo seguro:
+# no queda en el historial, ni en un archivo, ni depende de que el portapapeles
+# tenga lo que uno cree que tiene.
+if [[ -z "$TOKEN" ]]; then
+  TOKEN="$(security find-generic-password -s trst-preparto-token -w 2>/dev/null || true)"
+fi
+
 if [[ -z "$URL" || -z "$TOKEN" ]]; then
   cat >&2 <<'USO'
-Faltan datos.
+Falta el token.
 
-  URL='https://script.google.com/macros/s/XXXX/exec' \
-  TOKEN="$(pbpaste)" \
-  ./scripts/verificar.sh
+Guardalo una sola vez en el Llavero (te lo va a pedir sin mostrarlo):
 
-(copiar el token al portapapeles antes de correrlo)
+  security add-generic-password -a "$USER" -s trst-preparto-token -w
+
+Despues alcanza con:
+
+  source config.local && ./scripts/verificar.sh "$URL"
+
+O, para una corrida suelta:
+
+  TOKEN="$(pbpaste)" ./scripts/verificar.sh "$URL"
 USO
   exit 2
 fi

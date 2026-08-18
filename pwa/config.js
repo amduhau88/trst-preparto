@@ -4,7 +4,7 @@
  * del dominio autorizado antes de escribir una sola fila.
  */
 window.CONFIG = {
-  URL_EXEC: 'https://script.google.com/macros/s/AKfycbw1eYQVupwun09E7jPqmE6VOvXrZycTxN8t60VISx4HlNyX6L5_uS238Sy9uxXdRkwZ/exec',
+  URL_EXEC: 'https://script.google.com/macros/s/AKfycbyqOHt_TgQmvLWGNPgSHZk9xFAJA_SRG3retUT6CajTlfYyuOniF4UjbQgp_y3COVMG/exec',
   CLIENT_ID: '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com',
   DOMINIO: 'admin.com.ar',
   // Cuanto vale la sesion cacheada sin volver a ver a Google. Es lo que permite
