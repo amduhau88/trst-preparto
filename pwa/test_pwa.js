@@ -166,6 +166,26 @@ const esperarSync = async (page, seg = 12) => {
     check('rodeo paso a ser desplegable',
           await page.evaluate(() => !!document.querySelector('#wrapRodeo select')));
 
+    console.log('\n1b. Marca y fecha Hoy/Ayer');
+    check('titulo en Title Case',
+          (await page.$eval('.appbar h1', (e) => e.textContent)) === 'Preparto — Carga de Parto',
+          await page.$eval('.appbar h1', (e) => e.textContent));
+    check('logo izquierdo dice TRST',
+          (await page.$eval('.logo', (e) => e.textContent.trim())) === 'TRST');
+    check('logo AED cargado y visible',
+          await page.$eval('.marca', (e) => e.complete && e.naturalWidth > 0 && e.offsetWidth > 0));
+    const chipsFecha = await page.$$eval('#cFecha .chip',
+      (cs) => cs.map((c) => ({ txt: c.textContent.trim(), val: c.dataset.val, on: c.classList.contains('on') })));
+    check('hay dos chips de fecha', chipsFecha.length === 2, JSON.stringify(chipsFecha));
+    check('Hoy viene seleccionado', chipsFecha[0].on && !chipsFecha[1].on);
+    const ddmm = /^(Hoy|Ayer)\d{2}\/\d{2}\/\d{4}$/;
+    check('muestran la fecha DD/MM/AAAA', chipsFecha.every((c) => ddmm.test(c.txt)),
+          JSON.stringify(chipsFecha.map((c) => c.txt)));
+    const dif = (new Date(chipsFecha[0].val) - new Date(chipsFecha[1].val)) / 86400000;
+    check('Ayer es exactamente un dia antes', dif === 1, 'diferencia=' + dif);
+    check('ya no hay selector de fecha libre',
+          await page.evaluate(() => !document.querySelector('input[type="date"]')));
+
     console.log('\n2. Carga con señal');
     await cargarParto(page, '4115', '24543');
     let c = await esperarSync(page);
@@ -259,6 +279,40 @@ const esperarSync = async (page, seg = 12) => {
     // 1 (con senal) + 3 (sin senal) + 1 (servidor caido) = 5. El intento
     // incompleto no debe sumar ninguno.
     check('el formulario frena el guardado incompleto', c.total === 5, JSON.stringify(c));
+
+    console.log('\n9. La fecha elegida es la que se guarda');
+    await page2.evaluate(() => {                       // deshacer el sabotaje del caso 8
+      document.getElementById('fOperario').innerHTML = '<option>Julio</option>';
+    });
+    const ayerISO = await page2.evaluate(() => {
+      const ayer = [...document.querySelectorAll('#cFecha .chip')][1];
+      ayer.click();
+      return ayer.dataset.val;
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    await cargarParto(page2, '777', '8888');
+    await esperarSync(page2, 12);
+    const guardado = await page2.evaluate((v) => new Promise((ok) => {
+      const req = indexedDB.open('preparto', 1);
+      req.onsuccess = () => {
+        const g = req.result.transaction('partos', 'readonly').objectStore('partos').getAll();
+        g.onsuccess = () => ok((g.result.find((r) => r.payload.id_vaca === v) || {}).payload);
+      };
+    }), '777');
+    check('guarda con la fecha de Ayer', guardado && guardado.fecha_parto === ayerISO,
+          JSON.stringify({ esperado: ayerISO, guardado: guardado && guardado.fecha_parto }));
+
+    console.log('\n10. Cruce de medianoche');
+    const reancla = await page2.evaluate(() => {
+      st.fecha = '2020-01-01';                         // simular seleccion vieja
+      pintarFechas();
+      const hoy = new Date();
+      const iso = new Date(hoy.getTime() - hoy.getTimezoneOffset() * 60000)
+        .toISOString().slice(0, 10);
+      return { fecha: st.fecha, hoy: iso, marcados: document.querySelectorAll('#cFecha .chip.on').length };
+    });
+    check('una seleccion vencida vuelve a Hoy', reancla.fecha === reancla.hoy, JSON.stringify(reancla));
+    check('queda exactamente un chip marcado', reancla.marcados === 1, JSON.stringify(reancla));
 
     check('sin errores de JS en toda la corrida', errores.length === 0, errores.slice(0, 3).join(' | '));
     check('sin recursos faltantes (404)', noEncontrados.length === 0, noEncontrados.join(', '));

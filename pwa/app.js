@@ -106,9 +106,37 @@ const todosLocal = () => tx('readonly', (s) => s.getAll());
 /* ------------------------------------------------------------------ */
 
 const st = {
-  tipo_parto: '', sexo: '', brix: null, brixExc: '', mejorado: 'No', mej: VACIO,
+  fecha: '', tipo_parto: '', sexo: '', brix: null, brixExc: '', mejorado: 'No', mej: VACIO,
   consumido: 'Si', lts_madre: null, lts_ternero: '', tambo: '', terneros: []
 };
+
+/* ---------- fecha: solo Hoy o Ayer ---------- */
+
+const aISO = (d) =>
+  new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const aDDMMAAAA = (iso) => iso.split('-').reverse().join('/');
+
+function fechasPosibles() {
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const ayer = new Date(hoy); ayer.setDate(ayer.getDate() - 1);
+  return [{ etiqueta: 'Hoy', iso: aISO(hoy) }, { etiqueta: 'Ayer', iso: aISO(ayer) }];
+}
+
+/**
+ * Cada chip muestra la fecha concreta: el operario ve con que dia va a quedar
+ * registrado el parto en vez de tener que deducirlo.
+ */
+function pintarFechas() {
+  const opciones = fechasPosibles();
+  // Si la app quedo abierta toda la noche y cruzo la medianoche, la seleccion
+  // vieja ya no corresponde a ningun boton: se reancla en Hoy.
+  if (!opciones.some((o) => o.iso === st.fecha)) st.fecha = opciones[0].iso;
+
+  $('cFecha').innerHTML = opciones.map((o) =>
+    `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
+             data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
+  ).join('');
+}
 
 const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0));
 const esMellizo = () => SEXO_MELLIZO.includes(String(st.sexo).charAt(0));
@@ -135,6 +163,7 @@ function opciones(sel, valores, elegido) {
 }
 
 function pintarFormulario() {
+  pintarFechas();
   opciones($('fOperario'), listas.operario, $('fOperario').value);
   opciones($('fHora'), listas.hora_nacimiento, $('fHora').value || '07:00');
 
@@ -242,6 +271,7 @@ function elegirChip(chip) {
     return pintarSteppers();
   }
   st[clave] = val;
+  if (clave === 'fecha') refrescar();          // la lista del dia depende de la fecha
   if (clave === 'sexo') pintarTerneros();
   if (clave === 'mejorado') {
     st.mej = val === 'Si' ? (st.mej === VACIO ? medio('calidad_mejorado') : st.mej) : VACIO;
@@ -300,7 +330,7 @@ function armarPayload() {
     cargado_en: new Date().toISOString(),
     operario: $('fOperario').value,
     id_vaca: $('fVaca').value.trim(),
-    fecha_parto: $('fFecha').value,
+    fecha_parto: st.fecha,
     hora_nacimiento: $('fHora').value,
     tipo_parto: st.tipo_parto,
     sexo: st.sexo,
@@ -440,8 +470,7 @@ async function sincronizar() {
 
 async function refrescar() {
   const todos = await todosLocal();
-  const hoy = $('fFecha').value;
-  const delDia = todos.filter((r) => r.payload.fecha_parto === hoy)
+  const delDia = todos.filter((r) => r.payload.fecha_parto === st.fecha)
                       .sort((a, b) => b.creado - a.creado);
   const pendientes = todos.filter((r) => r.estado === 'pendiente').length;
   const errores = todos.filter((r) => r.estado === 'error').length;
@@ -599,11 +628,9 @@ setInterval(sincronizar, 30000);
 
 (async function iniciar() {
   const hoy = new Date();
-  $('fFecha').value = new Date(hoy.getTime() - hoy.getTimezoneOffset() * 60000)
-    .toISOString().slice(0, 10);
+  st.fecha = aISO(hoy);
   $('subFecha').textContent = hoy.toLocaleDateString('es-AR',
     { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  $('fFecha').addEventListener('change', refrescar);
 
   st.tipo_parto = (listas.tipo_parto || [''])[0];
   st.sexo = (listas.sexo || [''])[0];
@@ -614,6 +641,19 @@ setInterval(sincronizar, 30000);
 
   pintarFormulario();
   await refrescar();
+
+  // La tablet puede quedar abierta toda la noche en el corral: si cruza la
+  // medianoche, "Hoy" tiene que pasar a ser el dia nuevo.
+  let hoyConocido = aISO(new Date());
+  setInterval(() => {
+    const hoyAhora = fechasPosibles()[0].iso;
+    if (hoyAhora === hoyConocido) return;
+    hoyConocido = hoyAhora;
+    pintarFechas();
+    $('subFecha').textContent = new Date().toLocaleDateString('es-AR',
+      { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    refrescar();
+  }, 60000);
 
   if (!cfg.url || !cfg.token) {
     ver('config');
