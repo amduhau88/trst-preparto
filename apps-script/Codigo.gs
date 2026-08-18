@@ -18,6 +18,14 @@ var HOJA_LOG = '_log';
 var VACIO = '---';
 var SEXO_MUERTO = ['4', '7'];
 var SEXO_MELLIZO = ['2', '8'];
+// El codigo del parto ya dice el sexo, salvo el 8 (M+M o M+H), que es ambiguo:
+// ahi el sexo de cada cria hay que cargarlo.
+var SEXO_POR_CODIGO = { '1': 'Hembra', '2': 'Hembra', '4': 'Hembra', '6': 'Macho', '7': 'Macho' };
+
+// Posiciones (base 0) en la fila armada. A-S es el formato; de T en adelante,
+// los datos por cria y las columnas tecnicas.
+var COL_ID_PARTO = 21;   // V
+var ANCHO_FILA = 26;     // A..Z
 var LOCK_MS = 30000;
 
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
@@ -103,7 +111,7 @@ function doPost(e) {
       return json_({
         ok: true,
         uuid: payload.uuid,
-        id_parto: filas[0][19],
+        id_parto: filas[0][COL_ID_PARTO],
         filas_escritas: filas.length
       });
     } finally {
@@ -150,27 +158,36 @@ function doGet(e) {
 /**
  * Un parto -> una fila POR TERNERO. Parto simple = 1 fila (igual que hoy).
  * Mellizos = 2 filas con el mismo ID Parto y Cria 1/2 y 2/2.
+ *
+ * Cada cria lleva SU sexo, SU estado y SU calostro: con el codigo 8 (M+M o M+H)
+ * no habia forma de saber que fue cada una, ni de anotar que a cada ternero se
+ * le dio un calostro distinto. Los litros que produjo la madre son del parto,
+ * no de la cria, asi que se repiten iguales en las dos filas.
  */
 function construirFilas_(ss, p) {
   var tz = ss.getSpreadsheetTimeZone();
   var fecha = parseFecha_(p.fecha_parto);
-  var muerto = esMuerto_(p.sexo);
-  var cal = p.calostro || {};
+  var partoMuerto = esMuerto_(p.sexo);
   var idParto = Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + p.id_vaca + '-' +
                 String(p.uuid).replace(/-/g, '').substring(0, 4);
   var cargadoEn = p.cargado_en ? new Date(p.cargado_en) : new Date();
+  var ltsMadre = ltsMadre_(p);
 
-  var terneros = muerto ? [null] : (p.terneros && p.terneros.length ? p.terneros : [null]);
+  var terneros = partoMuerto ? [null] : (p.terneros && p.terneros.length ? p.terneros : [null]);
 
   return terneros.map(function (t, i) {
+    var muerto = partoMuerto || !t || t.vive === false;
+    // Se acepta el calostro por cria y, si no viene, el del parto (formato viejo).
+    var cal = (t && t.calostro) || p.calostro || {};
+
     // Cria muerta: el formato lleva '---' de G a P, igual que se hacia a mano.
-    var bloque = muerto || !t
+    var bloque = muerto
       ? [VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO]
       : [
           str_(t.id_ternero), str_(t.raza), num_(t.peso),
           str_(cal.calidad_sin_mejorar), str_(cal.mejorado),
           str_(cal.calidad_mejorado || VACIO), str_(cal.consumido),
-          num_(cal.lts_madre), num_(cal.lts_ternero), str_(cal.id_vaca_origen)
+          num_(ltsMadre), num_(cal.lts_ternero), str_(cal.id_vaca_origen)
         ];
 
     return [
@@ -178,9 +195,22 @@ function construirFilas_(ss, p) {
       str_(p.tipo_parto), str_(p.sexo)
     ].concat(bloque).concat([
       str_(p.tambo), str_(p.rodeo), str_(p.notas),
+      sexoCria_(p, t), muerto ? 'Muerto' : 'Vivo',
       idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn, str_(p.dispositivo)
     ]);
   });
+}
+
+/** Los litros de la madre son del parto. Se acepta arriba o dentro de calostro. */
+function ltsMadre_(p) {
+  if (p.lts_madre !== undefined && p.lts_madre !== '') return p.lts_madre;
+  return (p.calostro || {}).lts_madre;
+}
+
+/** El sexo de la cria: el que se cargo, o el que ya implica el codigo del parto. */
+function sexoCria_(p, t) {
+  if (t && t.sexo) return String(t.sexo);
+  return SEXO_POR_CODIGO[String(p.sexo).charAt(0)] || '';
 }
 
 /* ------------------------------------------------------------------ */
@@ -217,24 +247,42 @@ function validar_(p, listas) {
     err.push('sexo "' + p.sexo + '" no es de parto doble pero vinieron ' +
              terneros.length + ' terneros');
   }
+  // Los litros de la madre son del parto, no de la cria.
+  enLista_(err, listas, 'lts_madre', ltsMadre_(p));
+
+  var ambiguo = String(p.sexo).charAt(0) === '8';   // 8 = M+M o M+H: hay que decir cual
+
   terneros.forEach(function (t, i) {
-    enLista_(err, listas, 'raza', t.raza, 'ternero ' + (i + 1) + ': ');
-    enLista_(err, listas, 'peso', t.peso, 'ternero ' + (i + 1) + ': ');
+    var pre = 'ternero ' + (i + 1) + ': ';
+    if (ambiguo && !t.sexo) err.push(pre + 'falta el sexo (el codigo 8 no lo dice)');
+    if (t.sexo && ['Macho', 'Hembra'].indexOf(String(t.sexo)) === -1) {
+      err.push(pre + 'sexo invalido: "' + t.sexo + '"');
+    }
+    if (t.vive === false) return;                   // cria muerta: va toda en '---'
+
+    enLista_(err, listas, 'raza', t.raza, pre);
+    enLista_(err, listas, 'peso', t.peso, pre);
+
+    var cal = t.calostro || p.calostro || {};
+    enLista_(err, listas, 'calidad_sin_mejorar', cal.calidad_sin_mejorar, pre);
+    enLista_(err, listas, 'mejorado', cal.mejorado, pre);
+    enLista_(err, listas, 'consumido', cal.consumido, pre);
+    enLista_(err, listas, 'lts_ternero', cal.lts_ternero, pre);
+
+    // La columna L solo se habilita con Mejorado = Si; si no, va '---'.
+    if (cal.mejorado === 'Si') {
+      enLista_(err, listas, 'calidad_mejorado', cal.calidad_mejorado, pre);
+      if (String(cal.calidad_mejorado) === VACIO) {
+        err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
+      }
+    } else if (cal.calidad_mejorado && String(cal.calidad_mejorado) !== VACIO) {
+      err.push(pre + 'calidad_mejorado cargada con mejorado=' + cal.mejorado);
+    }
   });
 
-  var cal = p.calostro || {};
-  enLista_(err, listas, 'calidad_sin_mejorar', cal.calidad_sin_mejorar);
-  enLista_(err, listas, 'mejorado', cal.mejorado);
-  enLista_(err, listas, 'consumido', cal.consumido);
-  enLista_(err, listas, 'lts_madre', cal.lts_madre);
-  enLista_(err, listas, 'lts_ternero', cal.lts_ternero);
-
-  // La columna L solo se habilita con Mejorado = Si; si no, va '---'.
-  if (cal.mejorado === 'Si') {
-    enLista_(err, listas, 'calidad_mejorado', cal.calidad_mejorado);
-    if (String(cal.calidad_mejorado) === VACIO) err.push('mejorado=Si pero calidad_mejorado vacia');
-  } else if (cal.calidad_mejorado && String(cal.calidad_mejorado) !== VACIO) {
-    err.push('calidad_mejorado cargada con mejorado=' + cal.mejorado);
+  // Mellizos donde las dos crias nacieron muertas: el codigo del parto no lo refleja.
+  if (terneros.length && terneros.every(function (t) { return t.vive === false; })) {
+    err.push('todas las crias marcadas muertas: usar el codigo de parto correspondiente');
   }
 
   return err;
@@ -284,7 +332,7 @@ function partosDelDia_(ss, fechaISO) {
 
   var tz = ss.getSpreadsheetTimeZone();
   var buscada = fechaISO || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
-  var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, 24).getValues();
+  var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
 
   return datos.filter(function (f) {
     var d = f[2];
@@ -297,7 +345,8 @@ function partosDelDia_(ss, fechaISO) {
       id_ternero: f[6], raza: f[7], peso: f[8],
       calidad_sin_mejorar: f[9], lts_ternero: f[14],
       tambo: f[16], rodeo: f[17], notas: f[18],
-      id_parto: f[19], cria: f[20], uuid: f[21]
+      sexo_cria: f[19], estado_cria: f[20],
+      id_parto: f[21], cria: f[22], uuid: f[23]
     };
   });
 }
@@ -496,6 +545,6 @@ function configurarFormatos() {
   hoja.getRange(2, 4, n, 1).setNumberFormat('@');            // D  Hora Nacimiento
   hoja.getRange(2, 7, n, 1).setNumberFormat('@');            // G  ID Ternero
   hoja.getRange(2, 16, n, 1).setNumberFormat('@');           // P  ID Vaca Origen
-  hoja.getRange(2, 22, n, 1).setNumberFormat('@');           // V  UUID
-  hoja.getRange(2, 23, n, 1).setNumberFormat('dd/MM/yyyy HH:mm'); // W Cargado en
+  hoja.getRange(2, 24, n, 1).setNumberFormat('@');           // X  UUID
+  hoja.getRange(2, 25, n, 1).setNumberFormat('dd/MM/yyyy HH:mm'); // Y Cargado en
 }

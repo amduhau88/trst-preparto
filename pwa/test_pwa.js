@@ -165,13 +165,28 @@ async function nuevaPagina(browser, credencial, auto = true) {
 async function cargarParto(page, vaca, ternero) {
   await page.evaluate((v, t) => {
     document.getElementById('fVaca').value = v;
-    const inp = document.querySelector('[data-ternero="0"]');
-    inp.value = t;
-    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelectorAll('[data-ternero]').forEach((inp, i) => {
+      inp.value = i === 0 ? t : String(Number(t) + 1);
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    });
   }, vaca, ternero);
   await page.click('#btnGuardar');
   await new Promise((r) => setTimeout(r, 350));
 }
+
+/** Elige el código de sexo del parto por su número inicial. */
+const elegirSexo = (page, codigo) => page.evaluate((c) => {
+  [...document.querySelectorAll('[data-chip="sexo"]')]
+    .find((b) => b.dataset.val.startsWith(c)).click();
+}, String(codigo));
+
+const leerPayload = (page, vaca) => page.evaluate((v) => new Promise((ok) => {
+  const req = indexedDB.open('preparto', 1);
+  req.onsuccess = () => {
+    const g = req.result.transaction('partos', 'readonly').objectStore('partos').getAll();
+    g.onsuccess = () => ok((g.result.find((r) => r.payload.id_vaca === v) || {}).payload);
+  };
+}), vaca);
 
 const contarLocal = (page) => page.evaluate(() => new Promise((ok) => {
   const req = indexedDB.open('preparto', 1);
@@ -276,15 +291,102 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('llego 1 fila', filas.length === 1);
     check('nunca llego un request sin sesion', sinSesion.length === 0, JSON.stringify(sinSesion));
 
+    console.log('\n4b. Mellizos: una ficha de calostro por cria');
+    await elegirSexo(page, 8);
+    await esperar(400);
+    check('aparecen 2 fichas de ternero',
+          await page.$$eval('#terneros .subcard', (c) => c.length) === 2);
+    check('aparecen 2 fichas de calostro',
+          await page.$$eval('#calostros .subcard', (c) => c.length) === 2);
+    check('pide el sexo de cada cria (codigo 8 es ambiguo)',
+          await page.$$eval('[data-caja^="sexoc:"]', (c) => c.length) === 2);
+    check('los litros de la madre se piden una sola vez',
+          await page.$$eval('[data-step^="ltsMadre"]', (b) => b.length) === 2);  // el - y el +
+
+    // Cargar dos crias distintas, con calostro distinto
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '5514';
+      const ids = document.querySelectorAll('[data-ternero]');
+      ['9101', '9102'].forEach((v, i) => {
+        ids[i].value = v; ids[i].dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      document.querySelector('[data-caja="sexoc:0"] [data-val="Macho"]').click();
+      document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
+    });
+    await esperar(300);
+    check('el rotulo identifica cada cria',
+          (await page.$$eval('#calostros .quien', (q) => q.map((x) => x.textContent)))
+            .join(' | ').includes('9101 · Macho'),
+          (await page.$$eval('#calostros .quien', (q) => q.map((x) => x.textContent))).join(' | '));
+
+    await page.evaluate(() => {
+      document.querySelector('[data-caja="ltsTernero:1"] [data-val="3"]').click();
+      const orig = document.querySelectorAll('[data-origen]');
+      orig[0].value = '119'; orig[0].dispatchEvent(new Event('input', { bubbles: true }));
+      orig[1].value = '226'; orig[1].dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.click('#btnGuardar');
+    await esperar(500);
+    const doble = await leerPayload(page, '5514');
+    check('guarda 2 terneros', doble && doble.terneros.length === 2, JSON.stringify(doble && doble.terneros));
+    check('cada uno con su sexo',
+          doble.terneros[0].sexo === 'Macho' && doble.terneros[1].sexo === 'Hembra');
+    check('cada uno con su calostro',
+          doble.terneros[0].calostro.lts_ternero === '4' &&
+          doble.terneros[1].calostro.lts_ternero === '3',
+          JSON.stringify(doble.terneros.map((t) => t.calostro.lts_ternero)));
+    check('cada uno con su vaca origen',
+          doble.terneros[0].calostro.id_vaca_origen === '119' &&
+          doble.terneros[1].calostro.id_vaca_origen === '226');
+    check('los litros de la madre van al parto, no a la cria',
+          doble.lts_madre !== undefined && doble.terneros[0].calostro.lts_madre === undefined);
+    await esperarSync(page, 12);
+    check('el servidor escribio 2 filas', filas.filter((f) => f.vaca === '5514').length === 2);
+
+    console.log('\n4c. Mellizos con una cria muerta');
+    await elegirSexo(page, 8);
+    await esperar(300);
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '5515';
+      const ids = document.querySelectorAll('[data-ternero]');
+      ids[0].value = '9200'; ids[0].dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-caja="sexoc:0"] [data-val="Macho"]').click();
+      document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
+      document.querySelector('[data-caja="vive:1"] [data-val="Muerto"]').click();
+    });
+    await esperar(400);
+    check('la cria muerta pierde su ficha de calostro',
+          await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
+    await page.click('#btnGuardar');
+    await esperar(500);
+    const conMuerta = await leerPayload(page, '5515');
+    check('guarda igual las 2 crias', conMuerta && conMuerta.terneros.length === 2);
+    check('la muerta va marcada', conMuerta.terneros[1].vive === false);
+    check('y sin calostro', conMuerta.terneros[1].calostro === undefined);
+    check('no exige ID para la cria muerta', conMuerta.terneros[1].id_ternero === '');
+
+    console.log('\n4d. Volver a parto simple');
+    await elegirSexo(page, 6);
+    await esperar(400);
+    check('vuelve a 1 ficha de ternero',
+          await page.$$eval('#terneros .subcard', (c) => c.length) === 1);
+    check('y 1 de calostro', await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
+    check('no pregunta el sexo (el codigo 6 ya lo dice)',
+          await page.$$eval('[data-caja^="sexoc:"]', (c) => c.length) === 0);
+
     console.log('\n5. Sin señal — lo que pasa en el corral');
+    // Contadores relativos: las secciones anteriores ya dejaron partos cargados.
+    const registrosAntes = (await contarLocal(page)).total;
+    const filasAntes = filas.length;
     await page.setOfflineMode(true);
     await page.evaluate(() => dispatchEvent(new Event('offline')));
     await cargarParto(page, '208', '9093');
     await cargarParto(page, '214', '9094');
     await cargarParto(page, '123', '9095');
     c = await contarLocal(page);
-    check('los 3 quedaron guardados', c.total === 4 && c.pendientes === 3, JSON.stringify(c));
-    check('el servidor no recibio nada', filas.length === 1);
+    check('los 3 quedaron guardados',
+          c.total === registrosAntes + 3 && c.pendientes === 3, JSON.stringify(c));
+    check('el servidor no recibio nada', filas.length === filasAntes, 'filas=' + filas.length);
     check('el badge avisa sin señal',
           /Sin señal/.test(await page.$eval('#badgeTxt', (e) => e.textContent)));
 
@@ -301,15 +403,19 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('NO pide login otra vez', !(await visible(page, '#v-login')));
     check('muestra el formulario', await visible(page, '#v-form'));
     c = await contarLocal(page);
-    check('los 3 partos sobrevivieron', c.total === 4 && c.pendientes === 3, JSON.stringify(c));
+    check('los 3 partos sobrevivieron',
+          c.total === registrosAntes + 3 && c.pendientes === 3, JSON.stringify(c));
 
     console.log('\n7. Vuelve la señal');
     await page.setOfflineMode(false);
     await page.evaluate(() => { window.__auto = true; dispatchEvent(new Event('online')); });
     c = await esperarSync(page, 15);
     check('no quedan pendientes', c.pendientes === 0, JSON.stringify(c));
-    check('llegaron las 4 filas', filas.length === 4, JSON.stringify(filas.map((f) => f.vaca)));
-    check('sin duplicados', new Set(filas.map((f) => f.vaca)).size === 4);
+    check('llegaron las 3 filas que faltaban', filas.length === filasAntes + 3,
+          JSON.stringify(filas.map((f) => f.vaca)));
+    check('sin duplicados: cada parto entro una sola vez',
+          new Set(recibidos).size === uuidsVistos.size,
+          `recibidos unicos ${new Set(recibidos).size} vs escritos ${uuidsVistos.size}`);
 
     console.log('\n8. Sesion vencida: la cola aguanta, no se pierde nada');
     await page.evaluate(() => {                       // credencial vencida y sin renovacion
@@ -327,7 +433,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('el badge avisa sesion vencida',
           /Sesión vencida/.test(await page.$eval('#badgeTxt', (e) => e.textContent)),
           await page.$eval('#badgeTxt', (e) => e.textContent));
-    check('no se mando nada sin credencial valida', filas.length === 4, 'filas=' + filas.length);
+    check('no se mando nada sin credencial valida', filas.length === filasAntes + 3,
+          'filas=' + filas.length);
 
     console.log('\n9. Renovada la sesion, se recupera solo');
     await page.evaluate((cred) => {
@@ -336,7 +443,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     }, jwtFalso(DISPOSITIVO, 60));
     c = await esperarSync(page, 15);
     check('la cola se drena', c.pendientes === 0, JSON.stringify(c));
-    check('la fila llego', filas.length === 5, 'filas=' + filas.length);
+    check('la fila llego', filas.length === filasAntes + 4, 'filas=' + filas.length);
 
     console.log('\n10. Reintento del mismo parto');
     const antes = filas.length;

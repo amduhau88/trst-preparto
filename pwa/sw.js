@@ -6,7 +6,7 @@
  * Subir CACHE cuando cambie index.html / app.js, si no la tablet
  * sigue sirviendo la version vieja desde el cache.
  */
-const CACHE = 'preparto-v4';
+const CACHE = 'preparto-v5';
 const SHELL = [
   './',
   './index.html',

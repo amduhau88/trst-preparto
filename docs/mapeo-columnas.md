@@ -29,20 +29,35 @@ Hoja `NUEVO FORMATO PREPARTO` de la planilla [`TRST — Partos`](https://docs.go
 | R | Asignacion Rodeo Vaca | Rodeo asignado | — | `Maestro!R` — **vacía** |
 | S | Notas Nahuel | Notas | Texto libre | único campo libre |
 
-## Técnicas (T–X)
+## Por cría (T–U)
+
+Nacen de un hueco real del formato: con el código `8 Otros Gemelos (M+M o M+H)`
+no había forma de saber qué fue cada cría, ni de anotar que una nació muerta.
+
+| Col | Encabezado | Valores |
+|---|---|---|
+| T | Sexo Cria | `Macho` · `Hembra`. Se deduce del código del parto salvo en el 8, donde se pregunta |
+| U | Estado Cria | `Vivo` · `Muerto` |
+
+## Técnicas (V–Z)
 
 | Col | Encabezado | Para qué |
 |---|---|---|
-| T | ID Parto | `yyyyMMdd-idvaca-xxxx`. Agrupa las filas de un parto doble. |
-| U | Cria | `1/1`, o `1/2` y `2/2` en mellizos |
-| V | UUID | Clave anti-duplicados generada en la tablet |
-| W | Cargado en | Momento real de la carga (puede ser anterior a la sincronización) |
-| X | Dispositivo | Qué tablet lo cargó |
+| V | ID Parto | `yyyyMMdd-idvaca-xxxx`. Agrupa las filas de un parto doble. |
+| W | Cria | `1/1`, o `1/2` y `2/2` en mellizos |
+| X | UUID | Clave anti-duplicados generada en la tablet |
+| Y | Cargado en | Momento real de la carga (puede ser anterior a la sincronización) |
+| Z | Dispositivo | Qué tablet lo cargó |
 
 ## Reglas
 
 - **Una fila por ternero.** Parto simple = 1 fila. Mellizos (sexo `2` u `8`) = 2 filas, mismo `ID Parto`.
-- **Cría muerta** (sexo `4` o `7`): G a P van en `---`. A–F y Q–S se completan igual.
+- **Cada cría lleva lo suyo:** su sexo, su estado y **su propio calostro** (J, K, L, M, O, P).
+  En un parto doble las dos filas pueden tener calidad, litros y vaca origen distintos.
+- **`Lts Calostro Madre Produjo` (N) es del parto**, no de la cría: se carga una vez y se
+  repite igual en las dos filas.
+- **Cría muerta** (sexo `4` o `7`, o marcada muerta en un parto doble): G a P van en `---`,
+  pero T y U siguen registrando **qué era y que nació muerta**.
 - **`Mejorado = No`** ⇒ L en `---`. `Mejorado = Si` ⇒ L obligatoria.
 - **Nunca un rango** en calostro (el `23-26` de la planilla vieja no es válido).
 - **Columna vacía en `Maestro` = sin restricción**: el backend acepta cualquier valor.

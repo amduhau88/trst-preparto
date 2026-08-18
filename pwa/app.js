@@ -209,10 +209,37 @@ const todosLocal = () => tx('readonly', (s) => s.getAll());
 /* Estado del formulario                                               */
 /* ------------------------------------------------------------------ */
 
+/* Cada ternero lleva lo suyo: sexo, si nacio vivo, y su propio calostro.
+   Los litros que produjo la madre son del parto, no de la cria. */
 const st = {
-  fecha: '', tipo_parto: '', sexo: '', brix: null, brixExc: '', mejorado: 'No', mej: VACIO,
-  consumido: 'Si', lts_madre: null, lts_ternero: '', tambo: '', terneros: []
+  fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: []
 };
+
+function nuevoTernero() {
+  return {
+    id_ternero: '', raza: (listas.raza || [''])[0], peso: medio('peso'),
+    sexo: '', vive: true,
+    cal: {
+      brix: medio('calidad_sin_mejorar'), brixExc: '',
+      mejorado: 'No', mej: VACIO, consumido: 'Si',
+      lts_ternero: String(medio('lts_ternero')), id_origen: ''
+    }
+  };
+}
+
+/** Como identificar una ficha: "24543 · Macho". Es lo que evita confundir mellizos. */
+function etiquetaCria(t, i) {
+  const partes = [];
+  if (t.id_ternero) partes.push(t.id_ternero);
+  const sx = t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '';
+  if (sx) partes.push(sx);
+  if (!t.vive) partes.push('muerto');
+  return partes.length ? partes.join(' · ') : 'Ternero ' + (i + 1) + ' — sin datos';
+}
+
+// El codigo del parto ya dice el sexo, salvo el 8 (M+M o M+H), que es ambiguo.
+const SEXO_POR_CODIGO = { 1: 'Hembra', 2: 'Hembra', 4: 'Hembra', 6: 'Macho', 7: 'Macho' };
+const sexoAmbiguo = () => String(st.sexo).charAt(0) === '8';
 
 /* ---------- fecha: solo Hoy o Ayer ---------- */
 
@@ -274,11 +301,6 @@ function pintarFormulario() {
   const malo = (v) => /muert/i.test(v) ? 'bad' : (/cesarea|asistido/i.test(v) ? 'warn' : '');
   chips($('cTipo'), 'tipo_parto', listas.tipo_parto, st.tipo_parto, { numerar: true, claseDe: malo });
   chips($('cSexo'), 'sexo', listas.sexo, st.sexo, { numerar: true, claseDe: malo });
-  chips($('cBrixExc'), 'brixExc', ['Valor numérico'].concat(noNumeros('calidad_sin_mejorar')),
-        st.brixExc || 'Valor numérico', { ancho: true, claseDe: (v) => v === 'Valor numérico' ? '' : 'warn' });
-  chips($('cMejorado'), 'mejorado', listas.mejorado, st.mejorado, { ancho: true });
-  chips($('cConsumido'), 'consumido', listas.consumido, st.consumido, { ancho: true });
-  chips($('cLtsTernero'), 'lts_ternero', listas.lts_ternero, st.lts_ternero, { chico: true });
   chips($('cTambo'), 'tambo', listas.tambo, st.tambo, { ancho: true });
 
   // Rodeo: si Maestro no tiene lista, campo libre en vez de un desplegable vacio.
@@ -296,24 +318,18 @@ function pintarFormulario() {
 }
 
 function pintarSteppers() {
-  $('vBrix').innerHTML = st.brixExc
-    ? `<span style="font-size:15px;color:var(--warn)">${st.brixExc}</span>`
-    : (st.brix === null ? '—' : `${st.brix}<span>Brix</span>`);
-  $('vMej').innerHTML = st.mej === VACIO ? VACIO : `${st.mej}<span>Brix</span>`;
   $('vLtsMadre').innerHTML = st.lts_madre === null ? '—' : `${st.lts_madre}<span>L</span>`;
-  $('wrapMej').classList.toggle('off', st.mejorado !== 'Si');
 }
 
 function pintarTerneros() {
   const n = esMuerto() ? 0 : (esMellizo() ? 2 : 1);
-  while (st.terneros.length < n) {
-    st.terneros.push({ id_ternero: '', raza: (listas.raza || [''])[0], peso: medio('peso') });
-  }
+  while (st.terneros.length < n) st.terneros.push(nuevoTernero());
   st.terneros.length = n;
 
   $('terneros').innerHTML = st.terneros.map((t, i) => `
-    <div class="subcard" style="${i === 0 ? 'margin-top:0' : ''}">
-      <h3><span class="dot"></span>${n > 1 ? 'Ternero ' + (i + 1) : 'Datos del ternero'}</h3>
+    <div class="subcard ${t.vive ? '' : 'muerta'}" style="${i === 0 ? 'margin-top:0' : ''}">
+      <h3><span class="dot"></span>${n > 1 ? 'Ternero ' + (i + 1) : 'Datos del ternero'}
+        ${n > 1 ? `<span class="quien ${t.id_ternero ? '' : 'sin'}">${etiquetaCria(t, i)}</span>` : ''}</h3>
       <div class="grid g3">
         <label class="f">
           <div class="lab">ID Ternero</div>
@@ -322,7 +338,7 @@ function pintarTerneros() {
         </label>
         <div>
           <div class="lab">Raza</div>
-          <div class="chips" data-chips-raza="${i}"></div>
+          <div class="chips" data-caja="raza:${i}"></div>
         </div>
         <div>
           <div class="lab">Peso</div>
@@ -333,17 +349,109 @@ function pintarTerneros() {
           </div>
         </div>
       </div>
+      ${n > 1 ? `
+      <div class="grid g2" style="margin-top:12px">
+        <div>
+          <div class="lab">Sexo de esta cría ${sexoAmbiguo() ? '<span class="req">*</span>' : ''}</div>
+          <div class="chips" data-caja="sexoc:${i}"></div>
+        </div>
+        <div>
+          <div class="lab">¿Nació viva?</div>
+          <div class="chips" data-caja="vive:${i}"></div>
+        </div>
+      </div>` : ''}
     </div>`).join('');
 
   st.terneros.forEach((t, i) => {
-    chips(document.querySelector(`[data-chips-raza="${i}"]`), 'raza:' + i,
-          listas.raza, t.raza, { ancho: true });
+    caja('raza:' + i, listas.raza, t.raza, { ancho: true });
+    if (n > 1) {
+      const sugerido = t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '';
+      caja('sexoc:' + i, ['Hembra', 'Macho'], sugerido, { ancho: true });
+      caja('vive:' + i, ['Vivo', 'Muerto'], t.vive ? 'Vivo' : 'Muerto',
+           { ancho: true, claseDe: (v) => (v === 'Muerto' ? 'bad' : '') });
+    }
   });
 
   $('cardTernero').classList.toggle('off', esMuerto());
   $('cardCalostro').classList.toggle('off', esMuerto());
   $('notaMuerto').classList.toggle('hidden', !esMuerto());
   $('notaMellizo').classList.toggle('hidden', !esMellizo());
+  pintarCalostros();
+}
+
+/** Un bloque de calostro por cría viva, rotulado con cuál es. */
+function pintarCalostros() {
+  const vivas = st.terneros.map((t, i) => ({ t, i })).filter((x) => x.t.vive);
+
+  $('calostros').innerHTML = vivas.map(({ t, i }) => {
+    const c = t.cal;
+    return `
+    <div class="subcard">
+      <h3><span class="dot"></span>${st.terneros.length > 1 ? 'Calostro del ternero ' + (i + 1) : 'Calostro'}
+        <span class="quien ${t.id_ternero ? '' : 'sin'}">${etiquetaCria(t, i)}</span></h3>
+      <div class="grid g23">
+        <div>
+          <div class="lab">Calidad sin mejorar</div>
+          <div class="stepper">
+            <button type="button" data-step="brix${i}:-1">−</button>
+            <div class="val">${c.brixExc
+              ? `<span style="font-size:15px;color:var(--warn)">${c.brixExc}</span>`
+              : `${c.brix}<span>Brix</span>`}</div>
+            <button type="button" data-step="brix${i}:1">+</button>
+          </div>
+        </div>
+        <div>
+          <div class="lab">…o marcar excepción</div>
+          <div class="chips" data-caja="brixExc:${i}"></div>
+        </div>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div>
+          <div class="lab">¿Mejorado?</div>
+          <div class="chips" data-caja="mejorado:${i}"></div>
+        </div>
+        <div class="${c.mejorado === 'Si' ? '' : 'off'}">
+          <div class="lab">Calidad del calostro mejorado</div>
+          <div class="stepper">
+            <button type="button" data-step="mej${i}:-1">−</button>
+            <div class="val">${c.mej === VACIO ? VACIO : `${c.mej}<span>Brix</span>`}</div>
+            <button type="button" data-step="mej${i}:1">+</button>
+          </div>
+        </div>
+      </div>
+      <div class="grid g3" style="margin-top:14px">
+        <div>
+          <div class="lab">¿Consumido al momento?</div>
+          <div class="chips" data-caja="consumido:${i}"></div>
+        </div>
+        <div>
+          <div class="lab">Litros para el ternero</div>
+          <div class="chips" data-caja="ltsTernero:${i}"></div>
+        </div>
+        <label class="f">
+          <div class="lab">ID vaca origen del calostro</div>
+          <input type="text" inputmode="numeric" placeholder="Nº de vaca"
+                 value="${c.id_origen}" data-origen="${i}">
+        </label>
+      </div>
+    </div>`;
+  }).join('') || '<p class="hint" style="margin:14px 0 0">Sin crías vivas: no se carga calostro.</p>';
+
+  vivas.forEach(({ t, i }) => {
+    const c = t.cal;
+    caja('brixExc:' + i, ['Valor numérico'].concat(noNumeros('calidad_sin_mejorar')),
+         c.brixExc || 'Valor numérico',
+         { ancho: true, claseDe: (v) => (v === 'Valor numérico' ? '' : 'warn') });
+    caja('mejorado:' + i, listas.mejorado, c.mejorado, { ancho: true });
+    caja('consumido:' + i, listas.consumido, c.consumido, { ancho: true });
+    caja('ltsTernero:' + i, listas.lts_ternero, c.lts_ternero, { chico: true });
+  });
+}
+
+/** Pinta un grupo de chips dentro de su contenedor por clave. */
+function caja(clave, valores, sel, opciones) {
+  const cont = document.querySelector(`[data-caja="${clave}"]`);
+  if (cont) chips(cont, clave, valores, sel, opciones);
 }
 
 /* ------------------------------------------------------------------ */
@@ -365,22 +473,33 @@ function elegirChip(chip) {
   [...chip.parentElement.children].forEach((c) => c.classList.remove('on'));
   chip.classList.add('on');
 
-  if (clave.startsWith('raza:')) {
-    st.terneros[+clave.split(':')[1]].raza = val;
+  // Las claves con ":" son de una cria puntual (raza:0, brixExc:1, ...)
+  if (clave.includes(':')) {
+    const [campo, idx] = clave.split(':');
+    const t = st.terneros[+idx];
+    if (!t) return;
+    const c = t.cal;
+
+    if (campo === 'raza') { t.raza = val; return pintarCalostros(); }
+    if (campo === 'sexoc') { t.sexo = val; return pintarTerneros(); }
+    if (campo === 'vive') { t.vive = val === 'Vivo'; return pintarTerneros(); }
+    if (campo === 'brixExc') {
+      c.brixExc = val === 'Valor numérico' ? '' : val;
+      return pintarCalostros();
+    }
+    if (campo === 'mejorado') {
+      c.mejorado = val;
+      c.mej = val === 'Si' ? (c.mej === VACIO ? medio('calidad_mejorado') : c.mej) : VACIO;
+      return pintarCalostros();
+    }
+    if (campo === 'consumido') { c.consumido = val; return; }
+    if (campo === 'ltsTernero') { c.lts_ternero = val; return; }
     return;
   }
-  if (clave === 'brixExc') {
-    st.brixExc = val === 'Valor numérico' ? '' : val;
-    if (st.brixExc === '' && st.brix === null) st.brix = medio('calidad_sin_mejorar');
-    return pintarSteppers();
-  }
+
   st[clave] = val;
   if (clave === 'fecha') refrescar();          // la lista del dia depende de la fecha
   if (clave === 'sexo') pintarTerneros();
-  if (clave === 'mejorado') {
-    st.mej = val === 'Si' ? (st.mej === VACIO ? medio('calidad_mejorado') : st.mej) : VACIO;
-    pintarSteppers();
-  }
 }
 
 function mover(spec) {
@@ -388,22 +507,22 @@ function mover(spec) {
   const paso = +pasoTxt;
 
   if (campo.startsWith('peso')) {
-    const i = +campo.slice(4);
-    const n = numeros('peso');
-    st.terneros[i].peso = acotar(st.terneros[i].peso + paso, n);
+    const t = st.terneros[+campo.slice(4)];
+    t.peso = acotar(t.peso + paso, numeros('peso'));
     return pintarTerneros();
   }
-  if (campo === 'brix') {
-    st.brixExc = '';
-    st.brix = acotar((st.brix === null ? medio('calidad_sin_mejorar') : st.brix + paso),
-                     numeros('calidad_sin_mejorar'));
-    chips($('cBrixExc'), 'brixExc', ['Valor numérico'].concat(noNumeros('calidad_sin_mejorar')),
-          'Valor numérico', { ancho: true, claseDe: (v) => v === 'Valor numérico' ? '' : 'warn' });
+  if (campo.startsWith('brix')) {
+    const c = st.terneros[+campo.slice(4)].cal;
+    c.brixExc = '';                              // tocar el numero descarta la excepcion
+    c.brix = acotar(c.brix + paso, numeros('calidad_sin_mejorar'));
+    return pintarCalostros();
   }
-  if (campo === 'mej') {
-    if (st.mejorado !== 'Si') return;
-    st.mej = acotar((st.mej === VACIO ? medio('calidad_mejorado') : st.mej + paso),
-                    numeros('calidad_mejorado'));
+  if (campo.startsWith('mej')) {
+    const c = st.terneros[+campo.slice(3)].cal;
+    if (c.mejorado !== 'Si') return;
+    c.mej = acotar((c.mej === VACIO ? medio('calidad_mejorado') : c.mej + paso),
+                   numeros('calidad_mejorado'));
+    return pintarCalostros();
   }
   if (campo === 'ltsMadre') {
     st.lts_madre = acotar((st.lts_madre === null ? medio('lts_madre') : st.lts_madre + paso),
@@ -417,7 +536,14 @@ const acotar = (v, lista) => !lista.length ? v
 
 document.addEventListener('input', (e) => {
   const t = e.target.closest('[data-ternero]');
-  if (t) st.terneros[+t.dataset.ternero].id_ternero = t.value;
+  if (t) {
+    st.terneros[+t.dataset.ternero].id_ternero = t.value;
+    // El rotulo de la ficha de calostro se actualiza al tipear la caravana.
+    if (st.terneros.length > 1) pintarCalostros();
+    return;
+  }
+  const o = e.target.closest('[data-origen]');
+  if (o) st.terneros[+o.dataset.origen].cal.id_origen = o.value;
 });
 
 /* ------------------------------------------------------------------ */
@@ -444,18 +570,26 @@ function armarPayload() {
   };
 
   if (!esMuerto()) {
-    p.terneros = st.terneros.map((t) => ({
-      id_ternero: String(t.id_ternero).trim(), raza: t.raza, peso: t.peso
-    }));
-    p.calostro = {
-      calidad_sin_mejorar: st.brixExc || String(st.brix),
-      mejorado: st.mejorado,
-      calidad_mejorado: st.mejorado === 'Si' ? String(st.mej) : VACIO,
-      consumido: st.consumido,
-      lts_madre: String(st.lts_madre),
-      lts_ternero: st.lts_ternero,
-      id_vaca_origen: $('fVacaCal').value.trim()
-    };
+    p.lts_madre = String(st.lts_madre);           // del parto, no de la cria
+    p.terneros = st.terneros.map((t) => {
+      const cria = {
+        id_ternero: String(t.id_ternero).trim(),
+        raza: t.raza, peso: t.peso,
+        sexo: t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '',
+        vive: t.vive
+      };
+      if (t.vive) {
+        cria.calostro = {
+          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
+          mejorado: t.cal.mejorado,
+          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
+          consumido: t.cal.consumido,
+          lts_ternero: t.cal.lts_ternero,
+          id_vaca_origen: String(t.cal.id_origen).trim()
+        };
+      }
+      return cria;
+    });
   }
   return p;
 }
@@ -468,10 +602,19 @@ function faltantes(p) {
   if (!p.tipo_parto) f.push('tipo de parto');
   if (!p.sexo) f.push('sexo');
   if (!esMuerto()) {
-    if (st.brix === null && !st.brixExc) f.push('calidad de calostro');
     if (st.lts_madre === null) f.push('litros de la madre');
-    if (!st.lts_ternero) f.push('litros para el ternero');
-    if (!p.terneros.every((t) => t.id_ternero)) f.push('ID de ternero');
+    const varias = st.terneros.length > 1;
+    st.terneros.forEach((t, i) => {
+      const cual = varias ? ` (ternero ${i + 1})` : '';
+      if (!t.vive) return;                       // cria muerta: no lleva datos
+      if (!String(t.id_ternero).trim()) f.push('ID de ternero' + cual);
+      if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
+      if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
+      if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
+    });
+    if (st.terneros.length && st.terneros.every((t) => !t.vive)) {
+      f.push('al menos una cría viva, o cambiá el código del parto');
+    }
   }
   if (!p.tambo) f.push('tambo');
   return f;
@@ -509,10 +652,8 @@ async function guardarParto() {
 
 function limpiar() {
   $('fVaca').value = '';
-  $('fVacaCal').value = '';
   $('fNotas').value = '';
-  st.terneros.forEach((t) => { t.id_ternero = ''; });
-  st.brixExc = '';
+  st.terneros = st.terneros.map(() => nuevoTernero());
   pintarFormulario();
   $('body').scrollTop = 0;
   $('fVaca').focus();
@@ -830,8 +971,6 @@ setInterval(sincronizar, 30000);
   st.tipo_parto = (listas.tipo_parto || [''])[0];
   st.sexo = (listas.sexo || [''])[0];
   st.tambo = (listas.tambo || [''])[0];
-  st.lts_ternero = String(medio('lts_ternero'));
-  st.brix = medio('calidad_sin_mejorar');
   st.lts_madre = medio('lts_madre');
 
   pintarFormulario();

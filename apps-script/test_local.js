@@ -112,7 +112,9 @@ function horas() {
 const HEAD_FORMATO = ['Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
   'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso', 'Cal sin mej', 'Mejorado',
   'Cal mej', 'Consumido', 'Lts madre', 'Lts ternero', 'ID origen', 'Tambo', 'Rodeo',
-  'Notas', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'];
+  'Notas', 'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'];
+// Posiciones de las columnas nuevas y las tecnicas, para no contar a mano.
+const COL = { sexoCria: 19, estado: 20, idParto: 21, cria: 22, uuid: 23 };
 
 function nuevoLibro() {
   const hojas = {
@@ -210,15 +212,16 @@ const log = () => libro._hojas['_log'].filas.slice(1);
 
 const calostroOk = {
   calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---',
-  consumido: 'Si', lts_madre: '5', lts_ternero: '4', id_vaca_origen: '119'
+  consumido: 'Si', lts_ternero: '4', id_vaca_origen: '119'
 };
 
 const partoBase = (extra) => Object.assign({
   token: TOKEN, uuid: 'u-simple-0001', dispositivo: 'tablet-maternidad',
   operario: 'Julio', id_vaca: '4115', fecha_parto: '2026-08-12',
   hora_nacimiento: '07:00', tipo_parto: '1 Normal', sexo: '6 Macho Vivo',
-  terneros: [{ id_ternero: '24543', raza: 'Holando', peso: 42 }],
-  calostro: calostroOk, tambo: '2', rodeo: '26', notas: ''
+  lts_madre: '5',
+  terneros: [{ id_ternero: '24543', raza: 'Holando', peso: 42, vive: true, calostro: calostroOk }],
+  tambo: '2', rodeo: '26', notas: ''
 }, extra || {});
 
 let fallos = 0;
@@ -238,8 +241,8 @@ check('id_parto legible', r.id_parto === '20260812-4115-usim', r.id_parto);
 let f = formato()[0];
 check('columnas A-F', f.slice(0, 2).join('|') === 'Julio|4115' && f[4] === '1 Normal');
 check('fecha es Date real', f[2] instanceof Date && f[2].getMonth() === 7);
-check('cria 1/1', f[20] === '1/1', f[20]);
-check('uuid en la fila', f[21] === 'u-simple-0001');
+check('cria 1/1', f[COL.cria] === '1/1', f[COL.cria]);
+check('uuid en la fila', f[COL.uuid] === 'u-simple-0001');
 check('log en ok', log()[0][4] === 'ok' && log()[0][3] === 1, JSON.stringify(log()[0].slice(3)));
 
 console.log('\n2. Mismo uuid otra vez (la prueba que mas importa)');
@@ -250,14 +253,15 @@ check('NO agrega fila', formato().length === 1, 'filas=' + formato().length);
 console.log('\n3. Parto doble -> 2 filas');
 r = post(partoBase({
   uuid: 'u-doble-0002', id_vaca: '5514', sexo: '2 Hembras Gemelas Vivas',
-  terneros: [{ id_ternero: '9101', raza: 'Holando', peso: 32 },
-             { id_ternero: '9102', raza: 'Holando', peso: 30 }]
+  terneros: [{ id_ternero: '9101', raza: 'Holando', peso: 32, vive: true, calostro: calostroOk },
+             { id_ternero: '9102', raza: 'Holando', peso: 30, vive: true,
+               calostro: Object.assign({}, calostroOk, { lts_ternero: '3', id_vaca_origen: '226' }) }]
 }));
 check('responde ok', r.ok === true, JSON.stringify(r));
 check('escribe 2 filas', r.filas_escritas === 2 && formato().length === 3);
 const [d1, d2] = formato().slice(1);
-check('mismo ID Parto', d1[19] === d2[19], d1[19] + ' vs ' + d2[19]);
-check('cria 1/2 y 2/2', d1[20] === '1/2' && d2[20] === '2/2', d1[20] + ' ' + d2[20]);
+check('mismo ID Parto', d1[COL.idParto] === d2[COL.idParto], d1[COL.idParto] + ' vs ' + d2[COL.idParto]);
+check('cria 1/2 y 2/2', d1[COL.cria] === '1/2' && d2[COL.cria] === '2/2', d1[COL.cria] + ' ' + d2[COL.cria]);
 check('terneros distintos', d1[6] === '9101' && d2[6] === '9102');
 
 console.log('\n4. Cria muerta -> --- de G a P');
@@ -275,10 +279,12 @@ check('operario fuera de lista', r.ok === false && /operario fuera de lista/.tes
       JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-viva-0005', sexo: '1 Hembra Viva', terneros: [] }));
 check('cria viva sin ternero', r.ok === false && /sin datos de ternero/.test(r.detalles.join()));
-r = post(partoBase({ uuid: 'u-mej-0006', calostro: Object.assign({}, calostroOk, { mejorado: 'Si', calidad_mejorado: '---' }) }));
+r = post(partoBase({ uuid: 'u-mej-0006', terneros: [{ id_ternero: '1', raza: 'Holando', peso: 40, vive: true,
+  calostro: Object.assign({}, calostroOk, { mejorado: 'Si', calidad_mejorado: '---' }) }] }));
 check('mejorado=Si sin calidad', r.ok === false, JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-simple2-0007', terneros: [
-  { id_ternero: '1', raza: 'Holando', peso: 40 }, { id_ternero: '2', raza: 'Holando', peso: 40 }] }));
+  { id_ternero: '1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk },
+  { id_ternero: '2', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] }));
 check('sexo simple con 2 crias', r.ok === false && /no es de parto doble/.test(r.detalles.join()));
 check('rechazos no escriben filas', formato().length === 4, 'filas=' + formato().length);
 check('rechazos quedan en _log', log().filter((l) => /rechazado/.test(l[4])).length === 4,
@@ -307,6 +313,78 @@ r = post(partoBase({ uuid: 'u-fecha-0009', fecha_parto: '12/08/2026' }));
 check('acepta DD/MM/YYYY', r.ok === true && formato()[0][2].getDate() === 12, JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-fecha-0010', fecha_parto: '2026-13-45' }));
 check('rechaza fecha invalida', r.ok === false, JSON.stringify(r));
+
+console.log('\n8b. Mellizos: sexo, estado y calostro por cria');
+libro = nuevoLibro();
+const gemelos = (extra, t1, t2) => post(partoBase(Object.assign({
+  uuid: 'u-gem-' + Math.floor(Math.random() * 1e9), id_vaca: '5514',
+  sexo: '8 Otros Gemelos (M+M o M+H)',
+  terneros: [
+    Object.assign({ id_ternero: '9101', raza: 'Holando', peso: 32, vive: true,
+                    sexo: 'Macho', calostro: calostroOk }, t1 || {}),
+    Object.assign({ id_ternero: '9102', raza: 'Holando', peso: 30, vive: true,
+                    sexo: 'Hembra',
+                    calostro: Object.assign({}, calostroOk,
+                      { calidad_sin_mejorar: '30', lts_ternero: '3', id_vaca_origen: '226' }) }, t2 || {})
+  ]
+}, extra || {})));
+
+let g = gemelos();
+check('acepta el parto doble', g.ok === true && g.filas_escritas === 2, JSON.stringify(g));
+let [m1, m2] = formato().slice(-2);
+check('sexo por cria', m1[COL.sexoCria] === 'Macho' && m2[COL.sexoCria] === 'Hembra',
+      m1[COL.sexoCria] + ' / ' + m2[COL.sexoCria]);
+check('las dos vivas', m1[COL.estado] === 'Vivo' && m2[COL.estado] === 'Vivo');
+check('calostro distinto por cria', m1[9] === '26' && m2[9] === '30', m1[9] + ' / ' + m2[9]);
+check('litros para el ternero distintos', m1[14] === 4 && m2[14] === 3, m1[14] + ' / ' + m2[14]);
+check('vaca origen distinta', m1[15] === '119' && m2[15] === '226');
+check('litros de la MADRE iguales en las dos filas', m1[13] === m2[13] && m1[13] === 5,
+      m1[13] + ' / ' + m2[13]);
+check('mismo ID Parto', m1[COL.idParto] === m2[COL.idParto]);
+
+console.log('\n8c. Mellizos con una cria muerta');
+g = gemelos({}, {}, { vive: false });
+check('acepta', g.ok === true && g.filas_escritas === 2, JSON.stringify(g));
+[m1, m2] = formato().slice(-2);
+check('la viva conserva sus datos', m1[6] === '9101' && m1[COL.estado] === 'Vivo');
+check('la muerta va en --- de G a P', m2.slice(6, 16).every((v) => v === '---'),
+      JSON.stringify(m2.slice(6, 16)));
+check('pero queda registrado su sexo', m2[COL.sexoCria] === 'Hembra', m2[COL.sexoCria]);
+check('y que nacio muerta', m2[COL.estado] === 'Muerto', m2[COL.estado]);
+
+console.log('\n8d. Reglas del codigo 8');
+g = gemelos({}, { sexo: '' });
+check('exige el sexo cuando el codigo es ambiguo',
+      g.ok === false && /falta el sexo/.test((g.detalles || []).join()), JSON.stringify(g));
+g = gemelos({}, { sexo: 'Macho o Hembra' });
+check('rechaza un sexo invalido',
+      g.ok === false && /sexo invalido/.test((g.detalles || []).join()), JSON.stringify(g));
+g = gemelos({}, { vive: false }, { vive: false });
+check('rechaza las dos muertas con codigo de vivas',
+      g.ok === false && /todas las crias/.test((g.detalles || []).join()), JSON.stringify(g));
+
+console.log('\n8e. Parto simple: el sexo sale del codigo, sin preguntarlo');
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-simple-sexo' }));                  // codigo 6 Macho Vivo
+check('deduce Macho del codigo 6', formato()[0][COL.sexoCria] === 'Macho', formato()[0][COL.sexoCria]);
+post(partoBase({ uuid: 'u-hembra', sexo: '1 Hembra Viva' }));
+check('deduce Hembra del codigo 1', formato()[1][COL.sexoCria] === 'Hembra', formato()[1][COL.sexoCria]);
+post(partoBase({ uuid: 'u-muerta-sexo', sexo: '4 Hembra Muerta', terneros: [] }));
+check('cria muerta: Hembra y Muerto', formato()[2][COL.sexoCria] === 'Hembra' &&
+      formato()[2][COL.estado] === 'Muerto', JSON.stringify(formato()[2].slice(19, 21)));
+
+console.log('\n8f. Formato viejo (calostro a nivel parto) sigue entrando');
+libro = nuevoLibro();
+const viejo = post({
+  token: TOKEN, uuid: 'u-viejo-1', operario: 'Julio', id_vaca: '4115',
+  fecha_parto: '2026-08-12', hora_nacimiento: '07:00', tipo_parto: '1 Normal',
+  sexo: '6 Macho Vivo', terneros: [{ id_ternero: '24543', raza: 'Holando', peso: 42 }],
+  calostro: { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---',
+              consumido: 'Si', lts_madre: '5', lts_ternero: '4', id_vaca_origen: '119' },
+  tambo: '2', rodeo: '26', notas: ''
+});
+check('acepta el payload sin calostro por cria', viejo.ok === true, JSON.stringify(viejo));
+check('toma los litros de la madre de adentro de calostro', formato()[0][13] === 5, formato()[0][13]);
 
 console.log('\n9. Identidad: solo cuentas del dominio');
 libro = nuevoLibro();
