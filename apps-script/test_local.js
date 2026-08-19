@@ -363,6 +363,21 @@ g = gemelos({}, { vive: false }, { vive: false });
 check('rechaza las dos muertas con codigo de vivas',
       g.ok === false && /todas las crias/.test((g.detalles || []).join()), JSON.stringify(g));
 
+console.log('\n8d-bis. El codigo del parto y el sexo tienen que coincidir');
+g = gemelos({}, { sexo: 'Hembra' }, { sexo: 'Hembra' });
+check('rechaza dos hembras con el codigo 8',
+      g.ok === false && /codigo "2 Hembras Gemelas Vivas"/.test((g.detalles || []).join()),
+      JSON.stringify(g));
+g = gemelos({ sexo: '2 Hembras Gemelas Vivas' }, { sexo: 'Macho' }, { sexo: 'Hembra' });
+check('rechaza un macho con el codigo 2',
+      g.ok === false && /no admite machos/.test((g.detalles || []).join()), JSON.stringify(g));
+g = gemelos({ sexo: '2 Hembras Gemelas Vivas' }, { sexo: 'Hembra' }, { sexo: 'Hembra' });
+check('acepta dos hembras con el codigo 2', g.ok === true, JSON.stringify(g));
+g = gemelos({}, { sexo: 'Macho' }, { sexo: 'Hembra' });
+check('acepta M+H con el codigo 8', g.ok === true, JSON.stringify(g));
+g = gemelos({}, { sexo: 'Macho' }, { sexo: 'Macho' });
+check('acepta M+M con el codigo 8', g.ok === true, JSON.stringify(g));
+
 console.log('\n8e. Parto simple: el sexo sale del codigo, sin preguntarlo');
 libro = nuevoLibro();
 post(partoBase({ uuid: 'u-simple-sexo' }));                  // codigo 6 Macho Vivo

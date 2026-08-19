@@ -350,11 +350,11 @@ function pintarTerneros() {
         </div>
       </div>
       ${n > 1 ? `
-      <div class="grid g2" style="margin-top:12px">
-        <div>
-          <div class="lab">Sexo de esta cría ${sexoAmbiguo() ? '<span class="req">*</span>' : ''}</div>
+      <div class="grid ${sexoAmbiguo() ? 'g2' : ''}" style="margin-top:12px">
+        ${sexoAmbiguo() ? `<div>
+          <div class="lab">Sexo de esta cría <span class="req">*</span></div>
           <div class="chips" data-caja="sexoc:${i}"></div>
-        </div>
+        </div>` : ''}
         <div>
           <div class="lab">¿Nació viva?</div>
           <div class="chips" data-caja="vive:${i}"></div>
@@ -365,8 +365,9 @@ function pintarTerneros() {
   st.terneros.forEach((t, i) => {
     caja('raza:' + i, listas.raza, t.raza, { ancho: true });
     if (n > 1) {
-      const sugerido = t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '';
-      caja('sexoc:' + i, ['Hembra', 'Macho'], sugerido, { ancho: true });
+      // Con el codigo 2 (dos hembras) el sexo ya esta dicho: preguntarlo solo
+      // abriria la puerta a marcar algo que contradiga el codigo del parto.
+      if (sexoAmbiguo()) caja('sexoc:' + i, ['Hembra', 'Macho'], t.sexo || '', { ancho: true });
       caja('vive:' + i, ['Vivo', 'Muerto'], t.vive ? 'Vivo' : 'Muerto',
            { ancho: true, claseDe: (v) => (v === 'Muerto' ? 'bad' : '') });
     }
@@ -676,6 +677,19 @@ function faltantes(p) {
 }
 
 /**
+ * El codigo del parto y el sexo de las crias tienen que decir lo mismo.
+ * El 8 es M+M o M+H: dos hembras corresponden al codigo 2. Sin esto entran
+ * filas contradictorias que despues nadie sabe como interpretar.
+ */
+function coherenciaSexo() {
+  if (esMuerto() || st.terneros.length < 2 || !sexoAmbiguo()) return '';
+  if (st.terneros.every((t) => t.sexo === 'Hembra')) {
+    return 'Dos hembras es el código «2 Hembras Gemelas Vivas». El 8 es M+M o M+H.';
+  }
+  return '';
+}
+
+/**
  * El rodeo es campo abierto a proposito: se van definiendo sobre la marcha.
  * Pero abierto no es cualquier cosa: en la planilla vieja la columna de rodeo
  * junta "-", "---" y numeros sueltos. Un rodeo siempre es un numero.
@@ -693,6 +707,8 @@ async function guardarParto() {
   if (!rodeoValido(p.rodeo)) {
     return avisar('El rodeo tiene que ser un número: "' + p.rodeo + '"', true);
   }
+  const incoherencia = coherenciaSexo();
+  if (incoherencia) return avisar(incoherencia, true);
 
   await guardarLocal({
     uuid: p.uuid, estado: 'pendiente', intentos: 0, error: '',

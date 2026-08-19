@@ -417,12 +417,44 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperarSync(page, 12);
     check('el servidor escribio 2 filas', filas.filter((f) => f.vaca === '5514').length === 2);
 
+    console.log('\n4b-bis. El codigo 2 no pregunta el sexo, y el 8 no acepta dos hembras');
+    await elegirSexo(page, 2);                      // 2 Hembras Gemelas Vivas
+    await esperar(400);
+    check('con el codigo 2 hay 2 fichas de ternero',
+          await page.$$eval('#terneros .subcard', (c) => c.length) === 2);
+    check('pero NO pregunta el sexo: ya lo dice el codigo',
+          await page.$$eval('[data-caja^="sexoc:"]', (c) => c.length) === 0);
+    check('sigue preguntando si nacio viva',
+          await page.$$eval('[data-caja^="vive:"]', (c) => c.length) === 2);
+
+    await elegirSexo(page, 8);
+    await esperar(400);
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '7777';
+      const ids = document.querySelectorAll('[data-ternero]');
+      ['7101', '7102'].forEach((v, i) => {
+        ids[i].value = v; ids[i].dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      document.querySelector('[data-caja="sexoc:0"] [data-val="Hembra"]').click();
+      document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
+    });
+    await esperar(300);
+    await page.click('#btnGuardar');
+    await esperar(500);
+    check('no guarda dos hembras con el codigo 8', !(await visible(page, '#modalOk')));
+    check('y explica cual es el codigo correcto',
+          /2 Hembras Gemelas Vivas/.test(await page.$eval('#toast', (e) => e.textContent)),
+          await page.$eval('#toast', (e) => e.textContent));
+    check('el parto NO quedo guardado', (await leerPayload(page, '7777')) === undefined);
+
     console.log('\n4c. Mellizos con una cria muerta');
     await elegirSexo(page, 8);
     await esperar(300);
     await page.evaluate(() => {
       document.getElementById('fVaca').value = '5515';
       const ids = document.querySelectorAll('[data-ternero]');
+      // Limpiar: un rechazo anterior deja el formulario cargado (a proposito).
+      ids.forEach((i) => { i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); });
       ids[0].value = '9200'; ids[0].dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('[data-caja="sexoc:0"] [data-val="Macho"]').click();
       document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();

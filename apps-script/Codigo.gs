@@ -15,7 +15,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r3-cria-2026-08-18';
+var VERSION = 'r4-coherencia-2026-08-19';
 
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
 var HOJA_FORMATO = 'NUEVO FORMATO PREPARTO';
@@ -287,6 +287,19 @@ function validar_(p, listas) {
       err.push(pre + 'calidad_mejorado cargada con mejorado=' + cal.mejorado);
     }
   });
+
+  // El codigo del parto y el sexo de las crias tienen que decir lo mismo.
+  // El 2 es hembra+hembra; el 8 es M+M o M+H, o sea que NO puede ser dos hembras.
+  if (terneros.length > 1) {
+    var codigo = String(p.sexo).charAt(0);
+    var sexos = terneros.map(function (t) { return sexoCria_(p, t); });
+    if (codigo === '2' && sexos.some(function (x) { return x !== 'Hembra'; })) {
+      err.push('el codigo "2 Hembras Gemelas Vivas" no admite machos: usar el 8');
+    }
+    if (codigo === '8' && sexos.every(function (x) { return x === 'Hembra'; })) {
+      err.push('dos hembras corresponden al codigo "2 Hembras Gemelas Vivas", no al 8');
+    }
+  }
 
   // Mellizos donde las dos crias nacieron muertas: el codigo del parto no lo refleja.
   if (terneros.length && terneros.every(function (t) { return t.vive === false; })) {
