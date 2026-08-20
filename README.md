@@ -1,7 +1,16 @@
 # TRST — Partos
 
+**En producción desde agosto de 2026.**
+
 App de carga de partos en tablet. El operario carga en el corral (funciona sin señal) y el
 renglón cae limpio en la planilla de Google, listo para DairyComp.
+
+Reemplaza la carga manual en `preparto.xlsx`, donde sobre 1.486 partos de 2026 había
+17 formas de escribir "Julio", rangos como `23-26` en calidad de calostro, y mellizos
+que no se podían representar.
+
+👉 **Para usar y mantener el sistema: [`docs/operacion.md`](docs/operacion.md).**
+El resto de este README es para quien vaya a tocar el código.
 
 **El Google Sheet es la base de datos.** No hay servidor propio ni costo mensual: el backend
 es un Apps Script adjunto a la planilla, y el frontend es una PWA estática.
