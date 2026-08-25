@@ -22,6 +22,12 @@ const RAIZ = __dirname;
 const ADMIN = 'andresduhau@admin.com.ar';
 const DISPOSITIVO = 'tablet.maternidad@admin.com.ar';
 
+/* Modo demo: `node pwa/test_pwa.js --demo` abre Chrome a la vista, con sesion
+   iniciada y el backend simulado, y se queda ahi para poder tocar la app.
+   No corre ninguna asercion. Sirve para ver una version antes de publicarla
+   sin escribir una sola fila en la planilla real. */
+const DEMO = process.argv.includes('--demo');
+
 let fallos = 0;
 const check = (nombre, cond, detalle) => {
   console.log((cond ? '  ok    ' : '  FALLA ') + nombre + (cond || !detalle ? '' : '  -> ' + detalle));
@@ -263,8 +269,9 @@ const visible = (page, sel) => page.evaluate((s) => {
   api.listen(PUERTO_API);
 
   const browser = await puppeteer.launch({
-    executablePath: CHROME, headless: true,
-    args: ['--no-sandbox', '--disable-dev-shm-usage']
+    executablePath: CHROME, headless: !DEMO,
+    defaultViewport: DEMO ? null : undefined,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'].concat(DEMO ? ['--start-maximized'] : [])
   });
 
   const errores = [];
@@ -274,6 +281,37 @@ const visible = (page, sel) => page.evaluate((s) => {
   let page = await nuevaPagina(browser, credDispositivo, false);   // sin auto-login
   page.on('pageerror', (e) => errores.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errores.push(m.text()); });
+
+  if (DEMO) {
+    const demo = await nuevaPagina(browser, jwtFalso(ADMIN, 600), true);
+    demo.on('pageerror', (e) => console.log('  ERROR JS: ' + e));
+    await demo.goto(base, { waitUntil: 'networkidle0' });
+    await esperar(1200);
+    // Se entra solo: en la demo el login de Google no aporta nada y estorba.
+    await demo.evaluate(() => window.__cb && window.__cb({ credential: window.__cred }));
+    await esperar(800);
+
+    console.log(`
+  Preparto ${require('fs').readFileSync(path.join(RAIZ, 'sw.js'), 'utf8')
+    .match(/preparto-v\d+/)[0]} — MODO DEMO
+
+  Chrome quedo abierto con la app. Es la version de este repo, sin publicar.
+
+  El backend es simulado: NO escribe en la planilla real. Todo lo que cargues
+  o corrijas queda en esta corrida y se pierde al cerrar.
+
+  Que mirar:
+    - El formulario ya no tiene Rodeo, y el Peso arranca en "—"
+    - Guardas un parto sin pesarlo -> Partos del dia lo marca "Falta pesar"
+    - El boton Pesar abre el mismo formulario con lo no editable bloqueado
+    - Cambiando el Operario, el peso se niega y el calostro no
+
+  Ctrl+C aca para cerrar todo.
+`);
+    // Mantener el proceso vivo hasta que se cierre Chrome o se corte a mano.
+    browser.on('disconnected', () => { web.close(); api.close(); process.exit(0); });
+    await new Promise(() => {});
+  }
 
   try {
     console.log('\n1. Sin sesion no se entra');
