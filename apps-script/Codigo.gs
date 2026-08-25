@@ -15,7 +15,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r4-coherencia-2026-08-19';
+var VERSION = 'r5-edicion-2026-08-25';
 
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
 var HOJA_FORMATO = 'NUEVO FORMATO PREPARTO';
@@ -31,9 +31,37 @@ var SEXO_POR_CODIGO = { '1': 'Hembra', '2': 'Hembra', '4': 'Hembra', '6': 'Macho
 
 // Posiciones (base 0) en la fila armada. A-S es el formato; de T en adelante,
 // los datos por cria y las columnas tecnicas.
+var COL_OPERARIO = 0;    // A
+var COL_PESO = 8;        // I
+var COL_TAMBO = 16;      // Q
+var COL_RODEO = 17;      // R
+var COL_ESTADO_CRIA = 20; // U
 var COL_ID_PARTO = 21;   // V
+var COL_CRIA = 22;       // W
+var COL_UUID = 23;       // X
+var COL_CARGADO_EN = 24; // Y
 var ANCHO_FILA = 26;     // A..Z
 var LOCK_MS = 30000;
+
+/* Que se puede corregir de un parto ya escrito, y donde vive cada cosa.
+ * El sexo NO esta: el codigo del parto manda cuantas crias hay, y editarlo
+ * obligaria a agregar o borrar filas — justo el bloque que leen Nahuel y
+ * DairyComp. Un sexo mal cargado lo corrige Nahuel en la planilla.
+ * ID de ternero, raza, hora, tipo de parto y notas tampoco: misma razon de
+ * alcance, se piden aparte si hacen falta. */
+var EDITABLE_CRIA = {          // por cria: cada fila lleva la suya
+  peso: COL_PESO,
+  calidad_sin_mejorar: 9,      // J
+  mejorado: 10,                // K
+  calidad_mejorado: 11,        // L
+  consumido: 12,               // M
+  lts_ternero: 14,             // O
+  id_vaca_origen: 15           // P
+};
+var EDITABLE_PARTO = {         // del parto: se repite igual en todas sus filas
+  lts_madre: 13,               // N
+  tambo: COL_TAMBO
+};
 
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
 var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
@@ -79,6 +107,13 @@ function doPost(e) {
     }
     if (payload.accion === 'partos') {
       return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha) });
+    }
+
+    // Corregir un parto ya escrito. Va por su propio camino y NO por el alta:
+    // ahi el uuid es la llave de idempotencia, y una correccion que entrara por
+    // esa puerta seria indistinguible de un reintento de la cola de la tablet.
+    if (payload.accion === 'editar') {
+      return editarParto_(payload, auth);
     }
 
     if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
@@ -202,11 +237,198 @@ function construirFilas_(ss, p) {
       str_(p.operario), str_(p.id_vaca), fecha, str_(p.hora_nacimiento),
       str_(p.tipo_parto), str_(p.sexo)
     ].concat(bloque).concat([
-      str_(p.tambo), str_(p.rodeo), str_(p.notas),
+      // El rodeo ya no se carga en la tablet: la columna R queda vacia y la
+      // completa Nahuel en la planilla. Vacio se lee como "falta asignar",
+      // que es el estado real; '---' no sirve porque en G-P ya significa
+      // "cria muerta" y sumarle un segundo sentido lo vuelve ambiguo.
+      str_(p.tambo), '', str_(p.notas),
       sexoCria_(p, t), muerto ? 'Muerto' : 'Vivo',
       idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn, str_(p.dispositivo)
     ]);
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Edicion                                                             */
+/* ------------------------------------------------------------------ */
+
+/* Como se escribe cada campo editable. Espeja lo que hace construirFilas_:
+ * si el alta guarda el peso como numero, la correccion tambien, o la misma
+ * columna termina con numeros y textos mezclados. */
+var FORMATO_CAMPO = {
+  peso: num_, lts_ternero: num_, lts_madre: num_,
+  calidad_sin_mejorar: str_, mejorado: str_, calidad_mejorado: str_,
+  consumido: str_, id_vaca_origen: str_, tambo: str_
+};
+
+/**
+ * Corrige un parto ya escrito, sin agregar ni borrar filas: se pisan celdas de
+ * renglones que ya existen. Mellizos son dos filas con el mismo uuid y se tocan
+ * las dos — el peso y el calostro son de cada cria, pero los litros que produjo
+ * la madre y el tambo son del parto y van iguales en las dos.
+ *
+ * El renglon original de _log no se toca nunca: cada correccion suma su propio
+ * renglon con el uuid, quien la hizo y que cambio. La hoja sigue siendo
+ * append-only, que es lo que hace que se pueda reconstruir que paso.
+ */
+function editarParto_(p, auth) {
+  if (!p.uuid) return json_({ ok: false, error: 'falta uuid' });
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) return json_({ ok: false, error: 'ocupado, reintentar' });
+
+  try {
+    var ss = SpreadsheetApp.openById(SS_ID);
+    var hoja = ss.getSheetByName(HOJA_FORMATO);
+    var tz = ss.getSpreadsheetTimeZone();
+
+    var filas = filasDeUuid_(hoja, p.uuid);
+    if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
+
+    // La ventana es lo cargado HOY, no la fecha del parto: un parto de ayer
+    // cargado esta manana todavia se corrige, y uno cargado ayer ya no.
+    if (!cargadoHoy_(filas[0].datos[COL_CARGADO_EN], tz)) {
+      return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
+    }
+
+    var terneros = p.terneros || [];
+    if (terneros.length && terneros.length !== filas.length) {
+      return json_({ ok: false, error: 'el parto tiene ' + filas.length +
+                     ' cria(s) y vinieron ' + terneros.length });
+    }
+
+    var listas = leerMaestro_(ss);
+    var err = [];
+    var cambios = [];
+
+    filas.forEach(function (f, i) {
+      var pre = filas.length > 1 ? 'cria ' + (i + 1) + ': ' : '';
+      // Una cria muerta lleva '---' de G a P, igual que se hacia a mano.
+      var muerta = String(f.datos[COL_ESTADO_CRIA]) === 'Muerto';
+
+      // El tambo (Q) es del parto y esta fuera de ese bloque: se corrige siempre.
+      anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
+
+      // Los litros que produjo la madre tambien son del parto, pero viven en la
+      // columna N, que SI esta adentro del bloque. Escribirlos en una fila de
+      // cria muerta dejaria un numero suelto en el medio de los '---'.
+      if (muerta) {
+        if (p.lts_madre !== undefined) {
+          err.push(pre + 'cria muerta: de G a P va todo en ' + VACIO);
+        }
+      } else {
+        anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.lts_madre, 'lts_madre',
+                      p.lts_madre, '');
+      }
+
+      var t = terneros[i];
+
+      // Si el estado de la cria esta mal, el codigo del parto tambien, y el
+      // codigo no es editable: eso lo corrige Nahuel en la planilla.
+      if (muerta) {
+        if (t && tocaAlgo_(t)) err.push(pre + 'esta marcada muerta: no lleva peso ni calostro');
+        return;
+      }
+      if (!t) return;
+
+      // El peso solo lo corrige quien cargo el parto. Es un recordatorio de
+      // quien se hizo cargo del animal, no un control de acceso: el operario se
+      // elige de una lista en la tablet y nadie prueba que sea quien dice ser.
+      //
+      // Se mira si el peso CAMBIA, no si vino en el payload: la tablet manda el
+      // parto entero al corregir cualquier cosa, y reenviar el mismo peso no es
+      // pesar. Si no, corregir el calostro quedaria bloqueado para todos menos
+      // uno, sin motivo.
+      if (t.peso !== undefined && String(f.datos[COL_PESO]) !== String(num_(t.peso)) &&
+          String(p.operario) !== String(f.datos[COL_OPERARIO])) {
+        err.push(pre + 'el peso lo carga ' + f.datos[COL_OPERARIO] + ', que fue quien cargo el parto');
+      }
+
+      Object.keys(EDITABLE_CRIA).forEach(function (clave) {
+        var valor = clave === 'peso' ? t.peso : (t.calostro || {})[clave];
+        anotarCambio_(cambios, err, listas, f, EDITABLE_CRIA[clave], clave, valor, pre);
+      });
+
+      // La columna L solo se habilita con Mejorado = Si. Se mira el resultado
+      // final, no lo que vino: se puede estar cambiando uno solo de los dos.
+      var mejorado = resultante_(f, t, 'mejorado', 10);
+      var calidad = resultante_(f, t, 'calidad_mejorado', 11);
+      if (String(mejorado) === 'Si' && (!calidad || String(calidad) === VACIO)) {
+        err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
+      }
+      if (String(mejorado) !== 'Si' && calidad && String(calidad) !== VACIO) {
+        err.push(pre + 'calidad_mejorado cargada con mejorado=' + mejorado);
+      }
+    });
+
+    var log = ss.getSheetByName(HOJA_LOG);
+    if (err.length) {
+      log.appendRow([p.uuid, new Date(), JSON.stringify(p), 0,
+                     'edicion rechazada: ' + err.join(' | '), auth.email]);
+      return json_({ ok: false, error: 'validacion', detalles: err });
+    }
+    if (!cambios.length) return json_({ ok: true, uuid: p.uuid, cambios: 0 });
+
+    // Se escribe celda por celda a proposito: reescribir la fila entera pisaria
+    // tambien el rodeo que Nahuel carga a mano en la columna R.
+    cambios.forEach(function (c) {
+      hoja.getRange(c.fila, c.col + 1, 1, 1).setValues([[c.a]]);
+    });
+
+    log.appendRow([p.uuid, new Date(), JSON.stringify(cambios), cambios.length,
+                   'editado por ' + str_(p.operario), auth.email]);
+
+    return json_({ ok: true, uuid: p.uuid, cambios: cambios.length, detalle: cambios });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Valida un valor nuevo y, si de verdad cambia, lo anota para escribir. */
+function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
+  if (valor === undefined || valor === null) return;      // no vino: no se toca
+  if (valor === '') {
+    // Reenviar vacio algo que ya estaba vacio no es borrar nada: la tablet
+    // manda el parto entero, y hay campos que son opcionales desde el alta
+    // (la vaca que provee el calostro, por ejemplo).
+    if (String(f.datos[col]) === '') return;
+    err.push(pre + clave + ' no puede quedar vacio');     // borrar si es otra cosa
+    return;
+  }
+  enLista_(err, listas, clave, valor, pre);
+
+  var nuevo = (FORMATO_CAMPO[clave] || str_)(valor);
+  if (String(f.datos[col]) === String(nuevo)) return;     // ya vale eso
+  cambios.push({ fila: f.fila, col: col, campo: clave, de: f.datos[col], a: nuevo });
+}
+
+/** El valor que va a quedar: el que vino, o el que ya estaba si no vino. */
+function resultante_(f, t, clave, col) {
+  var v = (t.calostro || {})[clave];
+  return v === undefined || v === null ? f.datos[col] : v;
+}
+
+function tocaAlgo_(t) {
+  if (t.peso !== undefined) return true;
+  var cal = t.calostro || {};
+  return Object.keys(cal).some(function (k) { return cal[k] !== undefined; });
+}
+
+/** Todas las filas de un parto, por uuid (columna X). Mellizos devuelven dos. */
+function filasDeUuid_(hoja, uuid) {
+  if (hoja.getLastRow() < 2) return [];
+  var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
+  var out = [];
+  for (var i = 0; i < datos.length; i++) {
+    if (String(datos[i][COL_UUID]) === String(uuid)) out.push({ fila: i + 2, datos: datos[i] });
+  }
+  return out;
+}
+
+function cargadoHoy_(v, tz) {
+  if (!(v instanceof Date)) return false;
+  return Utilities.formatDate(v, tz, 'yyyy-MM-dd') ===
+         Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
 }
 
 /** Los litros de la madre son del parto. Se acepta arriba o dentro de calostro. */
@@ -244,7 +466,7 @@ function validar_(p, listas) {
   enLista_(err, listas, 'sexo', p.sexo);
   enLista_(err, listas, 'hora_nacimiento', p.hora_nacimiento);
   enLista_(err, listas, 'tambo', p.tambo);
-  enLista_(err, listas, 'rodeo', p.rodeo);
+  // El rodeo ya no viaja desde la tablet: no se valida ni se escribe.
 
   if (esMuerto_(p.sexo)) return err;
 
@@ -269,6 +491,10 @@ function validar_(p, listas) {
     if (t.vive === false) return;                   // cria muerta: va toda en '---'
 
     enLista_(err, listas, 'raza', t.raza, pre);
+    // El peso se carga en un segundo paso, cuando el ternero se pesa de verdad.
+    // Vacio es un estado legitimo del alta ("falta pesar"); enLista_ deja pasar
+    // lo vacio, y lo que si se exige es que un peso presente sea de la lista.
+    // La accion 'pesar' es la que lo vuelve obligatorio.
     enLista_(err, listas, 'peso', t.peso, pre);
 
     var cal = t.calostro || p.calostro || {};
@@ -355,11 +581,15 @@ function partosDelDia_(ss, fechaISO) {
   var buscada = fechaISO || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
   var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
 
-  return datos.filter(function (f) {
-    var d = f[2];
+  return datos.map(function (f, i) {
+    return { f: f, fila: i + 2 };                 // +2: la 1 es el encabezado
+  }).filter(function (r) {
+    var d = r.f[2];
     return d instanceof Date && Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
-  }).map(function (f) {
+  }).map(function (r) {
+    var f = r.f;
     return {
+      fila: r.fila,
       operario: f[0], id_vaca: f[1],
       fecha: Utilities.formatDate(f[2], tz, 'yyyy-MM-dd'), hora: f[3],
       tipo_parto: f[4], sexo: f[5],

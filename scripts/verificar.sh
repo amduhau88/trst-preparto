@@ -98,13 +98,19 @@ parto() { # <uuid> <id_vaca> <sexo> <terneros_json> <nota>   [TOK=... para forza
  "tipo_parto":"1 Normal","sexo":"$3","terneros":$4,
  "calostro":{"calidad_sin_mejorar":"26","mejorado":"No","calidad_mejorado":"---",
              "consumido":"Si","lts_madre":"5","lts_ternero":"4","id_vaca_origen":"119"},
- "tambo":"2","rodeo":"26","notas":"PRUEBA $5 · $RUN"}
+ "tambo":"2","notas":"PRUEBA $5 · $RUN"}
+JSON
+}
+
+editar() { # <uuid> <operario> <cuerpo_json_extra>
+  cat <<JSON
+{"token":"$TOKEN","accion":"editar","uuid":"$1","operario":"$2",$3}
 JSON
 }
 
 # Version que espera este script. Tiene que coincidir con VERSION en Codigo.gs:
 # si no, lo que esta publicado no es el codigo de este repo.
-VERSION_ESPERADA='r4-coherencia-2026-08-19'
+VERSION_ESPERADA='r5-edicion-2026-08-25'
 
 echo
 echo "1. Conectividad"
@@ -171,7 +177,34 @@ check "cria viva sin ternero" \
       "$(post "$(parto "viva-$RUN" 4115 '1 Hembra Viva' '[]' viva)")" 'sin datos de ternero'
 
 echo
-echo "7. Lectura"
+echo "7. Peso en un segundo paso"
+R=$(post "$(parto "pesar-$RUN" 7001 '6 Macho Vivo' \
+     '[{"id_ternero":"7788","raza":"Holando"}]' pesar)")
+check "el alta entra sin peso" "$R" '"ok":true'
+check "y escribe su fila igual" "$R" '"filas_escritas":1'
+
+echo
+echo "8. Corregir un parto del dia"
+check "el que cargo el parto lo pesa" \
+      "$(post "$(editar "pesar-$RUN" Julio '"terneros":[{"peso":44}]')")" '"cambios":1'
+check "reenviar el mismo peso no cambia nada" \
+      "$(post "$(editar "pesar-$RUN" Julio '"terneros":[{"peso":44}]')")" '"cambios":0'
+check "otro operario no puede pesarlo" \
+      "$(post "$(editar "pesar-$RUN" Griselda '"terneros":[{"peso":46}]')")" 'lo carga Julio'
+check "pero si corrige el calostro" \
+      "$(post "$(editar "pesar-$RUN" Griselda '"terneros":[{"calostro":{"consumido":"No"}}]')")" \
+      '"ok":true'
+check "y el tambo" \
+      "$(post "$(editar "pesar-$RUN" Griselda '"tambo":"3"')")" '"ok":true'
+check "un uuid que no existe" \
+      "$(post "$(editar "no-existe-$RUN" Julio '"terneros":[{"peso":40}]')")" 'no existe el parto'
+check "un peso fuera de lista" \
+      "$(post "$(editar "pesar-$RUN" Julio '"terneros":[{"peso":999}]')")" 'fuera de lista'
+check "mas crias que filas" \
+      "$(post "$(editar "pesar-$RUN" Julio '"terneros":[{"peso":40},{"peso":41}]')")" 'cria'
+
+echo
+echo "9. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
 check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
 check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'

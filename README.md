@@ -169,7 +169,9 @@ destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañ
 
   "terneros": [                    // 2 elementos si el sexo es de parto doble (2 u 8)
     {
-      "id_ternero": "24543", "raza": "Holando", "peso": 42,
+      "id_ternero": "24543", "raza": "Holando",
+      "peso": 42,                  // OPCIONAL: sin él, la columna I queda vacía
+                                   // ("falta pesar") y se carga en un 2º paso
       "sexo": "Macho",             // obligatorio sólo con el código 8, que es ambiguo
       "vive": true,                // false = nació muerta: su fila va en "---"
       "calostro": {                // cada cría lleva el suyo
@@ -184,7 +186,6 @@ destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañ
   ],
 
   "tambo": "2",
-  "rodeo": "26",
   "notas": ""
 }
 ```
@@ -201,6 +202,34 @@ Respuestas:
 
 `GET ?action=ping` · `?action=maestro&token=…` · `?action=partos&token=…&fecha=YYYY-MM-DD`
 
+### Corregir un parto ya escrito
+
+Va por su **propia acción**, no por el alta: ahí el `uuid` es la llave de idempotencia,
+y una corrección que entrara por esa puerta sería indistinguible de un reintento de la cola.
+
+```jsonc
+POST { "id_token": "…", "accion": "editar",
+  "uuid": "…",                     // ubica las filas por la columna X
+  "operario": "Julio",             // quién corrige: el peso sólo lo mueve quien cargó
+  "tambo": "2", "lts_madre": "5",  // del parto: van iguales en todas sus filas
+  "terneros": [                    // por cría, en el orden de Cria 1/2, 2/2
+    { "peso": 44, "calostro": { "consumido": "No" } }
+  ]
+}
+```
+
+| Caso | Respuesta |
+|---|---|
+| Corregido | `{"ok":true,"cambios":2,"detalle":[…]}` |
+| Nada cambió | `{"ok":true,"cambios":0}` |
+| Cargado otro día | `{"ok":false,"error":"solo se corrigen partos cargados hoy"}` |
+| Dato inválido | `{"ok":false,"error":"validacion","detalles":[…]}` |
+
+Se corrigen **peso (I), calostro (J–P) y tambo (Q)** de lo cargado **hoy** — mirando
+`Cargado en` (Y), no `Fecha Parto` (C), así un parto de ayer cargado hoy sigue siendo
+corregible. **Nunca se agrega ni se borra una fila**: se pisan celdas de renglones que ya
+existen, y se escribe celda por celda para no pisar el rodeo que Nahuel carga en R.
+
 ## Reglas de negocio
 
 - **Una fila por ternero.** Parto simple = 1 fila (igual que siempre). Mellizos = 2 filas con el
@@ -210,6 +239,10 @@ Respuestas:
 - **Calostro**: número entero o una excepción. Nunca un rango tipo `23-26`.
 - **Idempotencia**: el `uuid` se busca en `_log` antes de escribir. Sin esto, una tablet con
   señal intermitente duplicaría partos.
+- **El peso llega después**: columna I vacía = "falta pesar". Es un tercer estado, distinto
+  de `---` (cría muerta) y de un número. Lo carga quien cargó el parto.
+- **El código de sexo no se corrige desde la tablet**: manda cuántas crías hay, y cambiarlo
+  obligaría a agregar o borrar renglones del bloque que leen Nahuel y DairyComp.
 
 ## Cambiar las listas (sin tocar código)
 
@@ -219,7 +252,8 @@ no hace falta redeployar. Agregar un operario es escribirlo en la columna A.
 **Una columna vacía en `Maestro` significa "sin restricción"**: el backend acepta cualquier
 valor para ese campo. Es a propósito, para poder completar la planilla de a poco.
 
-Hoy están vacías: **Rodeo** (col. R) y **Vaca que Provee Calostro** (col. P).
+Hoy está vacía: **Vaca que Provee Calostro** (col. P). **Rodeo** (col. R) ya no se
+carga desde la tablet — la asigna Nahuel en la planilla.
 Y falta **Adrián** en Operarios (382 partos cargados en 2026).
 
 ## La PWA de la tablet

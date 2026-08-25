@@ -136,6 +136,15 @@
   .note b{color:#5e3a06}
   .note.dead{background:var(--danger-soft);border-color:#eccac7;color:#8a2f2f}
   .note.dead b{color:#6d2020}
+  .note.edit{background:#eef4ff;border-color:#c9d9f5;color:#28457e;margin-bottom:16px;
+    display:flex;align-items:center;gap:12px;font-size:13.5px}
+  .note.edit b{color:#16305e}
+  .note.edit .btn{margin-left:auto;padding:9px 16px;min-height:40px;font-size:13.5px;flex:none}
+
+  /* Corrigiendo: lo que no se corrige queda a la vista pero no se toca. Se
+     muestra en vez de esconderse para que el operario confirme que es el
+     parto que queria, sin poder cambiarle la identidad. */
+  .bloqueado{opacity:.5;pointer-events:none}
 
   /* ---------- pie ---------- */
   .footbar{background:#fff;border-top:1px solid var(--line);padding:12px 18px;
@@ -148,17 +157,20 @@
   .btn:disabled{opacity:.5;cursor:default}
 
   /* ---------- lista del día ---------- */
-  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+  @media (max-width:820px){.kpis{grid-template-columns:repeat(3,1fr)}}
   .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
   .kpi .n{font-size:26px;font-weight:800;letter-spacing:-.02em}
   .kpi .l{font-size:11.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.07em;
     font-weight:700;margin-top:2px}
   .listrow{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px;
     margin-bottom:9px;font-size:14px;display:grid;
-    grid-template-columns:74px 1fr 70px 120px 116px;gap:12px;align-items:center}
-  @media (max-width:820px){.listrow{grid-template-columns:70px 1fr 110px}.listrow .ocultar{display:none}}
+    grid-template-columns:74px 1fr 70px 120px 116px 106px;gap:12px;align-items:center}
+  @media (max-width:820px){.listrow{grid-template-columns:70px 1fr 106px}.listrow .ocultar{display:none}}
   .listrow .id{font-weight:800;font-size:17px}
   .listrow .meta{color:var(--ink-3);font-size:12px;margin-top:2px}
+  /* El boton de la fila: chico, pero con el alto minimo que se toca con guante. */
+  .listrow .btn{width:100%;padding:9px 10px;min-height:44px;font-size:13.5px}
   .pill{font-size:11.5px;font-weight:700;padding:4px 9px;border-radius:999px;display:inline-block}
   .pill.ok{background:var(--accent-soft);color:var(--accent)}
   .pill.wait{background:var(--warn-soft);color:var(--warn)}
@@ -237,6 +249,10 @@
 
   <!-- ========== FORMULARIO ========== -->
   <section class="view" id="v-form">
+    <!-- Corrigiendo un parto ya cargado: el formulario es el mismo, con los
+         campos que no se corrigen bloqueados. -->
+    <div id="avisoEdicion" class="note edit hidden"></div>
+
     <div class="card">
       <h2>Quién y cuándo</h2>
       <div class="grid g4">
@@ -294,16 +310,13 @@
 
     <div class="card">
       <h2>Destino de la vaca</h2>
+      <p class="hint">El rodeo lo asigna Nahuel en la planilla, no se carga acá.</p>
       <div class="grid g4">
         <div>
           <div class="lab">Tambo</div>
           <div class="chips" id="cTambo"></div>
         </div>
-        <label class="f">
-          <div class="lab">Rodeo asignado</div>
-          <div id="wrapRodeo"></div>
-        </label>
-        <label class="f" style="grid-column:span 2">
+        <label class="f" style="grid-column:span 3">
           <div class="lab">Notas</div>
           <textarea id="fNotas" placeholder="Solo lo que no entra en ninguna columna."></textarea>
         </label>
@@ -316,6 +329,7 @@
     <div class="kpis">
       <div class="kpi"><div class="n" id="kTot">0</div><div class="l">Partos hoy</div></div>
       <div class="kpi"><div class="n" id="kHM">0 / 0</div><div class="l">Hembras / machos</div></div>
+      <div class="kpi"><div class="n" id="kPesar" style="color:var(--warn)">0</div><div class="l">Falta pesar</div></div>
       <div class="kpi"><div class="n" id="kPend" style="color:var(--warn)">0</div><div class="l">Sin sincronizar</div></div>
       <div class="kpi"><div class="n" id="kMuertos" style="color:var(--danger)">0</div><div class="l">Cría muerta</div></div>
     </div>

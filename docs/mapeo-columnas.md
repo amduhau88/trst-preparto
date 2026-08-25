@@ -17,7 +17,7 @@ Hoja `NUEVO FORMATO PREPARTO` de la planilla [`TRST — Partos`](https://docs.go
 | F | Sexo, Vivo, Mellizos | Sexo / vivo / mellizos | 1 · 2 · 4 · 6 · 7 · 8 | `Maestro!E` |
 | G | ID Ternero | ID Ternero | Número (texto); `---` si nació muerto | libre |
 | H | Raza | Raza | Holando · Angus | `Maestro!G` |
-| I | Peso Ternero (Kg) | Peso | 25 a 60 | `Maestro!H` |
+| I | Peso Ternero (Kg) | Peso (2º paso) | 25 a 60; **vacía** hasta que se pesa | `Maestro!H` |
 | J | Calidad Calostro Sin Mejorar | Calidad sin mejorar | 18 a 35, o mastitis / sangre / campo | `Maestro!J` |
 | K | Mejorado | ¿Mejorado? | Si · No | `Maestro!K` |
 | L | Calidad de Calostro Mejorado | Calidad mejorado | `---`, o 26 a 35 (solo con K = Si) | `Maestro!L` |
@@ -26,7 +26,7 @@ Hoja `NUEVO FORMATO PREPARTO` de la planilla [`TRST — Partos`](https://docs.go
 | O | Lts Calostro para Ternero | Litros para el ternero | 2 a 6 | `Maestro!O` |
 | P | ID Vaca Origen Calostro | Vaca origen del calostro | Número (texto) | `Maestro!P` — **vacía** |
 | Q | Tambo Vaca | Tambo | 1 · 2 · 3 | `Maestro!Q` |
-| R | Asignacion Rodeo Vaca | Rodeo asignado | — | `Maestro!R` — **vacía** |
+| R | Asignacion Rodeo Vaca | — no se carga en la tablet | — | la completa Nahuel en la planilla |
 | S | Notas Nahuel | Notas | Texto libre | único campo libre |
 
 ## Por cría (T–U)
@@ -79,17 +79,24 @@ C como fecha `dd/MM/yyyy`; W como `dd/MM/yyyy HH:mm`.
 
 ## Decisiones ya tomadas
 
-**Rodeo (col. R): campo abierto, a propósito.** Los rodeos se van definiendo sobre la
-marcha, así que `Maestro!R` queda vacía y el operario escribe el número. Lo único que se
-exige es que **sea un número**, para que no vuelvan los `-` y `---` de la planilla vieja.
+**Rodeo (col. R): sale de la tablet.** El operario ya no lo carga. La app escribe la
+columna vacía y Nahuel asigna el rodeo en la planilla, que es donde se decide. Vacío se
+lee como "falta asignar"; no se usa `---` porque de G a P eso ya significa "cría muerta"
+y darle un segundo sentido lo vuelve ambiguo.
 
-Si algún día se quiere cerrar la lista, se cargan los valores en `Maestro!R` y el campo
-se convierte solo en un desplegable.
+**Peso (col. I): se carga en un segundo paso.** El ternero se pesa más tarde, así que el
+parto entra con la columna vacía y el peso se agrega desde *Partos del día*. Vacío es
+"falta pesar" — un tercer estado, distinto de `---` y de un número. Lo carga quien cargó
+el parto.
+
+**Corregir no mueve renglones.** Se pueden corregir peso, calostro (J–P) y tambo (Q) de
+los partos cargados **hoy**. El código de sexo no, porque dice cuántas crías hay y
+cambiarlo obligaría a agregar o borrar filas de este bloque.
 
 **Operarios: son cuatro** — Julio, Griselda, Martin, Trini. Adrián (382 partos) y Jorge (5)
 aparecen en el histórico 2026 pero ya no están en el tambo.
 
-## Cómo se agrega un operario o un rodeo
+## Cómo se agrega un operario o una raza
 
 Se escribe en la hoja `Maestro`, en la columna que corresponda. **Nada más.** Las tablets
 lo toman solas la próxima vez que abren con señal: no hace falta redeployar, ni tocar el

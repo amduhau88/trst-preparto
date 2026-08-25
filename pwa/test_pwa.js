@@ -67,6 +67,7 @@ const web = http.createServer((req, res) => {
 
 /* ---------- backend simulado (mismo contrato que Apps Script) ---------- */
 const recibidos = [];
+const ediciones = [];
 const filas = [];
 const uuidsVistos = new Set();
 const sinSesion = [];          // requests que llegaron sin credencial valida
@@ -116,6 +117,30 @@ const api = http.createServer((req, res) => {
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     if (p.accion === 'partos') return responder({ ok: true, partos: [] });
 
+    // Corregir: mismo contrato que Codigo.gs. Ubica las filas por uuid, no
+    // agrega ni borra ninguna, y el peso solo lo mueve quien cargo el parto.
+    if (p.accion === 'editar') {
+      ediciones.push(p);
+      const mias = filas.filter((f) => f.uuid === p.uuid);
+      if (!mias.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+
+      const malas = [];
+      let cambios = 0;
+      mias.forEach((f, i) => {
+        const t = (p.terneros || [])[i];
+        if (p.tambo !== undefined && p.tambo !== f.tambo) { f.tambo = p.tambo; cambios++; }
+        if (!t) return;
+        if (t.peso !== undefined && String(t.peso) !== String(f.peso)) {
+          if (p.operario !== f.operario) {
+            malas.push('el peso lo carga ' + f.operario);
+          } else { f.peso = t.peso; cambios++; }
+        }
+        if (t.calostro) { f.calostro = Object.assign({}, f.calostro, t.calostro); cambios++; }
+      });
+      if (malas.length) return responder({ ok: false, error: 'validacion', detalles: malas });
+      return responder({ ok: true, uuid: p.uuid, cambios: cambios });
+    }
+
     recibidos.push(p.uuid);
     if (uuidsVistos.has(p.uuid)) return responder({ ok: true, duplicado: true, uuid: p.uuid });
     if (!p.operario || !p.id_vaca) {
@@ -123,7 +148,11 @@ const api = http.createServer((req, res) => {
     }
     uuidsVistos.add(p.uuid);
     const n = Math.max(1, (p.terneros || []).length);
-    for (let i = 0; i < n; i++) filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}` });
+    for (let i = 0; i < n; i++) {
+      const t = (p.terneros || [])[i] || {};
+      filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
+                   operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro });
+    }
     responder({ ok: true, uuid: p.uuid, id_parto: 'X-' + p.id_vaca, filas_escritas: n });
   });
 });
@@ -287,22 +316,28 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('no hay selector de fecha libre',
           await page.evaluate(() => !document.querySelector('input[type="date"]')));
 
-    console.log('\n3b. Rodeo: campo abierto, pero numerico');
-    check('sin lista en Maestro seria campo libre; con lista, desplegable',
-          await page.evaluate(() => !!document.querySelector('#wrapRodeo select')));
-    check('acepta un rodeo nuevo', await page.evaluate(() => rodeoValido('209')));
-    check('acepta vacio', await page.evaluate(() => rodeoValido('')));
-    check('rechaza el "-" de la planilla vieja', await page.evaluate(() => !rodeoValido('-')));
-    check('rechaza "---"', await page.evaluate(() => !rodeoValido('---')));
-    check('rechaza texto', await page.evaluate(() => !rodeoValido('campo')));
+    console.log('\n3b. Rodeo: ya no se carga en la tablet');
+    check('no hay campo de rodeo', await page.evaluate(() => !document.querySelector('#wrapRodeo')));
+    check('tampoco quedo el input', await page.evaluate(() => !document.querySelector('#fRodeo')));
+    check('el payload no lleva rodeo',
+          await page.evaluate(() => armarPayload().rodeo === undefined));
 
     console.log('\n3c. Steppers: mantener apretado avanza rapido');
     const pesoAhora = () => page.$eval('#terneros .stepper .val', (e) => parseInt(e.textContent, 10));
+    const pesoTxtAhora = () => page.$eval('#terneros .stepper .val', (e) => e.textContent.trim());
+
     const apretar = (sel) => page.evaluate((s) => {
       document.querySelector(s).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     }, sel);
     const soltar = () => page.evaluate(() => dispatchEvent(new PointerEvent('pointerup')));
     const MAS = '#terneros .stepper button[data-step$=":1"]';
+
+    // El peso arranca sin valor: un numero puesto por la app no se distingue
+    // de uno medido, y el ternero se pesa mas tarde.
+    check('arranca sin pesar', (await pesoTxtAhora()) === '—', await pesoTxtAhora());
+    await apretar(MAS); await soltar();
+    check('el primer toque arranca en el medio de la lista', (await pesoAhora()) === 43,
+          String(await pesoAhora()));
 
     const p0 = await pesoAhora();
     await apretar(MAS); await soltar();
@@ -588,6 +623,106 @@ const visible = (page, sel) => page.evaluate((s) => {
     caidoHasta = 0;
     await page.evaluate(() => dispatchEvent(new Event('online')));
     check('se recupera solo', (await esperarSync(page, 15)).pendientes === 0);
+
+    console.log('\n11b. El ternero se pesa en un segundo paso');
+    const filasAntesDePesar = filas.length;
+    await cargarParto(page, '7001', '8801');
+    await esperarSync(page, 15);
+    const recienEntrado = filas.find((f) => f.vaca === '7001');
+    // El alta entra completa salvo el peso: la fila esta en la planilla desde
+    // el minuto cero y Nahuel la ve, aunque falte pesar.
+    check('la fila entro sin peso', recienEntrado && recienEntrado.peso === undefined,
+          JSON.stringify(recienEntrado));
+
+    const filaDe = (vaca) => page.evaluate((v) => {
+      const r = [...document.querySelectorAll('.listrow')]
+        .find((x) => x.querySelector('.id').textContent.trim() === v);
+      if (!r) return null;
+      const b = r.querySelector('[data-editar]');
+      return { pill: r.querySelector('.pill').textContent.trim(),
+               btn: b ? b.textContent.trim() : null, txt: r.textContent };
+    }, vaca);
+
+    await page.evaluate(() => ver('list'));
+    await esperar(300);
+    let f7001 = await filaDe('7001');
+    check('la lista dice Falta pesar', f7001 && f7001.pill === 'Falta pesar', JSON.stringify(f7001));
+    check('ofrece el boton Pesar', f7001 && f7001.btn === 'Pesar', JSON.stringify(f7001));
+    check('la cria se muestra sin pesar', f7001 && /sin pesar/.test(f7001.txt), (f7001 || {}).txt);
+    check('el KPI cuenta los que faltan pesar',
+          +(await page.$eval('#kPesar', (e) => e.textContent)) >= 1);
+
+    const abrirFila = (vaca) => page.evaluate((v) => {
+      [...document.querySelectorAll('.listrow')]
+        .find((x) => x.querySelector('.id').textContent.trim() === v)
+        .querySelector('[data-editar]').click();
+    }, vaca);
+
+    await abrirFila('7001');
+    await esperar(500);
+    check('abre el mismo formulario', await visible(page, '#v-form'));
+    check('avisa que esta corrigiendo', await visible(page, '#avisoEdicion'));
+    check('el peso vuelve a mostrarse sin valor', (await pesoTxtAhora()) === '—',
+          await pesoTxtAhora());
+
+    console.log('\n11c. Corrigiendo: lo que no se toca queda bloqueado');
+    for (const [id, nombre] of [['fVaca', 'ID de vaca'], ['cSexo', 'codigo de sexo'],
+                                ['cTipo', 'tipo de parto'], ['cFecha', 'fecha'],
+                                ['fHora', 'hora']]) {
+      check(`${nombre} bloqueado`,
+            await page.$eval('#' + id, (e) => e.classList.contains('bloqueado')));
+    }
+    check('el ID del ternero tambien',
+          await page.$eval('#terneros [data-ternero]', (e) => e.classList.contains('bloqueado')));
+    // El tambo y el calostro SI se corrigen: son el objeto del pedido.
+    check('el tambo NO esta bloqueado',
+          await page.$eval('#cTambo', (e) => !e.classList.contains('bloqueado')));
+    check('el pie ofrece guardar la correccion', await visible(page, '#btnGuardarEd'));
+    check('y cancelar', await visible(page, '#btnCancelar'));
+
+    console.log('\n11d. El peso lo carga quien cargo el parto');
+    await apretar(MAS); await soltar();                       // 43 kg
+    await page.select('#fOperario', 'Griselda');
+    await page.click('#btnGuardarEd');
+    await esperar(400);
+    check('Griselda no puede pesar un parto de Julio', await visible(page, '#v-form'),
+          'se fue de la pantalla igual');
+    check('el aviso lo explica',
+          /lo carga Julio/.test(await page.$eval('#toast', (e) => e.textContent)),
+          await page.$eval('#toast', (e) => e.textContent));
+    check('no llego ninguna correccion al servidor',
+          !ediciones.some((e) => e.uuid === (filas.find((f) => f.vaca === '7001') || {}).uuid));
+
+    await page.select('#fOperario', 'Julio');
+    await page.click('#btnGuardarEd');
+    await esperar(400);
+    await esperarSync(page, 15);
+    const pesado = filas.find((f) => f.vaca === '7001');
+    check('Julio si lo pesa', pesado && pesado.peso === 43, JSON.stringify(pesado));
+    check('no se agrego ninguna fila', filas.length === filasAntesDePesar + 1,
+          `${filasAntesDePesar + 1} -> ${filas.length}`);
+    await page.evaluate(() => ver('list'));
+    await esperar(300);
+    f7001 = await filaDe('7001');
+    check('la lista ya no lo pide pesar', f7001 && f7001.pill !== 'Falta pesar',
+          JSON.stringify(f7001));
+    check('y el boton pasa a Corregir', f7001 && f7001.btn === 'Corregir', JSON.stringify(f7001));
+
+    console.log('\n11e. Corregir el tambo lo puede hacer cualquiera');
+    await abrirFila('7001');
+    await esperar(400);
+    await page.select('#fOperario', 'Griselda');
+    await page.evaluate(() => {
+      [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val === '3').click();
+    });
+    await page.click('#btnGuardarEd');
+    await esperar(400);
+    await esperarSync(page, 15);
+    // Reenviar el mismo peso no es pesar: no puede bloquear al resto del equipo.
+    check('Griselda corrige el tambo', (filas.find((f) => f.vaca === '7001') || {}).tambo === '3',
+          JSON.stringify(filas.find((f) => f.vaca === '7001')));
+    check('sin tocar el peso', (filas.find((f) => f.vaca === '7001') || {}).peso === 43);
+    check('y sigue sin agregar filas', filas.length === filasAntesDePesar + 1);
 
     console.log('\n12. El badge no es una puerta trasera a Ajustes');
     await page.click('#badgeSync');

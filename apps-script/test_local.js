@@ -290,9 +290,12 @@ check('rechazos no escriben filas', formato().length === 4, 'filas=' + formato()
 check('rechazos quedan en _log', log().filter((l) => /rechazado/.test(l[4])).length === 4,
       JSON.stringify(log().map((l) => l[4])));
 
-console.log('\n6. Rodeo: Maestro vacio = sin restriccion');
+console.log('\n6. Rodeo: ya no se carga desde la tablet');
 r = post(partoBase({ uuid: 'u-rodeo-0008', rodeo: '207' }));
-check('acepta rodeo cualquiera', r.ok === true, JSON.stringify(r));
+check('el alta entra igual', r.ok === true, JSON.stringify(r));
+// Aunque una tablet vieja siga mandando rodeo, la columna R queda vacia:
+// la asigna Nahuel en la planilla y la app no tiene que pisarsela.
+check('columna R vacia', formato().slice(-1)[0][17] === '', JSON.stringify(formato().slice(-1)[0][17]));
 
 console.log('\n7. doGet');
 r = get({ action: 'ping' });
@@ -459,6 +462,121 @@ post(partoBase({ uuid: 'u-cache-2', token: undefined, id_token: 'bueno' }));
 post(partoBase({ uuid: 'u-cache-3', token: undefined, id_token: 'bueno' }));
 check('3 partos con el mismo token = 1 sola consulta a Google', llamadasAGoogle === 1,
       'llamadas=' + llamadasAGoogle);
+
+console.log('\n13. Alta sin peso: el ternero se pesa despues');
+libro = nuevoLibro();
+const sinPeso = { id_ternero: '777', raza: 'Holando', vive: true, calostro: calostroOk };
+r = post(partoBase({ uuid: 'u-sinpeso-01', terneros: [sinPeso] }));
+check('el alta entra sin peso', r.ok === true, JSON.stringify(r));
+check('columna I vacia', formato()[0][8] === '', JSON.stringify(formato()[0][8]));
+// Vacio y '---' son estados distintos: vacio es "falta pesar", '---' es cria muerta.
+check('vacio no es ---', formato()[0][8] !== '---');
+r = post(partoBase({ uuid: 'u-sinpeso-02', terneros: [Object.assign({}, sinPeso, { peso: 999 })] }));
+check('un peso fuera de lista sigue rechazandose', r.ok === false, JSON.stringify(r));
+
+console.log('\n14. Editar: el peso, por el que cargo el parto');
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-ed-01', operario: 'Julio', terneros: [sinPeso] }));
+const editar = (extra) => post(Object.assign({ token: TOKEN, accion: 'editar', uuid: 'u-ed-01',
+                                               operario: 'Julio' }, extra));
+
+r = editar({ terneros: [{ peso: 44 }] });
+check('Julio pesa su parto', r.ok === true && r.cambios === 1, JSON.stringify(r));
+check('la columna I quedo en 44', formato()[0][8] === 44, JSON.stringify(formato()[0][8]));
+r = editar({ operario: 'Griselda', terneros: [{ peso: 46 }] });
+check('Griselda no pesa un parto de Julio', r.ok === false, JSON.stringify(r));
+check('el peso quedo intacto', formato()[0][8] === 44, JSON.stringify(formato()[0][8]));
+// El resto de los campos si los corrige cualquiera.
+r = editar({ operario: 'Griselda', tambo: '3', terneros: [{ calostro: { lts_ternero: '5' } }] });
+check('Griselda corrige calostro y tambo', r.ok === true, JSON.stringify(r));
+check('tambo Q actualizado', formato()[0][16] === '3', JSON.stringify(formato()[0][16]));
+check('lts ternero O actualizado', formato()[0][14] === 5, JSON.stringify(formato()[0][14]));
+
+console.log('\n15. Editar: lo que no se puede');
+r = editar({ terneros: [{ peso: 999 }] });
+check('peso fuera de lista', r.ok === false, JSON.stringify(r));
+r = editar({ terneros: [{ peso: '' }] });
+check('vaciar un campo no es corregir', r.ok === false, JSON.stringify(r));
+r = editar({ terneros: [{ calostro: { mejorado: 'Si' } }] });
+check('mejorado=Si sin calidad_mejorado', r.ok === false, JSON.stringify(r));
+r = editar({ terneros: [{ calostro: { mejorado: 'Si', calidad_mejorado: '30' } }] });
+check('mejorado=Si con calidad si entra', r.ok === true, JSON.stringify(r));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'no-existe', operario: 'Julio',
+           terneros: [{ peso: 40 }] });
+check('uuid inexistente', r.ok === false && /no existe/.test(r.error), JSON.stringify(r));
+r = editar({ terneros: [{ peso: 40 }, { peso: 41 }] });
+check('mas crias que filas', r.ok === false && /cria/.test(r.error), JSON.stringify(r));
+r = editar({ terneros: [{ peso: 44 }] });
+check('reenviar el mismo valor no cambia nada', r.ok === true && r.cambios === 0, JSON.stringify(r));
+// La tablet manda el parto entero al corregir cualquier cosa. Reenviar el mismo
+// peso no es pesar, asi que no puede bloquear a los demas.
+r = editar({ operario: 'Griselda', terneros: [{ peso: 44, calostro: { consumido: 'No' } }] });
+check('reenviar el peso igual no bloquea a otro operario', r.ok === true, JSON.stringify(r));
+check('y el calostro se corrigio', formato()[0][12] === 'No', JSON.stringify(formato()[0][12]));
+// Vaciar un dato que existe se rechaza (arriba), pero un opcional que nunca se
+// cargo vuelve vacio sin ser un borrado: la tablet manda el parto entero.
+post(partoBase({ uuid: 'u-ed-vacio', terneros: [{ id_ternero: '5', raza: 'Holando', peso: 40,
+  vive: true, calostro: Object.assign({}, calostroOk, { id_vaca_origen: '' }) }] }));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-vacio', operario: 'Julio',
+           terneros: [{ calostro: { id_vaca_origen: '', consumido: 'No' } }] });
+check('reenviar vacio algo que ya estaba vacio', r.ok === true && r.cambios === 1, JSON.stringify(r));
+
+console.log('\n16. Editar: cria muerta y ventana del dia');
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-ed-muerto', sexo: '7 Macho Muerto', terneros: [] }));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio',
+           terneros: [{ peso: 40 }] });
+check('cria muerta no lleva peso', r.ok === false && /muerta/.test(JSON.stringify(r)), JSON.stringify(r));
+// N esta adentro del bloque G-P que va todo en '---': un numero suelto ahi
+// romperia la fila. Q, en cambio, esta afuera y se corrige igual.
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio', lts_madre: '9' });
+check('cria muerta no lleva lts madre', r.ok === false, JSON.stringify(r));
+check('el bloque G-P sigue entero', formato()[0].slice(6, 16).every((v) => v === '---'),
+      JSON.stringify(formato()[0].slice(6, 16)));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio', tambo: '3' });
+check('pero el tambo si se corrige', r.ok === true && formato()[0][16] === '3', JSON.stringify(r));
+
+post(partoBase({ uuid: 'u-ed-ayer', terneros: [sinPeso],
+                 cargado_en: '2026-08-01T10:00:00.000Z' }));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-ayer', operario: 'Julio',
+           terneros: [{ peso: 40 }] });
+check('un parto cargado otro dia ya no se corrige', r.ok === false && /hoy/.test(r.error),
+      JSON.stringify(r));
+// La ventana mira "Cargado en" (Y), no "Fecha Parto" (C): un parto de ayer
+// cargado esta manana todavia se corrige.
+libro = nuevoLibro();
+const ayer = new Date(); ayer.setDate(ayer.getDate() - 1);
+post(partoBase({ uuid: 'u-ed-fecha-ayer', terneros: [sinPeso],
+                 fecha_parto: `${ayer.getFullYear()}-${dosDigitos(ayer.getMonth() + 1)}-${dosDigitos(ayer.getDate())}` }));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-fecha-ayer', operario: 'Julio',
+           terneros: [{ peso: 40 }] });
+check('parto con fecha de ayer, cargado hoy, si se corrige', r.ok === true, JSON.stringify(r));
+
+console.log('\n17. Editar mellizos: por cria y del parto');
+libro = nuevoLibro();
+post(partoBase({
+  uuid: 'u-ed-gem', sexo: '2 Hembras Gemelas Vivas', lts_madre: '5',
+  terneros: [{ id_ternero: 'A', raza: 'Holando', vive: true, sexo: 'Hembra', calostro: calostroOk },
+             { id_ternero: 'B', raza: 'Holando', vive: true, sexo: 'Hembra', calostro: calostroOk }]
+}));
+check('escribio 2 filas', formato().length === 2, 'filas=' + formato().length);
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-gem', operario: 'Julio',
+           lts_madre: '7', terneros: [{ peso: 30 }, { peso: 35 }] });
+check('edita las dos crias', r.ok === true, JSON.stringify(r));
+check('cada cria con su peso', formato()[0][8] === 30 && formato()[1][8] === 35,
+      JSON.stringify([formato()[0][8], formato()[1][8]]));
+// Los litros que produjo la madre son del parto: van iguales en las dos filas.
+check('lts madre iguales en las dos filas', formato()[0][13] === 7 && formato()[1][13] === 7,
+      JSON.stringify([formato()[0][13], formato()[1][13]]));
+check('sigue habiendo 2 filas', formato().length === 2, 'filas=' + formato().length);
+
+console.log('\n18. Editar: la auditoria queda entera');
+const logGem = log().filter((l) => l[0] === 'u-ed-gem');
+check('el alta y la edicion son renglones distintos', logGem.length === 2,
+      JSON.stringify(logGem.map((l) => l[4])));
+check('el renglon del alta no se piso', /^(recibido|ok)$/.test(logGem[0][4]), logGem[0][4]);
+check('la edicion dice quien la hizo', /editado por Julio/.test(logGem[1][4]), logGem[1][4]);
+check('la edicion guarda el mail', logGem[1][5] === 'script', logGem[1][5]);
 
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);

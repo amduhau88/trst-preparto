@@ -212,12 +212,17 @@ const todosLocal = () => tx('readonly', (s) => s.getAll());
 /* Cada ternero lleva lo suyo: sexo, si nacio vivo, y su propio calostro.
    Los litros que produjo la madre son del parto, no de la cria. */
 const st = {
-  fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: []
+  fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: [],
+  // uuid del parto que se esta corrigiendo, o null si se esta cargando uno nuevo.
+  editando: null
 };
 
+/* El peso arranca en null, no en el medio de la lista: el ternero se pesa mas
+   tarde, y un numero puesto por la app es indistinguible de uno medido. Null se
+   pinta como "—" y viaja como columna I vacia: "falta pesar". */
 function nuevoTernero() {
   return {
-    id_ternero: '', raza: (listas.raza || [''])[0], peso: medio('peso'),
+    id_ternero: '', raza: (listas.raza || [''])[0], peso: null,
     sexo: '', vive: true,
     cal: {
       brix: medio('calidad_sin_mejorar'), brixExc: '',
@@ -303,23 +308,17 @@ function pintarFormulario() {
   chips($('cSexo'), 'sexo', listas.sexo, st.sexo, { numerar: true, claseDe: malo });
   chips($('cTambo'), 'tambo', listas.tambo, st.tambo, { ancho: true });
 
-  // Rodeo: si Maestro no tiene lista, campo libre en vez de un desplegable vacio.
-  const wrap = $('wrapRodeo');
-  if (listas.rodeo && listas.rodeo.length) {
-    const actual = wrap.querySelector('select,input') ? wrap.querySelector('select,input').value : '';
-    wrap.innerHTML = '<select id="fRodeo"></select>';
-    opciones($('fRodeo'), listas.rodeo, actual);
-  } else if (!wrap.querySelector('input')) {
-    wrap.innerHTML = '<input type="text" id="fRodeo" inputmode="numeric" placeholder="Nº de rodeo">';
-  }
-
   pintarSteppers();
   pintarTerneros();
+  pintarModoEdicion();
 }
 
 function pintarSteppers() {
   $('vLtsMadre').innerHTML = st.lts_madre === null ? '—' : `${st.lts_madre}<span>L</span>`;
 }
+
+/** "—" mientras no se pesó. Un numero puesto de oficio no se distingue de uno medido. */
+const pesoTxt = (v) => (v === null || v === undefined || v === '' ? '—' : `${v}<span>kg</span>`);
 
 function pintarTerneros() {
   const n = esMuerto() ? 0 : (esMellizo() ? 2 : 1);
@@ -344,7 +343,7 @@ function pintarTerneros() {
           <div class="lab">Peso</div>
           <div class="stepper">
             <button type="button" data-step="peso${i}:-1">−</button>
-            <div class="val">${t.peso}<span>kg</span></div>
+            <div class="val">${pesoTxt(t.peso)}</div>
             <button type="button" data-step="peso${i}:1">+</button>
           </div>
         </div>
@@ -460,6 +459,8 @@ function caja(clave, valores, sel, opciones) {
 /* ------------------------------------------------------------------ */
 
 document.addEventListener('click', (e) => {
+  const ed = e.target.closest('[data-editar]');
+  if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
   const chip = e.target.closest('[data-chip]');
   if (chip) return elegirChip(chip);
   const step = e.target.closest('[data-step]');
@@ -521,8 +522,14 @@ function mover(spec, boton) {
 
   if (campo.startsWith('peso')) {
     const t = st.terneros[+campo.slice(4)];
-    t.peso = acotar(t.peso + paso, numeros('peso'));
-    return celda ? escribir(`${t.peso}<span>kg</span>`) : pintarTerneros();
+    // Sin pesar todavia: el primer toque arranca en el medio de la lista, igual
+    // que los litros de la madre. A partir de ahi se mueve de a un kilo.
+    //
+    // No se repinta la tarjeta: destruiria el boton que el operario esta
+    // manteniendo apretado, y la repeticion rapida seguiria escribiendo en un
+    // elemento que ya no esta en pantalla.
+    t.peso = acotar(t.peso === null ? medio('peso') : t.peso + paso, numeros('peso'));
+    return celda ? escribir(pesoTxt(t.peso)) : pintarTerneros();
   }
   if (campo.startsWith('brix')) {
     const c = st.terneros[+campo.slice(4)].cal;
@@ -607,7 +614,6 @@ document.addEventListener('input', (e) => {
 /* ------------------------------------------------------------------ */
 
 function armarPayload() {
-  const rodeoEl = document.querySelector('#fRodeo');
   const p = {
     uuid: (crypto.randomUUID ? crypto.randomUUID()
            : Date.now() + '-' + Math.random().toString(16).slice(2)),
@@ -621,7 +627,6 @@ function armarPayload() {
     sexo: st.sexo,
     terneros: [],
     tambo: st.tambo,
-    rodeo: rodeoEl ? rodeoEl.value.trim() : '',
     notas: $('fNotas').value.trim()
   };
 
@@ -630,10 +635,13 @@ function armarPayload() {
     p.terneros = st.terneros.map((t) => {
       const cria = {
         id_ternero: String(t.id_ternero).trim(),
-        raza: t.raza, peso: t.peso,
+        raza: t.raza,
         sexo: t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '',
         vive: t.vive
       };
+      // Sin pesar: el peso no viaja y la columna I queda vacia. Mandar '' o 0
+      // seria inventar un dato que nadie midio.
+      if (t.peso !== null) cria.peso = t.peso;
       if (t.vive) {
         cria.calostro = {
           calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
@@ -689,23 +697,12 @@ function coherenciaSexo() {
   return '';
 }
 
-/**
- * El rodeo es campo abierto a proposito: se van definiendo sobre la marcha.
- * Pero abierto no es cualquier cosa: en la planilla vieja la columna de rodeo
- * junta "-", "---" y numeros sueltos. Un rodeo siempre es un numero.
- */
-function rodeoValido(v) {
-  return v === '' || /^\d{1,4}$/.test(v);
-}
 
 async function guardarParto() {
   const p = armarPayload();
   const faltan = faltantes(p);
   if (faltan.length) {
     return avisar('Falta: ' + faltan.join(', '), true);
-  }
-  if (!rodeoValido(p.rodeo)) {
-    return avisar('El rodeo tiene que ser un número: "' + p.rodeo + '"', true);
   }
   const incoherencia = coherenciaSexo();
   if (incoherencia) return avisar(incoherencia, true);
@@ -722,6 +719,210 @@ async function guardarParto() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Corregir un parto del dia                                           */
+/* ------------------------------------------------------------------ */
+
+/* Se corrige en el MISMO formulario con el que se cargo, no en una pantalla
+   aparte: el operario ya sabe donde esta cada cosa, y no hay una segunda copia
+   de los chips y los steppers que pueda quedar desincronizada de la primera.
+   Lo que no se corrige queda a la vista pero bloqueado, para que se pueda
+   confirmar que es el parto buscado sin poder cambiarle la identidad.
+
+   Que NO se corrige: el codigo de sexo manda cuantas crias hay, y cambiarlo
+   obligaria a agregar o borrar renglones en el bloque que leen Nahuel y
+   DairyComp. ID de ternero, raza, hora y tipo de parto van por el mismo
+   criterio: los corrige Nahuel en la planilla. */
+
+const BLOQUEADO_AL_EDITAR = ['cFecha', 'cTipo', 'cSexo', 'fVaca', 'fHora', 'fNotas'];
+
+/** Pasa un parto guardado al estado del formulario. Es el inverso de armarPayload. */
+function aEstado(p) {
+  st.editando = p.uuid;
+  st.fecha = p.fecha_parto;
+  st.tipo_parto = p.tipo_parto;
+  st.sexo = p.sexo;
+  st.tambo = p.tambo || '';
+  st.lts_madre = p.lts_madre === undefined || p.lts_madre === '' ? null : +p.lts_madre;
+
+  st.terneros = (p.terneros || []).map((t) => {
+    const c = t.calostro || {};
+    // calidad_sin_mejorar guarda un numero de Brix o una excepcion ('mastitis',
+    // 'sangre', 'campo'). Se separan de nuevo por la forma del valor.
+    const brixEsNumero = /^\d+$/.test(String(c.calidad_sin_mejorar || ''));
+    return {
+      id_ternero: t.id_ternero || '',
+      raza: t.raza || (listas.raza || [''])[0],
+      peso: t.peso === undefined || t.peso === '' ? null : +t.peso,
+      sexo: t.sexo || '',
+      vive: t.vive !== false,
+      cal: {
+        brix: brixEsNumero ? +c.calidad_sin_mejorar : medio('calidad_sin_mejorar'),
+        brixExc: brixEsNumero ? '' : (c.calidad_sin_mejorar || ''),
+        mejorado: c.mejorado || 'No',
+        mej: !c.calidad_mejorado || c.calidad_mejorado === VACIO ? VACIO : +c.calidad_mejorado,
+        consumido: c.consumido || 'Si',
+        lts_ternero: String(c.lts_ternero === undefined ? medio('lts_ternero') : c.lts_ternero),
+        id_origen: c.id_vaca_origen || ''
+      }
+    };
+  });
+
+  $('fVaca').value = p.id_vaca || '';
+  $('fNotas').value = p.notas || '';
+  opciones($('fOperario'), listas.operario, p.operario);
+  opciones($('fHora'), listas.hora_nacimiento, p.hora_nacimiento);
+}
+
+async function abrirEdicion(uuid, focoPeso) {
+  const reg = (await todosLocal()).find((r) => r.uuid === uuid);
+  if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+
+  aEstado(reg.payload);
+  pintarFormulario();
+  ver('form');
+  $('body').scrollTop = 0;
+
+  if (focoPeso) {
+    // Pesar es el motivo mas comun para volver a abrir un parto: se lleva
+    // directo al bloque del ternero en vez de dejarlo buscar.
+    const card = $('cardTernero');
+    if (card) card.scrollIntoView({ block: 'center' });
+  }
+}
+
+function cancelarEdicion() {
+  st.editando = null;
+  limpiar();
+  ver('list');
+}
+
+/** Bloquea lo que no se corrige y cambia el cartel de arriba. */
+function pintarModoEdicion() {
+  const editando = !!st.editando;
+  const aviso = $('avisoEdicion');
+
+  BLOQUEADO_AL_EDITAR.forEach((id) => {
+    const el = $(id);
+    if (el) el.classList.toggle('bloqueado', editando);
+  });
+  // El ID y la raza de cada cria tampoco: identifican al animal.
+  document.querySelectorAll('#terneros [data-ternero], #terneros [data-caja^="raza:"]')
+    .forEach((el) => el.classList.toggle('bloqueado', editando));
+
+  aviso.classList.toggle('hidden', !editando);
+  if (!editando) return;
+
+  aviso.innerHTML =
+    `Corrigiendo el parto de la vaca <b>${$('fVaca').value}</b> · ${aDDMMAAAA(st.fecha)}.
+     Se pueden cambiar <b>peso, calostro y tambo</b>; el resto lo corrige Nahuel en la planilla.
+     <button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
+  $('btnCancelarEd').onclick = cancelarEdicion;
+}
+
+/** Lo que se manda al backend: el parto entero, que del otro lado se compara. */
+function armarEdicion() {
+  return {
+    accion: 'editar',
+    uuid: st.editando,
+    operario: $('fOperario').value,
+    tambo: st.tambo,
+    lts_madre: st.lts_madre === null ? undefined : String(st.lts_madre),
+    terneros: st.terneros.map((t) => {
+      if (!t.vive) return {};                      // cria muerta: no lleva nada
+      const cria = {
+        calostro: {
+          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
+          mejorado: t.cal.mejorado,
+          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
+          consumido: t.cal.consumido,
+          lts_ternero: t.cal.lts_ternero,
+          id_vaca_origen: String(t.cal.id_origen).trim()
+        }
+      };
+      if (t.peso !== null) cria.peso = t.peso;
+      return cria;
+    })
+  };
+}
+
+/**
+ * Se valida acá con las mismas reglas que aplica el backend. No es por
+ * desconfianza del servidor: es para que el operario vea el problema mientras
+ * tiene el animal delante, en vez de enterarse cuando vuelva la señal.
+ */
+function faltantesEdicion(reg) {
+  const f = [];
+  const autor = reg.payload.operario;
+  const quien = $('fOperario').value;
+
+  st.terneros.forEach((t, i) => {
+    if (!t.vive) return;
+    const cual = st.terneros.length > 1 ? ` (ternero ${i + 1})` : '';
+    const pesoAntes = reg.payload.terneros[i] ? reg.payload.terneros[i].peso : undefined;
+    const cambiaPeso = t.peso !== null && String(t.peso) !== String(pesoAntes);
+    if (cambiaPeso && quien !== autor) {
+      f.push(`el peso lo carga ${autor}, que fue quien cargó el parto`);
+    }
+    if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
+    if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
+    if (t.cal.mejorado === 'Si' && (t.cal.mej === VACIO || !t.cal.mej)) {
+      f.push('calidad del calostro mejorado' + cual);
+    }
+  });
+  if (st.lts_madre === null && st.terneros.some((t) => t.vive)) f.push('litros de la madre');
+  if (!st.tambo) f.push('tambo');
+  return f;
+}
+
+async function guardarEdicion() {
+  const reg = (await todosLocal()).find((r) => r.uuid === st.editando);
+  if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+
+  const faltan = faltantesEdicion(reg);
+  if (faltan.length) return avisar('Falta: ' + faltan.join(', '), true);
+
+  const edicion = armarEdicion();
+
+  if (reg.estado === 'pendiente' || reg.estado === 'error') {
+    // Todavia no entro a la planilla: se corrige el payload y sube ya corregido.
+    // Mandar una edicion de algo que no existe seria pedirle al backend que
+    // arregle una fila que nunca escribio.
+    aplicarEnPayload(reg.payload, edicion);
+    reg.estado = 'pendiente';
+    reg.error = '';
+  } else {
+    // Ya esta en la planilla: la correccion viaja aparte, con su propia cola.
+    aplicarEnPayload(reg.payload, edicion);
+    reg.edicion = edicion;
+    reg.error = '';
+  }
+
+  await guardarLocal(reg);
+  st.editando = null;
+  limpiar();
+  ver('list');
+  await refrescar();
+  sincronizar();
+  avisar('Corrección guardada');
+}
+
+/** Deja el parto local igual a como va a quedar la planilla. */
+function aplicarEnPayload(p, ed) {
+  if (ed.tambo !== undefined) p.tambo = ed.tambo;
+  if (ed.lts_madre !== undefined) p.lts_madre = ed.lts_madre;
+  (ed.terneros || []).forEach((t, i) => {
+    const destino = p.terneros[i];
+    if (!destino || !t.calostro) return;
+    if (t.peso !== undefined) destino.peso = t.peso;
+    destino.calostro = Object.assign({}, destino.calostro, t.calostro);
+  });
+}
+
+/** Un parto tiene algo por pesar si alguna cria viva no tiene peso. */
+const faltaPesar = (p) =>
+  (p.terneros || []).some((t) => t.vive !== false && t.peso === undefined);
+
+/* ------------------------------------------------------------------ */
 /* Cartel de confirmacion                                              */
 /* ------------------------------------------------------------------ */
 
@@ -735,7 +936,7 @@ function mostrarExito(p) {
     if (t.vive === false) return `${t.sexo || 'cría'} — nació muerta`;
     const partes = [t.id_ternero || 'sin ID'];
     if (t.sexo) partes.push(t.sexo);
-    partes.push(`${t.peso} kg`);
+    partes.push(t.peso === undefined ? 'falta pesar' : `${t.peso} kg`);
     return partes.join(' · ');
   });
 
@@ -768,6 +969,7 @@ addEventListener('keydown', (e) => {
 });
 
 function limpiar() {
+  st.editando = null;
   $('fVaca').value = '';
   $('fNotas').value = '';
   st.terneros = st.terneros.map(() => nuevoTernero());
@@ -803,20 +1005,25 @@ async function sincronizar() {
   sincronizando = true;
   pintarBadge();
   try {
-    const pendientes = (await todosLocal())
-      .filter((r) => r.estado === 'pendiente')
-      .sort((a, b) => a.creado - b.creado);
-    if (!pendientes.length) { sesionVencida = false; return; }
+    // Un parto puede deber dos cosas: entrar a la planilla, o una correccion
+    // sobre lo que ya entro. Se hacen en orden de carga, y la correccion nunca
+    // antes que el alta: no se puede corregir una fila que todavia no existe.
+    const tareas = [];
+    (await todosLocal()).sort((a, b) => a.creado - b.creado).forEach((reg) => {
+      if (reg.estado === 'pendiente') tareas.push({ reg, tipo: 'alta' });
+      else if (reg.estado === 'ok' && reg.edicion) tareas.push({ reg, tipo: 'editar' });
+    });
+    if (!tareas.length) { sesionVencida = false; return; }
 
     // Sin credencial vigente no se intenta: los partos quedan en la cola,
     // intactos, y el badge avisa que hay que iniciar sesion.
     if (!(await tokenVigente())) { sesionVencida = true; return; }
     sesionVencida = false;
 
-    for (const reg of pendientes) {
+    for (const { reg, tipo } of tareas) {
       let res;
       try {
-        res = await enviar(reg.payload);
+        res = await enviar(tipo === 'alta' ? reg.payload : reg.edicion);
       } catch (e) {
         // Sin red: no se toca el registro, se reintenta despues. Cortar la tanda.
         reg.intentos++;
@@ -824,14 +1031,25 @@ async function sincronizar() {
         break;
       }
       if (res && res.ok) {
-        // duplicado:true tambien es exito: el parto ya estaba en la planilla.
-        reg.estado = 'ok';
+        if (tipo === 'alta') {
+          // duplicado:true tambien es exito: el parto ya estaba en la planilla.
+          reg.estado = 'ok';
+          reg.id_parto = res.id_parto || reg.id_parto || '';
+        } else {
+          reg.edicion = null;
+        }
         reg.error = '';
-        reg.id_parto = res.id_parto || reg.id_parto || '';
       } else if (res && res.error === 'validacion') {
         // Dato malo: reintentar no lo arregla. Se marca para revisar.
-        reg.estado = 'error';
-        reg.error = (res.detalles || []).join(' · ');
+        if (tipo === 'alta') {
+          reg.estado = 'error';
+          reg.error = (res.detalles || []).join(' · ');
+        } else {
+          // La fila de la planilla quedo como estaba y la tablet muestra lo
+          // corregido: se avisa cual es, en vez de reintentar para siempre.
+          reg.edicion = null;
+          reg.error = 'corrección rechazada: ' + (res.detalles || []).join(' · ');
+        }
       } else {
         // Sesion caida o error del servidor: cortar, no quemar la cola entera.
         if (res && res.sesion === false) sesionVencida = true;
@@ -856,8 +1074,9 @@ async function refrescar() {
   const todos = await todosLocal();
   const delDia = todos.filter((r) => r.payload.fecha_parto === st.fecha)
                       .sort((a, b) => b.creado - a.creado);
-  const pendientes = todos.filter((r) => r.estado === 'pendiente').length;
+  const pendientes = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
   const errores = todos.filter((r) => r.estado === 'error').length;
+  const porPesar = delDia.filter((r) => faltaPesar(r.payload)).length;
 
   let h = 0, m = 0, muertos = 0;
   delDia.forEach((r) => {
@@ -869,23 +1088,32 @@ async function refrescar() {
 
   $('kTot').textContent = delDia.length;
   $('kHM').textContent = h + ' / ' + m;
+  $('kPesar').textContent = porPesar;
   $('kPend').textContent = pendientes;
   $('kMuertos').textContent = muertos;
 
   $('filas').innerHTML = delDia.length ? delDia.map((r) => {
     const p = r.payload;
-    const est = r.estado === 'ok' ? ['ok', 'Sincronizado']
-              : r.estado === 'error' ? ['bad', 'Revisar']
-              : ['wait', 'Sin sincronizar'];
-    const cria = SEXO_MUERTO.includes(String(p.sexo).charAt(0))
-      ? p.sexo
-      : `${p.sexo} · ${p.terneros.map((t) => (t.id_ternero || 's/id') + ' (' + t.peso + ' kg)').join(' + ')}`;
+    const pesar = faltaPesar(p);
+    // "Falta pesar" gana sobre "Sincronizado": la fila esta en la planilla,
+    // pero incompleta, y es lo que hay que hacer antes de cerrar el dia.
+    const est = r.estado === 'error' ? ['bad', 'Revisar']
+              : pesar ? ['wait', 'Falta pesar']
+              : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
+              : ['ok', 'Sincronizado'];
+    const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
+    const cria = muerto ? p.sexo
+      : `${p.sexo} · ${p.terneros.map((t) => (t.id_ternero || 's/id') +
+          (t.vive === false ? ' (muerta)' : ' (' + (t.peso === undefined ? 'sin pesar' : t.peso + ' kg') + ')')
+        ).join(' + ')}`;
     return `<div class="listrow">
       <div class="id">${p.id_vaca}</div>
-      <div>${cria}<div class="meta">Tambo ${p.tambo}${p.rodeo ? ' · rodeo ' + p.rodeo : ''}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
+      <div>${cria}<div class="meta">Tambo ${p.tambo}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
       <div>${p.hora_nacimiento}</div>
       <div class="ocultar">${p.tipo_parto}</div>
       <div><span class="pill ${est[0]}">${est[1]}</span></div>
+      <div>${muerto ? '' : `<button class="btn ${pesar ? 'primary' : ''}" type="button"
+        data-editar="${r.uuid}" data-pesar="${pesar ? 1 : 0}">${pesar ? 'Pesar' : 'Corregir'}</button>`}</div>
     </div>`;
   }).join('') : '<div class="vacio">Todavía no hay partos cargados hoy.</div>';
 
@@ -942,9 +1170,16 @@ const vistaActual = () => (document.querySelector('.tab.on') || { dataset: {} })
 function pintarPie(v) {
   const vista = v || vistaActual();
   const pie = $('foot');
-  if (vista === 'form') {
+  if (vista === 'form' && st.editando) {
+    pie.innerHTML = `<div class="msg">Sólo se corrigen peso, calostro y tambo.
+      La corrección queda guardada aunque no haya señal.</div>
+      <button class="btn" type="button" id="btnCancelar">Cancelar</button>
+      <button class="btn primary" type="button" id="btnGuardarEd">Guardar corrección</button>`;
+    $('btnCancelar').onclick = cancelarEdicion;
+    $('btnGuardarEd').onclick = guardarEdicion;
+  } else if (vista === 'form') {
     pie.innerHTML = `<div class="msg">Los campos con <span class="req">*</span> son obligatorios.
-      El parto queda guardado aunque no haya señal.</div>
+      El ternero se pesa después, desde Partos del día.</div>
       <button class="btn" type="button" data-ir="list">Partos del día</button>
       <button class="btn primary" type="button" id="btnGuardar">Guardar parto</button>`;
     $('btnGuardar').onclick = guardarParto;

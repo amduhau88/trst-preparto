@@ -20,9 +20,13 @@ No hay servidor propio ni costo mensual.
 Escribirlo en la hoja **`Maestro`, columna A**, debajo de Trini. Nada más.
 Las tablets lo toman solas la próxima vez que abren con señal.
 
-Lo mismo para cualquier otra lista: razas (columna G), tambos (Q), rodeos (R).
-**Una columna vacía significa "sin restricción"** — por eso hoy el rodeo es
-campo abierto: se escribe a mano, y lo único que se exige es que sea un número.
+Lo mismo para cualquier otra lista: razas (columna G), tambos (Q).
+**Una columna vacía significa "sin restricción".**
+
+### Asignar el rodeo
+
+**El rodeo no se carga en la tablet.** La columna R llega vacía y la completás vos
+en la planilla. Una celda vacía se lee como "falta asignar", que es el estado real.
 
 ### Dar de alta una tablet
 
@@ -37,6 +41,32 @@ Detalle completo en [`puesta-en-tablet.md`](puesta-en-tablet.md).
 
 Suspender o borrar su cuenta de Google Workspace. No hay nada que tocar en la app:
 si la cuenta deja de existir, deja de poder sincronizar.
+
+### Pesar un ternero
+
+El peso **no se carga con el parto**: el ternero se pesa más tarde. El parto entra
+a la planilla al instante con la columna I vacía, y el peso se agrega después.
+
+En la tablet, **Partos del día** muestra los que faltan pesar con un botón **Pesar**.
+El contador de arriba dice cuántos son. El peso lo carga **quien cargó el parto** —
+si lo intenta otro, la app dice de quién es.
+
+### Corregir un parto del día
+
+Mismo lugar: el botón **Corregir** de cada renglón abre el parto en el formulario
+con el que se cargó. Se pueden cambiar **peso, calostro y tambo**. Todo lo demás
+queda a la vista pero bloqueado.
+
+Se corrigen los partos **cargados hoy**, incluso si la fecha del parto es de ayer.
+Un parto cargado ayer ya no se toca desde la tablet: eso lo arreglás en la planilla.
+
+**Lo que la tablet no corrige, y por qué:** el código de sexo dice cuántas crías
+hay, así que cambiarlo obligaría a agregar o borrar renglones en el bloque que leen
+vos y DairyComp. Por el mismo criterio quedan afuera ID de ternero, raza, hora y
+tipo de parto. Todo eso se corrige en la planilla.
+
+Cada corrección deja su propio renglón en `_log`, con quién la hizo y qué cambió.
+El renglón original nunca se pisa.
 
 ## Cómo saber si algo anda mal
 
@@ -86,6 +116,10 @@ En orden:
   el 8 es M+M o M+H. La combinación imposible se rechaza explicando cuál es la correcta.
 - **Calostro**: un número entero o una excepción (mastitis / sangre / campo). Nunca un rango.
 - **Nada entra dos veces**: cada parto lleva un identificador único y la planilla lo verifica.
+- **El peso llega después**: columna I vacía es "falta pesar", y es distinto de `---`,
+  que significa cría muerta.
+- **Corregir no mueve renglones**: una corrección pisa celdas de filas que ya existen.
+  Nunca se agrega ni se borra una fila.
 
 ## Si hay que cambiar el código
 
