@@ -78,6 +78,8 @@ const filas = [];
 const uuidsVistos = new Set();
 const sinSesion = [];          // requests que llegaron sin credencial valida
 let caidoHasta = 0;
+let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token parezca vivo
+let colgadoHasta = 0;          // acepta la conexion y NO contesta: el WiFi "presente pero muerto"
 
 const LISTAS = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
@@ -101,6 +103,7 @@ const api = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(obj));
   };
+  if (Date.now() < colgadoHasta) return;   // ni responde ni cierra: se cuelga
   if (Date.now() < caidoHasta) { res.writeHead(500); return res.end('caido'); }
   if (req.method === 'GET') return responder({ ok: true, hoja: 'simulada' });
 
@@ -111,7 +114,7 @@ const api = http.createServer((req, res) => {
     try { p = JSON.parse(cuerpo); } catch (e) { return responder({ ok: false, error: 'json' }); }
 
     const datos = leerJwt(p.id_token);
-    const vigente = datos && datos.exp * 1000 > Date.now();
+    const vigente = datos && datos.exp * 1000 > Date.now() && !rechazarSesion;
     if (!vigente) {
       sinSesion.push(p.uuid || p.accion || '?');
       return responder({ ok: false, error: 'falta sesion', sesion: false });
@@ -253,6 +256,18 @@ const esperarSync = async (page, seg = 12) => {
 };
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* El badge dice "Sincronizando..." mientras hay una tanda en vuelo, y el reloj
+   de 30 s puede arrancar una justo cuando la prueba mira. Se espera a que quede
+   quieto en vez de dormir un rato fijo y cruzar los dedos. */
+const badgeQuieto = async (page, seg = 20) => {
+  for (let i = 0; i < seg * 2; i++) {
+    const t = await page.$eval('#badgeTxt', (e) => e.textContent);
+    if (!/Sincronizando/.test(t)) return t;
+    await esperar(500);
+  }
+  return page.$eval('#badgeTxt', (e) => e.textContent);
+};
 // Nada de offsetParent: en elementos position:fixed (el cartel) siempre da null,
 // asi que los daria por invisibles aunque esten en pantalla.
 const visible = (page, sel) => page.evaluate((s) => {
@@ -610,10 +625,14 @@ const visible = (page, sel) => page.evaluate((s) => {
           new Set(recibidos).size === uuidsVistos.size,
           `recibidos unicos ${new Set(recibidos).size} vs escritos ${uuidsVistos.size}`);
 
-    console.log('\n8. Sesion vencida: la cola aguanta, no se pierde nada');
+    console.log('\n8. No poder renovar el token NO es una sesion caida');
+    /* En la tablet, One Tap se apaga solo (cooldown, cookies de terceros): si
+       cada timeout pintara "Sesion vencida", el cartel estaria en rojo casi todo
+       el dia mintiendo. La cola tiene que aguantar sin gritar. */
     await page.evaluate(() => {                       // credencial vencida y sin renovacion
       idToken = { valor: 'viejo', exp: Date.now() - 1000 };   // la que usa la app, en memoria
       localStorage.setItem('idToken', JSON.stringify(idToken));
+      fallosToken = 0; sesionVencida = false;
       window.__auto = false;
     });
     await cargarParto(page, '999', '9099');
@@ -623,11 +642,40 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(9000);                              // que venza el intento de renovar
     c = await contarLocal(page);
     check('sigue guardado, no se perdio', c.pendientes === 1, JSON.stringify(c));
-    check('el badge avisa sesion vencida',
-          /Sesión vencida/.test(await page.$eval('#badgeTxt', (e) => e.textContent)),
-          await page.$eval('#badgeTxt', (e) => e.textContent));
+    let badge = await badgeQuieto(page);
+    check('el badge NO grita sesion vencida al primer fallo',
+          !/Sesión vencida/.test(badge), badge);
+    check('pero avisa que hay algo en espera', /en espera/.test(badge), badge);
     check('no se mando nada sin credencial valida', filas.length === filasAntes + 3,
           'filas=' + filas.length);
+
+    console.log('\n8b. Al tercer fallo seguido si se avisa');
+    for (let i = 0; i < 2; i++) {
+      await page.evaluate(() => dispatchEvent(new Event('online')));
+      await esperar(9500);
+      await badgeQuieto(page);
+    }
+    badge = await badgeQuieto(page);
+    check('ahora si dice sesion vencida', /Sesión vencida/.test(badge), badge);
+    c = await contarLocal(page);
+    check('y el parto sigue intacto', c.pendientes === 1, JSON.stringify(c));
+
+    console.log('\n8c. Un rechazo del backend se cree a la primera');
+    /* Esta es la unica senal autoritativa: el backend es el que verifica el
+       token contra Google. Con un "sesion:false" no hace falta esperar tres. */
+    rechazarSesion = true;
+    await page.evaluate((cred) => {
+      window.__cred = cred; window.__auto = true;
+      fallosToken = 0; sesionVencida = false;
+      idToken = { valor: cred, exp: Date.now() + 3600000 };
+      localStorage.setItem('idToken', JSON.stringify(idToken));
+      dispatchEvent(new Event('online'));
+    }, jwtFalso(DISPOSITIVO, 60));
+    await esperar(1500);
+    badge = await badgeQuieto(page);
+    check('el rechazo del servidor si la marca vencida', /Sesión vencida/.test(badge), badge);
+    check('sin escribir ninguna fila', filas.length === filasAntes + 3, 'filas=' + filas.length);
+    rechazarSesion = false;
 
     console.log('\n9. Renovada la sesion, se recupera solo');
     await page.evaluate((cred) => {
@@ -677,14 +725,22 @@ const visible = (page, sel) => page.evaluate((s) => {
         .find((x) => x.querySelector('.id').textContent.trim() === v);
       if (!r) return null;
       const b = r.querySelector('[data-editar]');
+      const tag = r.querySelector('.tag');
       return { pill: r.querySelector('.pill').textContent.trim(),
+               tag: tag ? tag.textContent.trim() : null,
                btn: b ? b.textContent.trim() : null, txt: r.textContent };
     }, vaca);
 
     await page.evaluate(() => ver('list'));
     await esperar(300);
     let f7001 = await filaDe('7001');
-    check('la lista dice Falta pesar', f7001 && f7001.pill === 'Falta pesar', JSON.stringify(f7001));
+    // La columna Estado dice UNA sola cosa: si el parto esta en la planilla.
+    // Que falte pesar es otro eje, y va aparte: mezclarlos hacia que todo parto
+    // recien cargado se viera en ambar aunque ya estuviera escrito.
+    check('la pildora habla de sincronizacion, no del peso',
+          f7001 && f7001.pill === 'Sincronizado', JSON.stringify(f7001));
+    check('y falta pesar se marca aparte', f7001 && f7001.tag === 'falta pesar',
+          JSON.stringify(f7001));
     check('ofrece el boton Pesar', f7001 && f7001.btn === 'Pesar', JSON.stringify(f7001));
     check('la cria se muestra sin pesar', f7001 && /sin pesar/.test(f7001.txt), (f7001 || {}).txt);
     check('el KPI cuenta los que faltan pesar',
@@ -742,8 +798,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate(() => ver('list'));
     await esperar(300);
     f7001 = await filaDe('7001');
-    check('la lista ya no lo pide pesar', f7001 && f7001.pill !== 'Falta pesar',
-          JSON.stringify(f7001));
+    check('la lista ya no lo pide pesar', f7001 && !f7001.tag, JSON.stringify(f7001));
     check('y el boton pasa a Corregir', f7001 && f7001.btn === 'Corregir', JSON.stringify(f7001));
 
     console.log('\n11e. Corregir el tambo lo puede hacer cualquiera');
@@ -761,6 +816,58 @@ const visible = (page, sel) => page.evaluate((s) => {
           JSON.stringify(filas.find((f) => f.vaca === '7001')));
     check('sin tocar el peso', (filas.find((f) => f.vaca === '7001') || {}).peso === 43);
     check('y sigue sin agregar filas', filas.length === filasAntesDePesar + 1);
+
+    console.log('\n11f. La lista del dia y el formulario tienen fechas distintas');
+    /* Era el mismo st.fecha para los dos. Cargar un parto tardio como "Ayer"
+       dejaba la lista clavada en ayer, con el cartel en verde: el operario lo
+       leia como que la app le habia perdido los partos de hoy. */
+    await page.evaluate(() => ver('form'));
+    await esperar(200);
+    await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[1].click());
+    await esperar(400);
+    const fechas = await page.evaluate(() => ({ form: st.fecha, lista: listaFecha }));
+    check('el formulario se fue a ayer', fechas.form !== fechas.lista, JSON.stringify(fechas));
+    await page.evaluate(() => ver('list'));
+    await esperar(400);
+    check('la lista siguio en hoy',
+          await page.evaluate(() => document.querySelectorAll('#cListaFecha .chip')[0]
+            .classList.contains('on')));
+    check('y los partos de hoy siguen a la vista', !!(await filaDe('7001')));
+    await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[0].click());
+    await esperar(300);
+
+    console.log('\n11g. Con la cola llena, el badge no dice Sincronizado');
+    caidoHasta = Date.now() + 7000;
+    await page.evaluate(() => ver('form'));
+    await cargarParto(page, '7777', '8877');
+    await esperar(1500);
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    await esperar(120);                       // apenas despues del repintado del evento
+    const badgeOnline = await page.$eval('#badgeTxt', (e) => e.textContent);
+    check('no miente al llegar la señal', badgeOnline.trim() !== 'Sincronizado', badgeOnline);
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 20);
+    check('y el parto entra igual cuando vuelve el servidor', c.pendientes === 0,
+          JSON.stringify(c));
+
+    console.log('\n11h. Un servidor colgado no deja el badge en Sincronizando');
+    /* WiFi presente pero muerto: fetch no falla, se cuelga. Sin corte, el badge
+       queda en "Sincronizando..." para siempre y el reloj de 30 s no vuelve a
+       entrar porque la tanda anterior nunca termino. */
+    colgadoHasta = Date.now() + 30000;
+    await cargarParto(page, '7778', '8878');
+    await esperar(1500);
+    check('arranca la tanda',
+          /Sincronizando/.test(await page.$eval('#badgeTxt', (e) => e.textContent)));
+    const soltado = await badgeQuieto(page, 30);
+    check('la tanda se corta sola', !/Sincronizando/.test(soltado), soltado);
+    check('y el parto sigue en la cola',
+          (await contarLocal(page)).pendientes === 1);
+    colgadoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 20);
+    check('entra cuando el servidor vuelve a contestar', c.pendientes === 0, JSON.stringify(c));
 
     console.log('\n12. El badge no es una puerta trasera a Ajustes');
     await page.click('#badgeSync');

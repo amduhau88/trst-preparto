@@ -43,6 +43,16 @@ let sesion = null;                    // { email, admin, hasta }
 let idToken = { valor: '', exp: 0 };
 let sesionVencida = false;
 
+/* No poder renovar el token AHORA no es una sesion caida. En la tablet, One Tap
+   se apaga solo (cooldown despues de un descarte, bloqueo de cookies de
+   terceros en Safari) y el token de Google dura una hora: si cada fallo pintara
+   "Sesion vencida", el cartel estaria en rojo casi todo el dia mintiendo.
+   Se avisa recien al tercer fallo seguido, o cuando lo dice el backend. */
+let fallosToken = 0;
+let renovando = null;                 // promesa unica: dos llamadas no abren dos prompts
+const MARGEN_TOKEN = 10 * 60000;      // se renueva 10 min antes de vencer
+const FALLOS_PARA_AVISAR = 3;
+
 (function cargarSesion() {
   try {
     sesion = JSON.parse(localStorage.getItem('sesion') || 'null');
@@ -99,12 +109,16 @@ async function abrirSesion(jwt) {
              hasta: Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
   localStorage.setItem('sesion', JSON.stringify(sesion));
   sesionVencida = false;
+  fallosToken = 0;
   return { ok: true };
 }
 
 function cerrarSesion() {
   sesion = null;
   idToken = { valor: '', exp: 0 };
+  sesionVencida = false;
+  fallosToken = 0;
+  renovando = null;
   localStorage.removeItem('sesion');
   localStorage.removeItem('idToken');
   try { google.accounts.id.disableAutoSelect(); } catch (e) { /* sin red */ }
@@ -112,14 +126,27 @@ function cerrarSesion() {
   pintarLogin();
 }
 
+const tokenSirve = (margen) => !!idToken.valor && idToken.exp - margen > Date.now();
+
 /**
  * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
  * Solo se usa al sincronizar: guardar un parto nunca depende de esto.
+ *
+ * Se renueva con 10 minutos de margen para que la renovacion no caiga justo
+ * cuando hay partos esperando. Si el prompt no responde pero el token viejo
+ * todavia sirve, se usa ese: un token de 59 minutos es perfectamente valido.
  */
 async function tokenVigente() {
-  if (idToken.valor && idToken.exp - 60000 > Date.now()) return idToken.valor;
-  if (!navigator.onLine) return '';
+  if (tokenSirve(MARGEN_TOKEN)) return idToken.valor;
+  if (!navigator.onLine) return tokenSirve(60000) ? idToken.valor : '';
 
+  if (!renovando) renovando = renovarToken().then((j) => { renovando = null; return j; });
+  const jwt = await renovando;
+  if (jwt) return jwt;
+  return tokenSirve(60000) ? idToken.valor : '';
+}
+
+async function renovarToken() {
   try {
     await prepararGoogle();
     const jwt = await new Promise((ok) => {
@@ -262,6 +289,12 @@ function fechasPosibles() {
  * Cada chip muestra la fecha concreta: el operario ve con que dia va a quedar
  * registrado el parto en vez de tener que deducirlo.
  */
+/* La lista del dia tiene su PROPIA fecha. Cuando compartia st.fecha con el chip
+   del formulario, cargar un parto tardio como "Ayer" dejaba la lista clavada en
+   ayer: el operario veia los partos del dia anterior con el cartel en verde y lo
+   leia como que la app perdio los de hoy. */
+let listaFecha = '';
+
 function pintarFechas() {
   const opciones = fechasPosibles();
   // Si la app quedo abierta toda la noche y cruzo la medianoche, la seleccion
@@ -271,6 +304,14 @@ function pintarFechas() {
   $('cFecha').innerHTML = opciones.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
              data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
+  ).join('');
+
+  const cont = $('cListaFecha');
+  if (!cont) return;
+  if (!opciones.some((o) => o.iso === listaFecha)) listaFecha = opciones[0].iso;
+  cont.innerHTML = opciones.map((o) =>
+    `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
+             data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
   ).join('');
 }
 
@@ -504,8 +545,9 @@ function elegirChip(chip) {
     return;
   }
 
+  if (clave === 'listaFecha') { listaFecha = val; return refrescar(); }
+
   st[clave] = val;
-  if (clave === 'fecha') refrescar();          // la lista del dia depende de la fecha
   if (clave === 'sexo') pintarTerneros();
 }
 
@@ -945,12 +987,15 @@ function mostrarExito(p) {
     (crias.length ? '<br>' + crias.map((c) => `<b>${c}</b>`).join('<br>')
                   : '<br><b>Sin cría viva</b>');
 
+  // Nunca dice "sincronizado": este cartel se muestra ANTES de que el parto
+  // salga a la red, asi que no puede saberlo. El estado real lo dicen el badge
+  // y la lista del dia, que si lo saben.
   const enEspera = !navigator.onLine || sesionVencida;
   const est = $('okEstado');
   est.className = 'estado' + (enEspera ? ' espera' : '');
   est.textContent = enEspera
     ? 'Guardado en la tablet — se sincroniza al volver la señal'
-    : 'Guardado y sincronizado';
+    : 'Guardado en la tablet — sincronizando';
 
   $('modalOk').classList.remove('hidden');
   $('btnOtroParto').focus();
@@ -983,26 +1028,52 @@ function limpiar() {
 /* ------------------------------------------------------------------ */
 
 let sincronizando = false;
+let relojSync = null;
+
+/* El WiFi del campo puede estar "presente pero muerto" (AP sin salida, portal
+   cautivo): ahi fetch no falla, se cuelga. Sin corte, el badge se queda en
+   "Sincronizando..." para siempre y el reloj de 30 s no vuelve a entrar. */
+const ESPERA_RED = 20000;
+const ESPERA_TANDA = 60000;
 
 /**
  * El ID token se adjunta en el momento de enviar, no al guardar: un parto que
  * estuvo dos dias en la cola no puede llevar una credencial vencida.
  */
 async function enviar(payload) {
-  // text/plain = "simple request": no dispara el preflight OPTIONS,
-  // que Apps Script no sabe responder.
-  const r = await fetch(cfg.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
-    redirect: 'follow'
-  });
-  return r.json();
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), ESPERA_RED);
+  try {
+    // text/plain = "simple request": no dispara el preflight OPTIONS,
+    // que Apps Script no sabe responder.
+    const r = await fetch(cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
+      redirect: 'follow',
+      signal: corte.signal
+    });
+    return r.json();
+  } finally {
+    clearTimeout(reloj);
+  }
 }
+
+/* Un parto rechazado por validacion no se arregla reintentando solo... salvo
+   que si: casi siempre es un valor que falta en Maestro, y en cuanto Nahuel lo
+   agrega el mismo parto entra. Se reintenta espaciado y con tope, en vez de
+   dejarlo muerto para siempre. */
+const REINTENTO_ERROR = 10 * 60000;
+const MAX_REINTENTOS_ERROR = 5;
+const reintentable = (reg) =>
+  (reg.reintentos || 0) < MAX_REINTENTOS_ERROR &&
+  Date.now() - (reg.ultimoIntento || 0) > REINTENTO_ERROR;
 
 async function sincronizar() {
   if (sincronizando || !cfg.url || !sesion || !navigator.onLine) return;
   sincronizando = true;
+  clearTimeout(relojSync);
+  relojSync = setTimeout(() => { sincronizando = false; pintarBadge(); }, ESPERA_TANDA);
   pintarBadge();
   try {
     // Un parto puede deber dos cosas: entrar a la planilla, o una correccion
@@ -1011,13 +1082,19 @@ async function sincronizar() {
     const tareas = [];
     (await todosLocal()).sort((a, b) => a.creado - b.creado).forEach((reg) => {
       if (reg.estado === 'pendiente') tareas.push({ reg, tipo: 'alta' });
+      else if (reg.estado === 'error' && reintentable(reg)) tareas.push({ reg, tipo: 'alta' });
       else if (reg.estado === 'ok' && reg.edicion) tareas.push({ reg, tipo: 'editar' });
     });
-    if (!tareas.length) { sesionVencida = false; return; }
+    if (!tareas.length) { sesionVencida = false; fallosToken = 0; return; }
 
     // Sin credencial vigente no se intenta: los partos quedan en la cola,
-    // intactos, y el badge avisa que hay que iniciar sesion.
-    if (!(await tokenVigente())) { sesionVencida = true; return; }
+    // intactos. Pero un fallo suelto del prompt de Google no es una sesion
+    // caida — se avisa recien al tercero seguido.
+    if (!(await tokenVigente())) {
+      if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
+      return;
+    }
+    fallosToken = 0;
     sesionVencida = false;
 
     for (const { reg, tipo } of tareas) {
@@ -1035,24 +1112,32 @@ async function sincronizar() {
           // duplicado:true tambien es exito: el parto ya estaba en la planilla.
           reg.estado = 'ok';
           reg.id_parto = res.id_parto || reg.id_parto || '';
+          reg.reintentos = 0;
         } else {
           reg.edicion = null;
         }
         reg.error = '';
+        reg.revisarEdicion = false;
       } else if (res && res.error === 'validacion') {
         // Dato malo: reintentar no lo arregla. Se marca para revisar.
         if (tipo === 'alta') {
           reg.estado = 'error';
           reg.error = (res.detalles || []).join(' · ');
+          reg.reintentos = (reg.reintentos || 0) + 1;
+          reg.ultimoIntento = Date.now();
         } else {
           // La fila de la planilla quedo como estaba y la tablet muestra lo
           // corregido: se avisa cual es, en vez de reintentar para siempre.
+          // La fila no puede seguir en verde: dice una cosa y la planilla otra.
           reg.edicion = null;
+          reg.revisarEdicion = true;
           reg.error = 'corrección rechazada: ' + (res.detalles || []).join(' · ');
         }
       } else {
         // Sesion caida o error del servidor: cortar, no quemar la cola entera.
-        if (res && res.sesion === false) sesionVencida = true;
+        // Esta es la unica senal autoritativa de sesion caida: la da el backend,
+        // que es el que verifica el token contra Google.
+        if (res && res.sesion === false) { sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR; }
         reg.intentos++;
         reg.error = (res && res.error) || 'error del servidor';
         await guardarLocal(reg);
@@ -1061,6 +1146,7 @@ async function sincronizar() {
       await guardarLocal(reg);
     }
   } finally {
+    clearTimeout(relojSync);
     sincronizando = false;
     await refrescar();
   }
@@ -1070,13 +1156,25 @@ async function sincronizar() {
 /* Listas y KPIs                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Los contadores viven a nivel modulo porque el badge se repinta desde lugares
+   que no los tienen a mano (el evento online, el cierre de sesion, el arranque
+   de una tanda). Cuando pintarBadge() los recibia por parametro, esas llamadas
+   pasaban undefined y el badge escribia "Sincronizado" con la cola llena. */
+let ultimoPend = 0;
+let ultimoErr = 0;
+
 async function refrescar() {
   const todos = await todosLocal();
-  const delDia = todos.filter((r) => r.payload.fecha_parto === st.fecha)
+  const delDia = todos.filter((r) => r.payload.fecha_parto === listaFecha)
                       .sort((a, b) => b.creado - a.creado);
-  const pendientes = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
-  const errores = todos.filter((r) => r.estado === 'error').length;
+  ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
+  ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
   const porPesar = delDia.filter((r) => faltaPesar(r.payload)).length;
+
+  // Lo que esta trabado de OTRO dia no se ve en ninguna pantalla, pero si suma
+  // al badge: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista.
+  const fuera = todos.filter((r) => r.payload.fecha_parto !== listaFecha &&
+    (r.estado === 'pendiente' || r.estado === 'error' || r.edicion || r.revisarEdicion));
 
   let h = 0, m = 0, muertos = 0;
   delDia.forEach((r) => {
@@ -1089,16 +1187,26 @@ async function refrescar() {
   $('kTot').textContent = delDia.length;
   $('kHM').textContent = h + ' / ' + m;
   $('kPesar').textContent = porPesar;
-  $('kPend').textContent = pendientes;
+  $('kPend').textContent = delDia.filter((r) =>
+    r.estado === 'pendiente' || r.estado === 'error' || r.edicion).length;
   $('kMuertos').textContent = muertos;
+
+  const avisoFuera = $('avisoFuera');
+  avisoFuera.classList.toggle('hidden', !fuera.length);
+  if (fuera.length) {
+    const dias = [...new Set(fuera.map((r) => aDDMMAAAA(r.payload.fecha_parto)))].join(', ');
+    avisoFuera.innerHTML = `Hay <b>${fuera.length}</b> parto${fuera.length > 1 ? 's' : ''}
+      sin sincronizar de otro día (${dias}). Cambiá la fecha de arriba para verlos.`;
+  }
 
   $('filas').innerHTML = delDia.length ? delDia.map((r) => {
     const p = r.payload;
     const pesar = faltaPesar(p);
-    // "Falta pesar" gana sobre "Sincronizado": la fila esta en la planilla,
-    // pero incompleta, y es lo que hay que hacer antes de cerrar el dia.
-    const est = r.estado === 'error' ? ['bad', 'Revisar']
-              : pesar ? ['wait', 'Falta pesar']
+    // La columna Estado dice UNA sola cosa: si el parto esta en la planilla.
+    // Antes "Falta pesar" le ganaba, y como desde r5 el peso se carga siempre
+    // en un segundo paso, todo parto recien cargado se veia en ambar aunque ya
+    // estuviera escrito. Que falte pesar lo dicen el boton y el KPI.
+    const est = (r.estado === 'error' || r.revisarEdicion) ? ['bad', 'Revisar']
               : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
               : ['ok', 'Sincronizado'];
     const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
@@ -1108,7 +1216,8 @@ async function refrescar() {
         ).join(' + ')}`;
     return `<div class="listrow">
       <div class="id">${p.id_vaca}</div>
-      <div>${cria}<div class="meta">Tambo ${p.tambo}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
+      <div>${cria}${pesar ? ' <span class="tag">falta pesar</span>' : ''}
+        <div class="meta">Tambo ${p.tambo}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
       <div>${p.hora_nacimiento}</div>
       <div class="ocultar">${p.tipo_parto}</div>
       <div><span class="pill ${est[0]}">${est[1]}</span></div>
@@ -1117,19 +1226,24 @@ async function refrescar() {
     </div>`;
   }).join('') : '<div class="vacio">Todavía no hay partos cargados hoy.</div>';
 
-  pintarBadge(pendientes, errores);
+  pintarBadge();
   pintarPie();
 }
 
-function pintarBadge(pend, err) {
-  const b = $('badgeSync');
-  const p = pend === undefined ? null : pend;
+/* Sin parametros a proposito: lee el estado del modulo. Cualquiera puede
+   repintarlo sin tener los contadores a mano y sin riesgo de mentir. */
+function pintarBadge() {
+  const p = ultimoPend;
+  const err = ultimoErr;
   const mal = sesionVencida || !navigator.onLine;
-  b.className = 'badge ' + (mal ? 'off-line' : p ? 'pend' : 'on-line');
+  const b = $('badgeSync');
+  b.className = 'badge ' + (mal || err ? 'off-line' : p ? 'pend' : 'on-line');
   $('badgeTxt').textContent = sincronizando ? 'Sincronizando…'
     : sesionVencida ? (p ? `Sesión vencida · ${p} en espera` : 'Sesión vencida')
     : !navigator.onLine ? (p ? `Sin señal · ${p} en espera` : 'Sin señal')
-    : p ? `${p} en espera` : (err ? `${err} para revisar` : 'Sincronizado');
+    : err && p ? `${p} en espera · ${err} para revisar`
+    : err ? `${err} para revisar`
+    : p ? `${p} en espera` : 'Sincronizado';
 }
 
 /** La pestaña Ajustes solo se le muestra a los administradores. */
@@ -1211,7 +1325,7 @@ function avisar(txt, malo) {
 async function bajarMaestro() {
   if (!cfg.url || !sesion) return false;
   try {
-    if (!(await tokenVigente())) { sesionVencida = true; return false; }
+    if (!(await tokenVigente())) return false;
     const j = await enviar({ accion: 'maestro' });
     if (!j.ok) { $('estadoConfig').textContent = 'El servicio respondió: ' + j.error; return false; }
     listas = Object.assign({}, LISTAS_BASE, j.listas);
@@ -1314,9 +1428,19 @@ addEventListener('online', () => { pintarBadge(); sincronizar(); });
 addEventListener('offline', () => pintarBadge());
 setInterval(sincronizar, 30000);
 
+/* Renovacion proactiva: se pide token nuevo mientras NO hay nada esperando, con
+   la app en primer plano. Asi el prompt de Google no cae justo cuando hay
+   partos por subir, que es cuando un fallo se nota. */
+setInterval(() => {
+  if (!sesion || !navigator.onLine || document.hidden) return;
+  if (tokenSirve(MARGEN_TOKEN)) return;
+  tokenVigente().then(pintarBadge);
+}, 120000);
+
 (async function iniciar() {
   const hoy = new Date();
   st.fecha = aISO(hoy);
+  listaFecha = st.fecha;
   $('subFecha').textContent = hoy.toLocaleDateString('es-AR',
     { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -1334,6 +1458,9 @@ setInterval(sincronizar, 30000);
   setInterval(() => {
     const hoyAhora = fechasPosibles()[0].iso;
     if (hoyAhora === hoyConocido) return;
+    // La lista sigue al dia nuevo solo si estaba mirando "hoy": si el operario
+    // la dejo en ayer a proposito, se respeta.
+    if (listaFecha === hoyConocido) listaFecha = hoyAhora;
     hoyConocido = hoyAhora;
     pintarFechas();
     $('subFecha').textContent = new Date().toLocaleDateString('es-AR',
