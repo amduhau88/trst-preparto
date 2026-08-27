@@ -17,7 +17,7 @@ es un Apps Script adjunto a la planilla, y el frontend es una PWA estática.
 
 ```
 Tablet (PWA, GitHub Pages)  →  Apps Script /exec  →  Google Sheet «TRST — Partos»
-   guarda en IndexedDB          verifica identidad       NUEVO FORMATO PREPARTO
+   guarda en IndexedDB          verifica identidad       Registros / Datos Carga DC
    cola offline + reintentos    LockService + UUID       Maestro · _log
    sesion Google cacheada       sin duplicados
 ```
@@ -56,7 +56,7 @@ Planilla: [`TRST — Partos`](https://docs.google.com/spreadsheets/d/12da8wxy4tJ
 | `apps-script/appsscript.json` | Manifiesto del proyecto Apps Script |
 | `apps-script/test_local.js` | Pruebas de la lógica con Node, sin deployar nada |
 | `pwa/` | Pantalla del operario (Fase 2) |
-| `docs/mapeo-columnas.md` | Campo → columna A–S → valores permitidos |
+| `docs/mapeo-columnas.md` | Campo → columna → valores permitidos |
 
 ## Probar la lógica sin deployar
 
@@ -139,7 +139,7 @@ Lo primero que hace es comparar la versión publicada contra `VERSION_ESPERADA`,
 
 Corre los mismos casos que `test_local.js` pero contra la planilla real, incluida la prueba
 de duplicados. Escribe partos de prueba: borrar esas filas de
-`NUEVO FORMATO PREPARTO` y `_log` cuando termine.
+`Registros`, `Datos Carga DC` y `_log` cuando termine.
 
 ## Contrato de datos
 
@@ -201,6 +201,15 @@ Respuestas:
 | Sin credencial | `{"ok":false,"error":"falta sesion","sesion":false}` |
 
 `GET ?action=ping` · `?action=maestro&token=…` · `?action=partos&token=…&fecha=YYYY-MM-DD`
+· `?action=calostro&token=…&vaca=4115` · `?action=esquema&token=…`
+
+`esquema` compara la fila 1 de `Registros` contra el encabezado que espera el código.
+El backend escribe **por posición**: sin esto, una columna insertada a mano en la planilla
+lo haría escribir en la columna equivocada, en silencio. `verificar.sh` corta si no coincide.
+
+`calostro` devuelve con qué calostro cuenta una vaca —el mejorado si se mejoró, si no el
+natural— para cuando un ternero toma de otra madre. **Que no haya datos no es un error**:
+la tablet habilita el campo y el operario lo carga a mano.
 
 ### Corregir un parto ya escrito
 
@@ -213,8 +222,9 @@ POST { "id_token": "…", "accion": "editar",
   "operario": "Julio",             // quién corrige: el peso sólo lo mueve quien cargó
   "tambo": "2", "lts_madre": "5",  // del parto: van iguales en todas sus filas
   "terneros": [                    // por cría, en el orden de Cria 1/2, 2/2
-    { "peso": 44, "calostro": { "consumido": "No" } }
-  ]
+    { "peso": 44, "calostro": { "lts_ternero": "5" } }
+  ],
+  "calostro": { "calidad_sin_mejorar": "26" }   // de la madre: es del parto
 }
 ```
 
@@ -225,24 +235,65 @@ POST { "id_token": "…", "accion": "editar",
 | Cargado otro día | `{"ok":false,"error":"solo se corrigen partos cargados hoy"}` |
 | Dato inválido | `{"ok":false,"error":"validacion","detalles":[…]}` |
 
-Se corrigen **peso (I), calostro (J–P) y tambo (Q)** de lo cargado **hoy** — mirando
-`Cargado en` (Y), no `Fecha Parto` (C), así un parto de ayer cargado hoy sigue siendo
-corregible. **Nunca se agrega ni se borra una fila**: se pisan celdas de renglones que ya
-existen, y se escribe celda por celda para no pisar el rodeo que Nahuel carga en R.
+Se corrigen **peso (I), calostro (J–Q) y tambo (R)** de lo cargado **hoy** — mirando
+`Cargado en` (Z), no `Fecha Parto` (C), así un parto de ayer cargado hoy sigue siendo
+corregible. **`editar` nunca agrega ni borra una fila**: pisa celdas de renglones que ya
+existen, y escribe celda por celda para no tocar el rodeo de la columna S.
+
+### Cambiar el código de sexo
+
+Va por **otra acción más**, porque es la única que cambia *cuántas* filas tiene un parto.
+Mantenerla afuera de `editar` deja intacta la garantía de que corregir no mueve renglones.
+
+```jsonc
+POST { "id_token": "…", "accion": "cambiar_sexo",
+  "uuid": "…",
+  "op_uuid": "…",                  // idempotencia de ESTA operación
+  "operario": "Julio",
+  "sexo": "8 Otros Gemelos (M+M o M+H)",
+  "lts_madre": "5", "tambo": "2",
+  "calostro": { … },               // de la madre
+  "terneros": [ … ]                // ESTADO FINAL COMPLETO, en orden 1/n, 2/n
+}
+```
+
+El payload describe el **estado final**, no un diff: aplicarlo dos veces converge al mismo
+resultado. Y trae su propio `op_uuid` porque la cola de la tablet reintenta a ciegas ante un
+error de red, y un reintento que agregue otra cría sería un desastre que nadie notaría.
+
+La cría que sobra **se anula, no se borra**: el renglón queda con G–Q en `---` y
+`Anulada = Si`, fuera de la vista DC y de los contadores, con su contenido anterior entero
+en `_log`. Si el parto vuelve a ser doble, esa misma fila se reutiliza.
+
+### La vista `Datos Carga DC`
+
+Tabla real mantenida por script, **no fórmulas**. Una celda editable dentro de un derrame
+queda anclada a una *posición* de grilla, y `cambiar_sexo` inserta filas en el medio de
+`Registros`: el rodeo y el tilde de todas las de abajo pasarían a la cría equivocada.
+Acá cada fila lleva una clave oculta `uuid|cria` y todo se replica **por clave**.
+
+Se edita en dos columnas: `Asignacion Rodeo` y `Cargado a DC`. Un `onEdit` simple las baja
+a `Registros`; como no se dispara con las escrituras del propio script, no hay bucle.
+`configurarDC()` crea la pestaña y el reloj de 10 minutos, y se corre a mano desde el editor.
 
 ## Reglas de negocio
 
 - **Una fila por ternero.** Parto simple = 1 fila (igual que siempre). Mellizos = 2 filas con el
   mismo `ID Parto` y `Cria` = `1/2` y `2/2`.
-- **Cría muerta** (sexo `4` o `7`): columnas G a P van en `---`, igual que se hacía a mano.
+- **Cría muerta** (sexo `4` o `7`): columnas G a Q van en `---`, igual que se hacía a mano.
+- **El calostro de la madre (J–M) es del parto**; lo que tomó cada ternero (N–Q) es de la
+  cría. Antes estaba todo por cría, y en un mellizo se podían cargar dos calidades distintas
+  para la misma madre.
 - **`Mejorado = No`** obliga a `calidad_mejorado = "---"`.
-- **Calostro**: número entero o una excepción. Nunca un rango tipo `23-26`.
+- **Calostro**: número entero o una excepción. Nunca un rango tipo `23-26`. **`0` significa
+  "no se midió / no hubo calostro"** y no admite `Mejorado = Si`.
 - **Idempotencia**: el `uuid` se busca en `_log` antes de escribir. Sin esto, una tablet con
   señal intermitente duplicaría partos.
 - **El peso llega después**: columna I vacía = "falta pesar". Es un tercer estado, distinto
   de `---` (cría muerta) y de un número. Lo carga quien cargó el parto.
-- **El código de sexo no se corrige desde la tablet**: manda cuántas crías hay, y cambiarlo
-  obligaría a agregar o borrar renglones del bloque que leen Nahuel y DairyComp.
+- **El código de sexo sí se corrige desde la tablet**, por `cambiar_sexo`. Es el error típico
+  y mandarlo a la planilla significaba que nadie lo arreglara. Puede agregar una cría o
+  anular una; nunca borra.
 
 ## Cambiar las listas (sin tocar código)
 
@@ -252,9 +303,12 @@ no hace falta redeployar. Agregar un operario es escribirlo en la columna A.
 **Una columna vacía en `Maestro` significa "sin restricción"**: el backend acepta cualquier
 valor para ese campo. Es a propósito, para poder completar la planilla de a poco.
 
-Hoy está vacía: **Vaca que Provee Calostro** (col. P). **Rodeo** (col. R) ya no se
-carga desde la tablet — la asigna Nahuel en la planilla.
-Y falta **Adrián** en Operarios (382 partos cargados en 2026).
+**Rodeo** ya no se carga desde la tablet: Nahuel lo escribe en `Datos Carga DC` y baja
+solo a `Registros`.
+
+En `Maestro` hay que tener cargados **`0` en Calidad Calostro Sin Mejorar** (arriba del 18)
+y **`4` en Tambo Vaca**: son las dos listas que r6 amplió. `LISTAS_BASE` en `pwa/app.js`
+tiene la copia de arranque y conviene mantenerla alineada.
 
 ## La PWA de la tablet
 

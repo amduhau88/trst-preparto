@@ -38,9 +38,14 @@ o después desde **Ajustes**, si iniciaste sesión con una cuenta de administrad
 
 ### Si la tablet quedó con la cuenta equivocada
 
-La opción «Cerrar sesión» vive en Ajustes, que no se le muestra a las cuentas comunes.
-Para eso está la salida de emergencia: **mantener apretado el logo TRST 2 segundos**
-cierra la sesión y vuelve a la pantalla de acceso.
+Tocar el **chip con el nombre**, arriba a la derecha: *Cambiar de usuario* o
+*Cerrar sesión*. Está para todos, no sólo para el administrador.
+
+Los partos que estén esperando **no se pierden**: la cola es de la tablet, no de la
+cuenta, y en la columna Operario sigue figurando quien cargó cada parto.
+
+Queda además la salida de emergencia heredada de r5 —**mantener apretado el logo TRST
+2 segundos**— por si el chip no llegara a aparecer.
 
 ## 3. Probar en modo avión — la prueba que importa
 
@@ -87,7 +92,7 @@ vieja guardada y el cambio no llega nunca.
 | Todos los partos quedan "Revisar" | Falta un valor en `Maestro` (p. ej. el operario que eligieron) |
 | No sincroniza y hay señal | La URL del `/exec` cambió: se creó una implementación nueva en vez de versionar |
 | La app no abre sin señal | No se instaló como app, o el service worker no se registró |
-| Quedó con la cuenta equivocada | Mantener apretado el logo TRST 2 segundos |
+| Quedó con la cuenta equivocada | Chip del nombre → Cambiar de usuario |
 
 En **Ajustes → Diagnóstico** se ve el estado de conexión, cuántos registros hay
 locales, si la app está instalada y cuántos valores tiene cada lista.
