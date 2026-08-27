@@ -607,7 +607,11 @@ function elegirChip(chip) {
     return;
   }
 
-  if (clave === 'listaFecha') { listaFecha = val; return refrescar(); }
+  if (clave === 'listaFecha') {
+    listaFecha = val;
+    refrescar();
+    return bajarPartosDelDia(val);
+  }
 
   // Calostro de la madre: es del parto, no de ninguna cria.
   if (clave === 'brixExc') {
@@ -1309,12 +1313,110 @@ async function sincronizar() {
     clearTimeout(relojSync);
     sincronizando = false;
     await refrescar();
+    // Si la lista esta a la vista, tambien pudo cambiar en otra tablet.
+    if (vistaActual() === 'list') bajarPartosDelDia(listaFecha);
   }
 }
 
 /* ------------------------------------------------------------------ */
 /* Listas y KPIs                                                       */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* Partos del dia: los de esta tablet y los de las demas               */
+/* ------------------------------------------------------------------ */
+
+/* La lista leia solo IndexedDB, asi que cada tablet veia unicamente lo suyo:
+   con tres turnos y varios dispositivos, nadie tenia el dia completo delante.
+   Ahora se lee tambien de la planilla y se juntan.
+
+   Lo remoto NO entra a IndexedDB: contaminaria la cola de sincronizacion con
+   filas que ya estan escritas. Vive aparte, con una copia en localStorage para
+   que al reabrir sin señal siga estando lo ultimo que se supo. */
+let remotos = [];
+let remotosFecha = '';
+let remotosViejo = false;
+
+try {
+  const guardado = JSON.parse(localStorage.getItem('remotos') || 'null');
+  if (guardado) { remotos = guardado.partos || []; remotosFecha = guardado.fecha || ''; }
+} catch (e) { /* copia corrupta: se baja de nuevo */ }
+
+async function bajarPartosDelDia(fecha) {
+  if (!cfg.url || !sesion || !navigator.onLine) { remotosViejo = true; return; }
+  /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
+     falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
+     local y listo. */
+  if (!tokenSirve(60000)) { remotosViejo = true; return; }
+
+  try {
+    const j = await enviar({ accion: 'partos', fecha });
+    if (!j || !j.ok) { remotosViejo = true; return; }
+    remotos = j.partos || [];
+    remotosFecha = fecha;
+    remotosViejo = false;
+    localStorage.setItem('remotos', JSON.stringify({ fecha, partos: remotos }));
+  } catch (e) {
+    remotosViejo = true;                    // se sigue mostrando la copia guardada
+  }
+  await refrescar();
+}
+
+/** Las filas remotas vienen por CRIA; la lista muestra PARTOS. */
+function partosRemotos(fecha) {
+  if (remotosFecha !== fecha) return [];
+  const porUuid = new Map();
+  remotos.forEach((f) => {
+    if (f.fecha !== fecha) return;
+    if (!porUuid.has(f.uuid)) porUuid.set(f.uuid, []);
+    porUuid.get(f.uuid).push(f);
+  });
+  return [...porUuid.values()];
+}
+
+const dosDig = (n) => String(n).padStart(2, '0');
+const cuandoSeCargo = (ms) => {
+  const d = new Date(ms);
+  return `${dosDig(d.getDate())}/${dosDig(d.getMonth() + 1)} ${dosDig(d.getHours())}:${dosDig(d.getMinutes())}`;
+};
+
+/** Un parto local, en la forma que pinta la lista. */
+function vistaLocal(r) {
+  const p = r.payload;
+  const pesar = faltaPesar(p);
+  const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
+  return {
+    uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento,
+    tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
+    cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
+    crias: muerto ? [] : (p.terneros || []).map((t) => ({
+      id: t.id_ternero || 's/id', vive: t.vive !== false,
+      peso: t.peso === undefined ? null : t.peso
+    })),
+    estado: (r.estado === 'error' || r.revisarEdicion) ? ['bad', 'Revisar']
+          : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
+          : ['ok', 'Sincronizado']
+  };
+}
+
+/** Un parto de otra tablet, leido de la planilla. */
+function vistaRemota(filas) {
+  const f = filas[0];
+  const vivas = filas.filter((x) => String(x.estado_cria) !== 'Muerto');
+  return {
+    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora,
+    tipo: f.tipo_parto, sexo: f.sexo, operario: f.operario,
+    cargado: String(f.cargado_en || '').slice(5).replace('-', '/'),
+    muerto: !vivas.length,
+    pesar: vivas.some((x) => x.peso === '' || x.peso === null || x.peso === undefined),
+    error: '',
+    crias: vivas.map((x) => ({
+      id: x.id_ternero || 's/id', vive: true,
+      peso: x.peso === '' || x.peso === null || x.peso === undefined ? null : x.peso
+    })),
+    estado: ['ok', 'Sincronizado']
+  };
+}
 
 /* Los contadores viven a nivel modulo porque el badge se repinta desde lugares
    que no los tienen a mano (el evento online, el cierre de sesion, el arranque
@@ -1325,30 +1427,34 @@ let ultimoErr = 0;
 
 async function refrescar() {
   const todos = await todosLocal();
-  const delDia = todos.filter((r) => r.payload.fecha_parto === listaFecha)
-                      .sort((a, b) => b.creado - a.creado);
+  const mios = todos.filter((r) => r.payload.fecha_parto === listaFecha)
+                    .sort((a, b) => b.creado - a.creado);
   ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
   ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
-  const porPesar = delDia.filter((r) => faltaPesar(r.payload)).length;
 
   // Lo que esta trabado de OTRO dia no se ve en ninguna pantalla, pero si suma
   // al badge: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista.
   const fuera = todos.filter((r) => r.payload.fecha_parto !== listaFecha &&
     (r.estado === 'pendiente' || r.estado === 'error' || r.edicion || r.revisarEdicion));
 
+  // El uuid es la llave: un parto que esta en las dos partes gana el local, que
+  // es el unico que sabe si tiene una correccion sin subir.
+  const mismos = new Set(mios.map((r) => r.uuid));
+  const delDia = mios.map(vistaLocal).concat(
+    partosRemotos(listaFecha).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
+
   let h = 0, m = 0, muertos = 0;
-  delDia.forEach((r) => {
-    const s = String(r.payload.sexo);
-    if (/Hembra/i.test(s)) h += (s.charAt(0) === '2' ? 2 : 1);
-    if (/Macho/i.test(s)) m += 1;
-    if (SEXO_MUERTO.includes(s.charAt(0))) muertos++;
+  delDia.forEach((v) => {
+    const sx = String(v.sexo);
+    if (/Hembra/i.test(sx)) h += (sx.charAt(0) === '2' ? 2 : 1);
+    if (/Macho/i.test(sx)) m += 1;
+    if (v.muerto) muertos++;
   });
 
   $('kTot').textContent = delDia.length;
   $('kHM').textContent = h + ' / ' + m;
-  $('kPesar').textContent = porPesar;
-  $('kPend').textContent = delDia.filter((r) =>
-    r.estado === 'pendiente' || r.estado === 'error' || r.edicion).length;
+  $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
+  $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
   $('kMuertos').textContent = muertos;
 
   const avisoFuera = $('avisoFuera');
@@ -1359,32 +1465,29 @@ async function refrescar() {
       sin sincronizar de otro día (${dias}). Cambiá la fecha de arriba para verlos.`;
   }
 
-  $('filas').innerHTML = delDia.length ? delDia.map((r) => {
-    const p = r.payload;
-    const pesar = faltaPesar(p);
-    // La columna Estado dice UNA sola cosa: si el parto esta en la planilla.
-    // Antes "Falta pesar" le ganaba, y como desde r5 el peso se carga siempre
-    // en un segundo paso, todo parto recien cargado se veia en ambar aunque ya
-    // estuviera escrito. Que falte pesar lo dicen el boton y el KPI.
-    const est = (r.estado === 'error' || r.revisarEdicion) ? ['bad', 'Revisar']
-              : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
-              : ['ok', 'Sincronizado'];
-    const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
-    const cria = muerto ? p.sexo
-      : `${p.sexo} · ${p.terneros.map((t) => (t.id_ternero || 's/id') +
-          (t.vive === false ? ' (muerta)' : ' (' + (t.peso === undefined ? 'sin pesar' : t.peso + ' kg') + ')')
-        ).join(' + ')}`;
+  $('avisoRemotos').classList.toggle('hidden', !remotosViejo);
+
+  $('cabecera').classList.toggle('hidden', !delDia.length);
+  $('filas').innerHTML = delDia.length ? delDia.map((v) => {
+    const cria = v.muerto ? v.sexo
+      : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`)).join(' + ');
     return `<div class="listrow">
-      <div class="id">${p.id_vaca}</div>
-      <div>${cria}${pesar ? ' <span class="tag">falta pesar</span>' : ''}
-        <div class="meta">Tambo ${p.tambo}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
-      <div>${p.hora_nacimiento}</div>
-      <div class="ocultar">${p.tipo_parto}</div>
-      <div><span class="pill ${est[0]}">${est[1]}</span></div>
-      <div>${muerto ? '' : `<button class="btn ${pesar ? 'primary' : ''}" type="button"
-        data-editar="${r.uuid}" data-pesar="${pesar ? 1 : 0}">${pesar ? 'Pesar' : 'Corregir'}</button>`}</div>
+      <div class="id">${v.id_vaca}</div>
+      <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
+        ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}</div>` : ''}</div>
+      <div>${v.hora}</div>
+      <div class="ocultar">${v.cargado}</div>
+      <div class="ocultar">${v.tipo}</div>
+      <div class="ocultar">${v.operario}</div>
+      <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
+      <div>${v.muerto ? '' : v.mia
+        ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
+             data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>`
+        // Un parto de otra tablet se ve, pero no se corrige desde aca: la
+        // correccion viaja con el registro local, que en esta tablet no existe.
+        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>'}</div>
     </div>`;
-  }).join('') : '<div class="vacio">Todavía no hay partos cargados hoy.</div>';
+  }).join('') : '<div class="vacio">Todavía no hay partos cargados este día.</div>';
 
   pintarBadge();
   pintarPie();
@@ -1505,6 +1608,7 @@ function ver(v) {
 
   pintarPie(v);
   if (v === 'config') pintarDiagnostico();
+  if (v === 'list') bajarPartosDelDia(listaFecha);
 }
 
 const vistaActual = () => (document.querySelector('.tab.on') || { dataset: {} }).dataset.v;
@@ -1529,7 +1633,11 @@ function pintarPie(v) {
     pie.innerHTML = `<div class="msg"></div>
       <button class="btn" type="button" id="btnSync">Sincronizar ahora</button>
       <button class="btn primary" type="button" data-ir="form">Nuevo parto</button>`;
-    $('btnSync').onclick = () => { sincronizar(); avisar('Sincronizando…'); };
+    $('btnSync').onclick = () => {
+      sincronizar();
+      bajarPartosDelDia(listaFecha);
+      avisar('Sincronizando…');
+    };
   } else {
     pie.innerHTML = `<div class="msg">Configuración de la tablet</div>
       <button class="btn primary" type="button" data-ir="form">Volver al formulario</button>`;
@@ -1690,7 +1798,7 @@ setInterval(() => {
     if (hoyAhora === hoyConocido) return;
     // La lista sigue al dia nuevo solo si estaba mirando "hoy": si el operario
     // la dejo en ayer a proposito, se respeta.
-    if (listaFecha === hoyConocido) listaFecha = hoyAhora;
+    if (listaFecha === hoyConocido) { listaFecha = hoyAhora; bajarPartosDelDia(hoyAhora); }
     hoyConocido = hoyAhora;
     pintarFechas();
     $('subFecha').textContent = new Date().toLocaleDateString('es-AR',
@@ -1710,6 +1818,7 @@ setInterval(() => {
 function arrancarApp() {
   pintarPermisos();
   pintarCuenta();
+  bajarPartosDelDia(listaFecha);
   ver('form');
   bajarMaestro();
   sincronizar();

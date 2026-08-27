@@ -125,7 +125,10 @@ const api = http.createServer((req, res) => {
       return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN });
     }
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
-    if (p.accion === 'partos') return responder({ ok: true, partos: [] });
+    // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
+    if (p.accion === 'partos') {
+      return responder({ ok: true, partos: filas.filter((f) => f.fecha === p.fecha) });
+    }
 
     // Con cuanto calostro cuenta una vaca: el ultimo parto suyo que lo tenga medido.
     if (p.accion === 'calostro') {
@@ -177,7 +180,13 @@ const api = http.createServer((req, res) => {
       const t = (p.terneros || [])[i] || {};
       filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
                    operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro,
-                   madre: p.calostro });
+                   madre: p.calostro,
+                   // Lo que devuelve la accion 'partos', con los nombres del backend.
+                   id_vaca: p.id_vaca, fecha: p.fecha_parto, hora: p.hora_nacimiento,
+                   tipo_parto: p.tipo_parto, sexo: p.sexo, id_ternero: t.id_ternero,
+                   estado_cria: t.vive === false ? 'Muerto' : 'Vivo',
+                   cargado_en: (p.cargado_en || '').slice(0, 16).replace('T', ' '),
+                   dispositivo: p.dispositivo });
     }
     responder({ ok: true, uuid: p.uuid, id_parto: 'X-' + p.id_vaca, filas_escritas: n });
   });
@@ -944,6 +953,58 @@ const visible = (page, sel) => page.evaluate((s) => {
           JSON.stringify(filas.find((f) => f.vaca === '7001')));
     check('sin tocar el peso', (filas.find((f) => f.vaca === '7001') || {}).peso === 43);
     check('y sigue sin agregar filas', filas.length === filasAntesDePesar + 1);
+
+    console.log('\n11i. La lista muestra los partos de TODAS las tablets');
+    /* Leia solo IndexedDB, asi que cada tablet veia unicamente lo suyo: con tres
+       turnos y varios dispositivos, nadie tenia el dia completo delante. */
+    await page.evaluate(() => ver('list'));
+    await esperar(300);
+    check('la lista tiene encabezados', await visible(page, '#cabecera'));
+    check('y dicen que es cada cosa',
+          /ID Vaca[\s\S]*Crías[\s\S]*Hora nac[\s\S]*Cargado[\s\S]*Operario/
+            .test(await page.$eval('#cabecera', (e) => e.textContent)),
+          await page.$eval('#cabecera', (e) => e.textContent.replace(/\s+/g, ' ')));
+
+    const propios = await page.$$eval('.listrow', (r) => r.length);
+    // Otra tablet carga un parto: llega a la planilla sin pasar por esta.
+    const hoyISO = await page.evaluate(() => listaFecha);
+    filas.push({ uuid: 'u-de-otra-tablet', id_vaca: '4242', vaca: '4242', fecha: hoyISO,
+                 hora: '05:30', tipo_parto: '1 Normal', sexo: '1 Hembra Viva',
+                 id_ternero: '9999', estado_cria: 'Vivo', peso: 41, cria: '1/1',
+                 operario: 'Griselda', tambo: '1', cargado_en: hoyISO + ' 05:35',
+                 dispositivo: 'tablet-2' });
+    await page.evaluate(() => bajarPartosDelDia(listaFecha));
+    await esperar(900);
+    check('el parto de la otra tablet aparece',
+          await page.$$eval('.listrow', (r) => r.length) === propios + 1,
+          `${propios} -> ${await page.$$eval('.listrow', (r) => r.length)}`);
+    const ajeno = await filaDe('4242');
+    check('con su operario', /Griselda/.test(ajeno.txt), ajeno.txt);
+    check('y ya sincronizado', ajeno.pill === 'Sincronizado', JSON.stringify(ajeno));
+    // No se corrige desde aca: la correccion viaja con el registro local, que
+    // en esta tablet no existe.
+    check('pero no se puede corregir desde esta tablet', ajeno.btn === null,
+          JSON.stringify(ajeno));
+    check('y se dice por que', /otra tablet/.test(ajeno.txt), ajeno.txt);
+
+    /* 7001 esta en las dos partes: se cargo en esta tablet y ya esta escrito en
+       la planilla. Tiene que aparecer UNA vez, y con el boton local. */
+    const cuantasVeces = (v) => page.$$eval('.listrow .id',
+      (e, x) => e.filter((n) => n.textContent.trim() === x).length, v);
+    check('un parto que esta local y en la planilla se muestra una sola vez',
+          (await cuantasVeces('7001')) === 1, String(await cuantasVeces('7001')));
+    check('y gana el local, que es el que sabe corregirse',
+          (await filaDe('7001')).btn === 'Corregir', JSON.stringify(await filaDe('7001')));
+    check('el de la otra tablet tampoco se duplica',
+          (await cuantasVeces('4242')) === 1, String(await cuantasVeces('4242')));
+
+    // Sin señal se sigue viendo lo ultimo que se supo, y se avisa.
+    await page.evaluate(() => { remotosViejo = true; refrescar(); });
+    await esperar(300);
+    check('sin señal avisa que la lista es solo local', await visible(page, '#avisoRemotos'));
+    await page.evaluate(() => bajarPartosDelDia(listaFecha));
+    await esperar(900);
+    check('y al volver la señal el aviso se va', !(await visible(page, '#avisoRemotos')));
 
     console.log('\n11f. La lista del dia y el formulario tienen fechas distintas');
     /* Era el mismo st.fecha para los dos. Cargar un parto tardio como "Ayer"
