@@ -165,7 +165,14 @@ destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañ
   "tipo_parto": "1 Normal",
   "sexo": "6 Macho Vivo",
 
-  "lts_madre": "5",               // del PARTO, no de la cría: se repite en las dos filas
+  // Lo que produjo la MADRE: es del parto, se repite igual en las dos filas
+  // de un mellizo. Una vaca produjo un calostro, no uno por cría.
+  "lts_madre": "5",
+  "calostro": {
+    "calidad_sin_mejorar": "26",   // número, "0" (no se midió), o mastitis/sangre/campo
+    "mejorado": "No",
+    "calidad_mejorado": "---"      // solo si mejorado = "Si"
+  },
 
   "terneros": [                    // 2 elementos si el sexo es de parto doble (2 u 8)
     {
@@ -174,13 +181,12 @@ destino, que sólo acepta GET. Se ve como un "No se encontró la página" engañ
                                    // ("falta pesar") y se carga en un 2º paso
       "sexo": "Macho",             // obligatorio sólo con el código 8, que es ambiguo
       "vive": true,                // false = nació muerta: su fila va en "---"
-      "calostro": {                // cada cría lleva el suyo
-        "calidad_sin_mejorar": "26",   // número, o "mastitis" / "sangre" / "campo"
-        "mejorado": "No",
-        "calidad_mejorado": "---",     // solo si mejorado = "Si"
-        "consumido": "Si",
-        "lts_ternero": "4",
-        "id_vaca_origen": "119"
+      // Lo que tomó ESTE ternero: puede no ser el de su madre
+      "calostro": {
+        "origen": "Propia madre",      // o "Otra vaca"
+        "id_vaca_origen": "4115",      // con "Propia madre", la que parió
+        "calidad_ternero": "26",       // los Brix de lo que efectivamente tomó
+        "lts_ternero": "4"
       }
     }
   ],
