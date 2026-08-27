@@ -1260,6 +1260,34 @@ check('sin dejar ni el respaldo', !libro._hojas['Registros_backup_r5']);
 check('y sin tocar los datos',
       libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 2);
 
+console.log('\n20d. La columna Cria convertida en fecha se repara');
+/* En la planilla real, W venia con Date(2026-01-01) en vez de "1/1": r5 no la
+   formateaba como texto y Sheets leyo "1/1" como el 1 de enero. Es un dato que
+   se perdio en la escritura, asi que no se recupera cambiando el formato: hay
+   que recalcularlo. El numero de cria ES la posicion dentro del parto. */
+libro = libroR5([
+  filaR5({ 22: new Date(2026, 0, 1), 23: 'u-simple' }),
+  // Un mellizo: las dos filas comparten uuid y tienen que quedar 1/2 y 2/2.
+  filaR5({ 1: '5514', 22: new Date(2026, 1, 1), 23: 'u-mellizo', 6: 'A1' }),
+  filaR5({ 1: '5514', 22: new Date(2026, 1, 2), 23: 'u-mellizo', 6: 'A2' })
+]);
+plan = sandbox.planMigracionR6_(libro);
+check('una Cria hecha fecha no bloquea la migracion', plan.ok === true, plan.log.join(' | '));
+check('pero avisa cuantas hay que reparar',
+      /Cria convertida en fecha: 3/.test(plan.log.join(' ')), plan.log.join(' | '));
+
+sandbox.migrarR6();
+const reparadas = libro._hojas['Registros'].filas.slice(1);
+check('el parto simple queda 1/1', reparadas[0][COL.cria] === '1/1', reparadas[0][COL.cria]);
+check('y el mellizo, 1/2 y 2/2',
+      reparadas[1][COL.cria] === '1/2' && reparadas[2][COL.cria] === '2/2',
+      reparadas[1][COL.cria] + ' ' + reparadas[2][COL.cria]);
+check('sin depender de la fecha en que Sheets la habia convertido',
+      !(reparadas[0][COL.cria] instanceof Date));
+check('el resto de la fila no se toco',
+      reparadas[2][COL.id_ternero] === 'A2' && reparadas[2][COL.uuid] === 'u-mellizo',
+      JSON.stringify([reparadas[2][COL.id_ternero], reparadas[2][COL.uuid]]));
+
 console.log('\n21. Migracion r5 -> r6 del layout');
 /* Es lo unico de r6 que reescribe filas de produccion, y adentro va el rodeo
    que Nahuel carga a mano. Si eso se pierde, no hay como reconstruirlo. */

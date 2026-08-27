@@ -417,6 +417,13 @@ function construirFilas_(ss, p) {
   });
 }
 
+/** El numero de cria ES la posicion dentro del parto: se cuenta, no se copia. */
+function criaDe_(v, porParto, vistas) {
+  var u = str_(v[23]);
+  vistas[u] = (vistas[u] || 0) + 1;
+  return vistas[u] + '/' + (porParto[u] || 1);
+}
+
 function repetir_(v, n) {
   var out = [];
   for (var i = 0; i < n; i++) out.push(v);
@@ -1588,8 +1595,11 @@ function planMigracionR6_(ss) {
       ok: function (v) { return siNo(v[12]); } },
     { col: 22, que: 'ID Parto (V) tiene que ser aaaammdd-vaca-xxxx',
       ok: function (v) { return /^\d{8}-.+-.+$/.test(str_(v[21])); } },
-    { col: 23, que: 'Cria (W) tiene que ser n/m',
-      ok: function (v) { return /^\d+\/\d+$/.test(str_(v[22])); } },
+    /* Cria (W) tambien se acepta como fecha: r5 no la formateaba como texto y
+       Sheets convirtio cada "1/1" en el 1 de enero. Es reparable —el numero de
+       cria se deduce de agrupar por uuid— asi que no bloquea. */
+    { col: 23, que: 'Cria (W) tiene que ser n/m o una fecha mal interpretada',
+      ok: function (v) { return /^\d+\/\d+$/.test(str_(v[22])) || v[22] instanceof Date; } },
     { col: 24, que: 'UUID (X) no puede estar vacio',
       ok: function (v) { return str_(v[23]).length > 0; } },
     { col: 25, que: 'Cargado en (Y) tiene que ser una fecha',
@@ -1639,8 +1649,14 @@ function planMigracionR6_(ss) {
     if (org && org !== VACIO && org !== str_(v[1])) deOtraVaca++;
   });
 
+  var criaRota = filas.filter(function (v) { return v[22] instanceof Date; }).length;
+
   di('Filas de datos: ' + filas.length);
   di('  con rodeo cargado a mano: ' + conRodeo + '  <- esto es lo que NO se puede perder');
+  if (criaRota) {
+    di('  con la columna Cria convertida en fecha: ' + criaRota + '  <- se repara al migrar');
+    di('    (r5 no la formateaba como texto y Sheets leyo "1/1" como 1 de enero)');
+  }
   di('  de cria muerta: ' + muertas);
   di('  con calostro mejorado: ' + mejorados);
   di('  que tomaron calostro de otra vaca: ' + deOtraVaca);
@@ -1668,6 +1684,18 @@ function migrarR6() {
   var ultima = hoja.getLastRow();
   var viejo = ultima > 1 ? hoja.getRange(2, 1, ultima - 1, 26).getValues() : [];
 
+  /* Cria se recalcula desde cero, agrupando por uuid, en vez de copiar lo que
+     haya en la columna. Es lo que arregla las que quedaron convertidas en
+     fecha, y de paso no depende de un valor que ya se demostro fragil: el
+     numero de cria ES la posicion dentro del parto. */
+  var porParto = {};
+  viejo.forEach(function (v) {
+    var u = str_(v[23]);
+    if (!porParto[u]) porParto[u] = 0;
+    porParto[u]++;
+  });
+  var vistas = {};
+
   /* Mapa de la fila vieja (A..Z) a la nueva. Los indices de la izquierda son
      los del layout r5: 12 era 'consumido' y se descarta. */
   var filas = viejo.map(function (v) {
@@ -1691,20 +1719,24 @@ function migrarR6() {
       origen, idOrigen, calTernero, v[14],              // N-Q: lo del ternero
       v[16], v[17], v[18],                              // Q,R,S viejas -> R,S,T
       v[19], v[20],                                     // T,U viejas -> U,V
-      v[21], v[22], v[23], v[24], v[25],                // V-Z viejas -> W-AA
+      v[21], criaDe_(v, porParto, vistas), v[23], v[24], v[25],
       '', false                                         // AB Anulada, AC Cargado a DC
     ];
   });
 
   hoja.clear();
-  hoja.getRange(1, 1, 1, ENCABEZADOS.length).setValues([ENCABEZADOS]);
+  // Los formatos van ANTES de los datos: si no, "1/1" vuelve a convertirse en
+  // el 1 de enero, que es exactamente lo que estamos arreglando.
+  aplicarFormatos_(hoja);
+  hoja.getRange(1, 1, 1, ENCABEZADOS.length).setValues([ENCABEZADOS]).setFontWeight('bold');
   if (filas.length) {
     hoja.getRange(2, 1, filas.length, ANCHO_FILA).setValues(filas);
   }
+  hoja.setFrozenRows(1);
   if (hoja.getName() !== HOJA_FORMATO) hoja.setName(HOJA_FORMATO);
-  configurarFormatos();
 
   Logger.log('Migradas ' + filas.length + ' filas a r6. Hoja: ' + hoja.getName());
+  Logger.log('La columna Cria quedo como texto (1/1, 1/2, 2/2), no como fecha.');
   Logger.log('Revisa que la columna S (Rodeo) conserve lo que cargo Nahuel.');
   Logger.log('Despues: correr configurarDC() si todavia no existe la vista.');
 }
@@ -1721,14 +1753,26 @@ function generarToken() {
   return token;
 }
 
-/** Formatos de columna: IDs y hora como texto, fechas como fecha. */
-function configurarFormatos() {
-  var hoja = hojaRegistros_(SpreadsheetApp.openById(SS_ID));
+/**
+ * Formatos de columna: IDs y hora como texto, fechas como fecha.
+ *
+ * Hay que aplicarlos ANTES de escribir los valores. Si no, Sheets interpreta
+ * lo que le mandes segun el formato que haya: es lo que le paso a la columna
+ * Cria en r5, que no estaba en esta lista y convirtio cada "1/1" en el 1 de
+ * enero. Un dato que se pierde en la escritura no se recupera cambiando el
+ * formato despues.
+ */
+function aplicarFormatos_(hoja) {
   var n = hoja.getMaxRows() - 1;
   var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'id_parto', 'cria', 'uuid'];
   texto.forEach(function (k) { hoja.getRange(2, COL[k] + 1, n, 1).setNumberFormat('@'); });
   hoja.getRange(2, COL.fecha + 1, n, 1).setNumberFormat('dd/MM/yyyy');
   hoja.getRange(2, COL.cargado_en + 1, n, 1).setNumberFormat('dd/MM/yyyy HH:mm');
+}
+
+function configurarFormatos() {
+  var hoja = hojaRegistros_(SpreadsheetApp.openById(SS_ID));
+  aplicarFormatos_(hoja);
   hoja.getRange(1, 1, 1, ENCABEZADOS.length).setValues([ENCABEZADOS]).setFontWeight('bold');
   hoja.setFrozenRows(1);
 }
