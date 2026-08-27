@@ -874,6 +874,66 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     check('con cuenta de dispositivo NO abre Ajustes', !(await visible(page, '#v-config')));
 
+    console.log('\n12b. Menu de cuenta: tambien para la cuenta de dispositivo');
+    /* Antes, salir de la sesion vivia en Ajustes (solo admin) y en un long-press
+       escondido: un operario que entraba con la cuenta equivocada no tenia como
+       salir. El chip tiene que estar para todos. */
+    check('el chip de cuenta esta a la vista', await visible(page, '#cuenta'));
+    await page.click('#btnCuenta');
+    await esperar(250);
+    let menu = await page.$eval('#menuCuenta', (e) => e.textContent);
+    check('ofrece cambiar de usuario', /Cambiar de usuario/.test(menu), menu);
+    check('ofrece cerrar sesion', /Cerrar sesión/.test(menu), menu);
+    check('pero NO Ajustes, que es del admin', !/Ajustes de la tablet/.test(menu), menu);
+
+    await page.click('[data-cuenta="salir"]');
+    await esperar(250);
+    check('cerrar sesion pide confirmacion',
+          await page.$eval('#menuCuenta', (e) => /Sí, cerrar sesión/.test(e.textContent)));
+    check('y todavia no salio', await visible(page, '#v-form'));
+    await page.click('[data-cuenta="cancelar"]');
+    await esperar(250);
+    check('cancelar vuelve al menu',
+          await page.$eval('#menuCuenta', (e) => /Cambiar de usuario/.test(e.textContent)));
+    await page.click('#v-form');
+    await esperar(250);
+    check('tocar afuera cierra el menu', !(await visible(page, '#menuCuenta')));
+
+    console.log('\n12c. Cerrar sesion NO se lleva los partos de la cola');
+    caidoHasta = Date.now() + 60000;                   // que el parto quede esperando
+    const quienCargo = await page.$eval('#fOperario', (e) => e.value);
+    await cargarParto(page, '6060', '8060');
+    await esperar(1200);
+    const antesDeSalir = await contarLocal(page);
+    check('el parto quedo pendiente', antesDeSalir.pendientes === 1,
+          JSON.stringify(antesDeSalir));
+
+    await page.click('#btnCuenta');
+    await esperar(200);
+    await page.click('[data-cuenta="salir"]');
+    await esperar(200);
+    check('avisa que hay partos sin sincronizar',
+          await page.$eval('#menuCuenta', (e) => /sin sincronizar/.test(e.textContent)));
+    await page.click('[data-cuenta="salir-ok"]');
+    await esperar(600);
+    check('vuelve al acceso', await visible(page, '#v-login'));
+    check('borro la sesion', await page.evaluate(() => localStorage.getItem('sesion') === null));
+    check('el chip de cuenta desaparece', !(await visible(page, '#cuenta')));
+    const trasSalir = await contarLocal(page);
+    check('la cola sigue intacta', trasSalir.total === antesDeSalir.total &&
+          trasSalir.pendientes === 1, JSON.stringify(trasSalir));
+
+    // Y quien entre despues la sube: los partos son de la tablet, no de la cuenta.
+    caidoHasta = 0;
+    await page.click('#gbtn');
+    await esperar(1500);
+    check('se vuelve a entrar', await visible(page, '#v-form'));
+    c = await esperarSync(page, 20);
+    check('y el parto de la cola entra igual', c.pendientes === 0, JSON.stringify(c));
+    check('con el operario que lo cargo, no con el que lo subio',
+          (filas.find((f) => f.vaca === '6060') || {}).operario === quienCargo,
+          quienCargo + ' -> ' + JSON.stringify(filas.find((f) => f.vaca === '6060')));
+
     console.log('\n13. Salida de emergencia: 2 segundos sobre el logo');
     await page.evaluate(() => {
       const l = document.querySelector('.logo');
@@ -889,6 +949,12 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1500);
     check('el admin entra', await visible(page, '#v-form'));
     check('AJUSTES VISIBLE para el admin', await visible(page, '.tab[data-v="config"]'));
+    await page.click('#btnCuenta');
+    await esperar(250);
+    menu = await page.$eval('#menuCuenta', (e) => e.textContent);
+    check('y su menu de cuenta si ofrece Ajustes', /Ajustes de la tablet/.test(menu), menu);
+    await page.click('#btnCuenta');
+    await esperar(150);
     await page.click('.tab[data-v="config"]');
     await esperar(300);
     check('el diagnostico muestra la sesion',

@@ -122,6 +122,7 @@ function cerrarSesion() {
   localStorage.removeItem('sesion');
   localStorage.removeItem('idToken');
   try { google.accounts.id.disableAutoSelect(); } catch (e) { /* sin red */ }
+  pintarCuenta();
   ver('login');
   pintarLogin();
 }
@@ -500,6 +501,14 @@ function caja(clave, valores, sel, opciones) {
 /* ------------------------------------------------------------------ */
 
 document.addEventListener('click', (e) => {
+  const cu = e.target.closest('[data-cuenta]');
+  if (cu) return accionCuenta(cu.dataset.cuenta);
+  if (e.target.closest('#btnCuenta')) {
+    return menuAbierto ? cerrarMenuCuenta() : abrirMenuCuenta();
+  }
+  // Tocar fuera lo cierra, pero sin cortar el resto de la interaccion.
+  if (menuAbierto) cerrarMenuCuenta();
+
   const ed = e.target.closest('[data-editar]');
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
   const chip = e.target.closest('[data-chip]');
@@ -1246,6 +1255,72 @@ function pintarBadge() {
     : p ? `${p} en espera` : 'Sincronizado';
 }
 
+/* ------------------------------------------------------------------ */
+/* Menu de cuenta                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Es para TODOS. Antes "Cerrar sesion" vivia en Ajustes —que solo ve el
+   admin— y en un long-press escondido sobre el logo: un operario que entraba
+   con la cuenta equivocada no tenia como salir. */
+
+let menuAbierto = false;
+
+function pintarCuenta() {
+  const caja = $('cuenta');
+  cerrarMenuCuenta();
+  caja.classList.toggle('hidden', !sesion);
+  if (!sesion) return;
+  const mail = sesion.email || '';
+  $('cuentaIni').textContent = (mail.charAt(0) || '?').toUpperCase();
+  $('cuentaQuien').textContent = mail.split('@')[0];
+  $('btnCuenta').title = mail;
+}
+
+function cerrarMenuCuenta() {
+  menuAbierto = false;
+  $('menuCuenta').classList.add('hidden');
+  $('btnCuenta').setAttribute('aria-expanded', 'false');
+}
+
+function abrirMenuCuenta() {
+  if (!sesion) return;
+  $('menuCuenta').innerHTML = `
+    <div class="mail">${sesion.email}${sesion.admin ? ' · admin' : ''}</div>
+    ${sesion.admin ? '<button type="button" data-cuenta="config">Ajustes de la tablet</button>' : ''}
+    <button type="button" data-cuenta="cambiar">Cambiar de usuario</button>
+    <button type="button" class="peligro" data-cuenta="salir">Cerrar sesión</button>`;
+  $('menuCuenta').classList.remove('hidden');
+  $('btnCuenta').setAttribute('aria-expanded', 'true');
+  menuAbierto = true;
+}
+
+/* Con la tablet en la mano, un toque de mas no puede dejar a nadie afuera en
+   medio de un parto: se confirma, y se dice que la cola no se pierde. */
+function confirmarSalida() {
+  const p = ultimoPend;
+  $('menuCuenta').innerHTML = `
+    <div class="mail">${p
+      ? `Hay <b>${p}</b> parto${p > 1 ? 's' : ''} sin sincronizar. No se pierden:
+         quedan en la tablet y suben cuando alguien vuelva a entrar.`
+      : 'Los partos cargados quedan guardados en la tablet.'}</div>
+    <button type="button" class="peligro" data-cuenta="salir-ok">Sí, cerrar sesión</button>
+    <button type="button" data-cuenta="cancelar">Cancelar</button>`;
+}
+
+function accionCuenta(que) {
+  if (que === 'config') { cerrarMenuCuenta(); return ver('config'); }
+  if (que === 'cambiar') {
+    // La cola es de la TABLET, no de la cuenta: los partos siguen ahi y en la
+    // columna Operario sigue figurando quien los cargo.
+    cerrarMenuCuenta();
+    cerrarSesion();
+    return avisar('Elegí la cuenta con la que vas a entrar');
+  }
+  if (que === 'salir') return confirmarSalida();
+  if (que === 'cancelar') return abrirMenuCuenta();
+  if (que === 'salir-ok') { cerrarMenuCuenta(); return cerrarSesion(); }
+}
+
 /** La pestaña Ajustes solo se le muestra a los administradores. */
 function pintarPermisos() {
   const tab = document.querySelector('.tab[data-v="config"]');
@@ -1270,6 +1345,8 @@ function ver(v) {
 
   // Sin sesion no hay pestañas ni botones: solo la pantalla de acceso.
   const enLogin = v === 'login';
+  cerrarMenuCuenta();
+  $('cuenta').classList.toggle('hidden', enLogin || !sesion);
   document.querySelector('.tabs').classList.toggle('hidden', enLogin);
   $('foot').classList.toggle('hidden', enLogin);
   $('badgeSync').classList.toggle('hidden', enLogin);
@@ -1400,15 +1477,16 @@ $('btnBajarMaestro').onclick = async () => {
 $('btnReintentar').onclick = () => { sincronizar(); avisar('Reintentando…'); };
 
 $('badgeSync').onclick = () => {
-  if (sesion && sesion.admin) return ver('config');
+  // La sesion caida manda, tambien para el admin: si no, la instruccion de
+  // "tocar el badge e iniciar sesion" no funcionaba justo para quien la lee.
   if (sesionVencida) { ver('login'); return pintarLogin(); }
+  if (sesion && sesion.admin) return ver('config');
   sincronizar();
   avisar('Sincronizando…');
 };
 
-/* Salida de emergencia: mantener apretado el logo 2 segundos cierra la sesion.
-   Sin esto, una tablet con la cuenta de dispositivo queda trabada para siempre:
-   "Cerrar sesion" vive en Ajustes, y Ajustes no se le muestra a esa cuenta. */
+/* Salida de emergencia, heredada de r5. Desde el menu de cuenta ya se puede
+   salir sin secretos, asi que esto queda solo por si el chip no aparece. */
 (function salidaPorLogo() {
   const logo = document.querySelector('.logo');
   let reloj = null;
@@ -1479,6 +1557,7 @@ setInterval(() => {
 /** Se llama al arrancar con sesion valida, o apenas se inicia sesion. */
 function arrancarApp() {
   pintarPermisos();
+  pintarCuenta();
   ver('form');
   bajarMaestro();
   sincronizar();
