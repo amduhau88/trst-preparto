@@ -4,7 +4,8 @@ Hoja `Registros` de la planilla [`TRST — Partos`](https://docs.google.com/spre
 (Hasta r5 la pestaña se llamaba `NUEVO FORMATO PREPARTO`.)
 
 **A–T es lo que se lee y se carga.** De U en adelante, los datos por cría y las
-columnas técnicas; se pueden ocultar sin afectar nada.
+columnas de control. Las técnicas (W, X, Y, AA) se pueden ocultar sin afectar nada;
+**`Fecha y Hora de Carga` (Z) no**, que es la que dice cuándo se cargó cada parto.
 
 La vista que usa Nahuel para cargar en DairyComp es **`Datos Carga DC`**, no ésta.
 
@@ -71,14 +72,23 @@ no había forma de saber qué fue cada cría, ni de anotar que una nació muerta
 | U | Sexo Cria | `Macho` · `Hembra`. Se deduce del código del parto salvo en el 8, donde se pregunta |
 | V | Estado Cria | `Vivo` · `Muerto` |
 
-### Técnicas (W–AC)
+### Control y técnicas (W–AC)
+
+**`Fecha y Hora de Carga` (Z) es la hora del corral**, no la de la sincronización: un
+parto cargado sin señal a las 3 de la mañana puede llegar a la planilla a las 9, y en Z
+van las 3. Es distinta de `Fecha Parto` (C), que es cuándo nació el ternero.
+
+Solo la escribe el **alta**. Pesar en el segundo paso, corregir el calostro o cambiar el
+código de sexo son pasos posteriores y no la tocan; una cría agregada al corregir el
+sexo hereda la marca del parto, no la del momento en que se agregó.
+
 
 | Col | Encabezado | Para qué |
 |---|---|---|
 | W | ID Parto | `yyyyMMdd-idvaca-xxxx`. Agrupa las filas de un parto doble. |
 | X | Cria | `1/1`, o `1/2` y `2/2` en mellizos |
 | Y | UUID | Clave anti-duplicados generada en la tablet |
-| Z | Cargado en | Momento real de la carga (puede ser anterior a la sincronización) |
+| Z | **Fecha y Hora de Carga** | Cuándo el operario apretó **Guardar** en la tablet |
 | AA | Dispositivo | Qué tablet lo cargó |
 | AB | Anulada | `Si` cuando una cría se anuló al corregir el sexo del parto |
 | AC | Cargado a DC | Lo tilda Nahuel desde `Datos Carga DC` |

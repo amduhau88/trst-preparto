@@ -242,7 +242,7 @@ POST { "id_token": "…", "accion": "editar",
 | Dato inválido | `{"ok":false,"error":"validacion","detalles":[…]}` |
 
 Se corrigen **peso (I), calostro (J–Q) y tambo (R)** de lo cargado **hoy** — mirando
-`Cargado en` (Z), no `Fecha Parto` (C), así un parto de ayer cargado hoy sigue siendo
+`Fecha y Hora de Carga` (Z), no `Fecha Parto` (C), así un parto de ayer cargado hoy sigue siendo
 corregible. **`editar` nunca agrega ni borra una fila**: pisa celdas de renglones que ya
 existen, y escribe celda por celda para no tocar el rodeo de la columna S.
 
@@ -297,6 +297,10 @@ a `Registros`; como no se dispara con las escrituras del propio script, no hay b
   señal intermitente duplicaría partos.
 - **El peso llega después**: columna I vacía = "falta pesar". Es un tercer estado, distinto
   de `---` (cría muerta) y de un número. Lo carga quien cargó el parto.
+- **`Fecha y Hora de Carga` (Z) es del alta y sólo del alta**: la manda la tablet en el
+  momento de apretar Guardar, no el servidor al recibirla. Un parto cargado sin señal a
+  las 3 de la mañana y sincronizado a las 9 lleva las 3. Pesar, corregir y cambiar el
+  sexo no la tocan, y una cría agregada al corregir el sexo hereda la del parto.
 - **El código de sexo sí se corrige desde la tablet**, por `cambiar_sexo`. Es el error típico
   y mandarlo a la planilla significaba que nadie lo arreglara. Puede agregar una cría o
   anular una; nunca borra.

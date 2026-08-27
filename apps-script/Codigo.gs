@@ -69,6 +69,11 @@ var COL = {
   id_parto: 22,         // W
   cria: 23,             // X
   uuid: 24,             // Y
+  /* Cuando el operario apreto Guardar en la tablet, NO cuando el parto llego a
+   * la planilla: un parto cargado sin señal a las 3 de la mañana puede
+   * sincronizar a las 9, y lo que interesa es la hora del corral. Tampoco lo
+   * mueven pesar, corregir ni cambiar el sexo — esos son pasos posteriores.
+   * Es distinto de Fecha Parto (C), que es cuando nacio el ternero. */
   cargado_en: 25,       // Z
   dispositivo: 26,      // AA
   anulada: 27,          // AB
@@ -88,7 +93,7 @@ var ENCABEZADOS = [
   'Lts Calostro para Ternero',
   'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Notas',
   'Sexo Cria', 'Estado Cria',
-  'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo', 'Anulada', 'Cargado a DC'
+  'ID Parto', 'Cria', 'UUID', 'Fecha y Hora de Carga', 'Dispositivo', 'Anulada', 'Cargado a DC'
 ];
 
 /* El encabezado de r5, tal como quedo en produccion. La migracion mapea POR
@@ -373,6 +378,8 @@ function construirFilas_(ss, p) {
   var partoMuerto = esMuerto_(p.sexo);
   var idParto = Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + p.id_vaca + '-' +
                 String(p.uuid).replace(/-/g, '').substring(0, 4);
+  // La marca de carga viene de la tablet, del momento en que se apreto Guardar.
+  // Solo se pone la del servidor si el payload no la trae (formato muy viejo).
   var cargadoEn = p.cargado_en ? new Date(p.cargado_en) : new Date();
   var madre = calostroMadre_(p);
   var ltsMadre = ltsMadre_(p);

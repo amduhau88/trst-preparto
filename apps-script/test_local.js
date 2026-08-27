@@ -1028,6 +1028,74 @@ check('un rodeo escrito en Registros aparece en la vista',
       (vista().find((f) => f[DC.clave] === 'u-dc-2|1/1') || {})[DC.rodeo] === '26',
       JSON.stringify(vista().map((f) => f[DC.rodeo])));
 
+console.log('\n18g. La marca de carga es del Guardar inicial, y no la mueve nada');
+/* Es la hora del corral: un parto cargado sin señal a las 3 de la mañana puede
+   sincronizar a las 9, y lo que interesa es la primera. Pesar, corregir o
+   cambiar el sexo son pasos posteriores y no pueden pisarla. */
+libro = nuevoLibro();
+/* Hoy a las 3:20 de la mañana: la ventana para corregir mira "cargado hoy", y
+   lo que se prueba es que la marca no se mueva, no que expire. */
+const madrugada = new Date(); madrugada.setHours(3, 20, 0, 0);
+const marcaCarga = madrugada.toISOString();
+post(partoBase({ uuid: 'u-ts', id_vaca: '4115', cargado_en: marcaCarga,
+                 terneros: [{ id_ternero: '7001', raza: 'Holando', vive: true,
+                              calostro: calostroOk }] }));
+const leerMarca = () => formato().filter((f) => f[COL.uuid] === 'u-ts')
+                                 .map((f) => f[COL.cargado_en]);
+let marcas = leerMarca();
+check('se escribe la que mando la tablet, no la del servidor',
+      marcas[0] instanceof Date && marcas[0].getTime() === new Date(marcaCarga).getTime(),
+      String(marcas[0]));
+check('y no es la fecha del parto',
+      marcas[0].getTime() !== formato()[0][COL.fecha].getTime());
+
+// Pesar en el segundo paso.
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ts', operario: 'Julio',
+           terneros: [{ peso: 42 }] });
+check('pesar despues entra', r.ok === true && r.cambios === 1, JSON.stringify(r));
+check('y NO mueve la marca de carga',
+      leerMarca()[0].getTime() === new Date(marcaCarga).getTime(), String(leerMarca()[0]));
+
+// Corregir el calostro.
+post({ token: TOKEN, accion: 'editar', uuid: 'u-ts', operario: 'Julio', tambo: '3' });
+check('corregir tampoco',
+      leerMarca()[0].getTime() === new Date(marcaCarga).getTime(), String(leerMarca()[0]));
+
+// Cambiar el sexo, que reescribe el parto entero y agrega un renglon.
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-ts', op_uuid: 'op-ts',
+           operario: 'Julio', sexo: '8 Otros Gemelos (M+M o M+H)',
+           calostro: calostroMadre, lts_madre: '5',
+           terneros: [{ id_ternero: '7001', raza: 'Holando', peso: 42, vive: true,
+                        sexo: 'Macho', calostro: calostroOk },
+                      { id_ternero: '7002', raza: 'Holando', peso: 40, vive: true,
+                        sexo: 'Hembra', calostro: calostroOk }] });
+check('cambiar el sexo entra', r.ok === true && r.agregadas === 1, JSON.stringify(r));
+marcas = leerMarca();
+check('la marca original se conserva',
+      marcas[0].getTime() === new Date(marcaCarga).getTime(), String(marcas[0]));
+// La cria nueva pertenece al mismo parto: comparte la marca, no lleva la de hoy.
+check('y la cria nueva hereda la misma, no la de ahora',
+      marcas[1] instanceof Date && marcas[1].getTime() === new Date(marcaCarga).getTime(),
+      String(marcas[1]));
+
+// Y la migracion la mueve entera de columna, sin perderla.
+libro = nuevoLibro('NUEVO FORMATO PREPARTO');
+libro._hojas['NUEVO FORMATO PREPARTO'].filas = [
+  sandbox.ENCABEZADOS_R5.slice(),
+  ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
+   '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
+   '2', '21', '', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-ts2',
+   new Date(marcaCarga), 'tablet']
+];
+sandbox.migrarR6();
+check('la migracion la conserva',
+      libro._hojas['Registros'].filas[1][COL.cargado_en].getTime() ===
+        new Date(marcaCarga).getTime(),
+      String(libro._hojas['Registros'].filas[1][COL.cargado_en]));
+check('y el encabezado dice que es',
+      libro._hojas['Registros'].filas[0][COL.cargado_en] === 'Fecha y Hora de Carga',
+      libro._hojas['Registros'].filas[0][COL.cargado_en]);
+
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();
 r = get({ action: 'esquema', token: TOKEN });

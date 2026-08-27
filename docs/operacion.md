@@ -102,6 +102,19 @@ corrección viaja con el registro local, que en esta tablet no existe.
 
 Sin señal se muestra sólo lo de esta tablet, y la pantalla lo dice.
 
+### Saber cuándo se cargó un parto
+
+Columna **`Fecha y Hora de Carga`** de `Registros`. Es **cuándo el operario apretó
+Guardar en la tablet**, no cuándo el parto llegó a la planilla: uno cargado sin señal a
+las 3 de la mañana puede sincronizar a las 9, y ahí van a figurar las 3.
+
+No la mueve nada de lo que pase después — ni pesar, ni corregir el calostro, ni cambiar
+el código de sexo. Es la hora del corral y se queda quieta.
+
+Ojo con una consecuencia: la ventana para corregir un parto desde la tablet mira **esta**
+columna, no `Fecha Parto`. Por eso un parto de ayer cargado esta mañana todavía se
+corrige, y uno cargado ayer ya no.
+
 ## Cómo saber si algo anda mal
 
 ### Desde la tablet
