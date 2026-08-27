@@ -5,9 +5,10 @@
  * El Google Sheet ES la base de datos; acá no hay estado propio.
  *
  * Hojas:
- *   NUEVO FORMATO PREPARTO — A-S formato de Nahuel, T-X columnas tecnicas
- *   Maestro                — listas de valores (editables sin redeploy)
- *   _log                   — auditoria append-only + control de duplicados
+ *   Registros       — los partos. A-T lo que se lee y se carga, U-AC tecnicas
+ *   Datos Carga DC  — vista en el orden en que Nahuel carga en DairyComp
+ *   Maestro         — listas de valores (editables sin redeploy)
+ *   _log            — auditoria append-only + control de duplicados
  */
 
 /* Version del codigo. Se devuelve en ?action=ping, para poder confirmar de un
@@ -15,10 +16,15 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r5-edicion-2026-08-25';
+var VERSION = 'r6-calostro-2026-08-26';
 
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
-var HOJA_FORMATO = 'NUEVO FORMATO PREPARTO';
+var HOJA_FORMATO = 'Registros';
+/* El nombre viejo se sigue aceptando a proposito: asi el deploy y el rename de
+ * la pestaña no tienen que ser simultaneos. Si se renombrara antes de publicar,
+ * getSheetByName devolveria null y todo doPost tiraria excepcion. Se saca en r7. */
+var HOJA_FORMATO_VIEJA = 'NUEVO FORMATO PREPARTO';
+var HOJA_DC = 'Datos Carga DC';
 var HOJA_MAESTRO = 'Maestro';
 var HOJA_LOG = '_log';
 
@@ -29,39 +35,95 @@ var SEXO_MELLIZO = ['2', '8'];
 // ahi el sexo de cada cria hay que cargarlo.
 var SEXO_POR_CODIGO = { '1': 'Hembra', '2': 'Hembra', '4': 'Hembra', '6': 'Macho', '7': 'Macho' };
 
-// Posiciones (base 0) en la fila armada. A-S es el formato; de T en adelante,
-// los datos por cria y las columnas tecnicas.
-var COL_OPERARIO = 0;    // A
-var COL_PESO = 8;        // I
-var COL_TAMBO = 16;      // Q
-var COL_RODEO = 17;      // R
-var COL_ESTADO_CRIA = 20; // U
-var COL_ID_PARTO = 21;   // V
-var COL_CRIA = 22;       // W
-var COL_UUID = 23;       // X
-var COL_CARGADO_EN = 24; // Y
-var ANCHO_FILA = 26;     // A..Z
+/* Posiciones (base 0) de la fila. UN solo lugar: antes estaban repartidas entre
+ * constantes sueltas, literales dentro de EDITABLE_*, indices crudos en
+ * partosDelDia_ y slices en las pruebas, y reordenar obligaba a tocar los
+ * cuatro a la vez sin que nada avisara si se olvidaba uno.
+ *
+ * Bloques: A-I el parto y la cria, J-M el calostro DE LA MADRE (es del parto y
+ * se repite igual en las dos filas de un mellizo), N-Q el calostro QUE TOMO EL
+ * TERNERO (es de cada cria), R-T destino y notas, U-V la cria, W-AC tecnicas. */
+var COL = {
+  operario: 0,          // A
+  id_vaca: 1,           // B
+  fecha: 2,             // C
+  hora: 3,              // D
+  tipo_parto: 4,        // E
+  sexo: 5,              // F
+  id_ternero: 6,        // G
+  raza: 7,              // H
+  peso: 8,              // I
+  calidad_sin_mejorar: 9,  // J  \
+  mejorado: 10,            // K   |  calostro de la madre: del PARTO
+  calidad_mejorado: 11,    // L   |
+  lts_madre: 12,           // M  /
+  origen_calostro: 13,     // N  \
+  id_vaca_origen: 14,      // O   |  calostro que tomo el ternero: de la CRIA
+  calidad_ternero: 15,     // P   |
+  lts_ternero: 16,         // Q  /
+  tambo: 17,            // R
+  rodeo: 18,            // S   la carga Nahuel en 'Datos Carga DC' y se replica
+  notas: 19,            // T
+  sexo_cria: 20,        // U
+  estado_cria: 21,      // V
+  id_parto: 22,         // W
+  cria: 23,             // X
+  uuid: 24,             // Y
+  cargado_en: 25,       // Z
+  dispositivo: 26,      // AA
+  anulada: 27,          // AB
+  cargado_dc: 28        // AC
+};
+var ANCHO_FILA = 29;     // A..AC
+
+/* Encabezado esperado de la fila 1. El backend escribe POR POSICION: si alguien
+ * inserta una columna en la planilla, sigue escribiendo donde estaba y corrompe
+ * en silencio. Esto es lo que deja detectarlo (?action=esquema + verificar.sh). */
+var ENCABEZADOS = [
+  'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
+  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
+  'Lts Calostro Madre Produjo',
+  'Origen Calostro', 'ID Vaca Origen Calostro', 'Calidad Calostro Ternero',
+  'Lts Calostro para Ternero',
+  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Notas',
+  'Sexo Cria', 'Estado Cria',
+  'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo', 'Anulada', 'Cargado a DC'
+];
+
+// De G a Q va todo en '---' cuando la cria nacio muerta, igual que se hacia a mano.
+var BLOQUE_CRIA_DESDE = COL.id_ternero;      // G
+var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // Q
+
+var ORIGEN_PROPIA = 'Propia madre';
+var ORIGEN_OTRA = 'Otra vaca';
+var ORIGENES = [ORIGEN_PROPIA, ORIGEN_OTRA];
+
 var LOCK_MS = 30000;
 
 /* Que se puede corregir de un parto ya escrito, y donde vive cada cosa.
- * El sexo NO esta: el codigo del parto manda cuantas crias hay, y editarlo
- * obligaria a agregar o borrar filas — justo el bloque que leen Nahuel y
- * DairyComp. Un sexo mal cargado lo corrige Nahuel en la planilla.
- * ID de ternero, raza, hora, tipo de parto y notas tampoco: misma razon de
- * alcance, se piden aparte si hacen falta. */
+ * El codigo de sexo va por su propia accion ('cambiar_sexo'), no por aca:
+ * dice cuantas crias hay, asi que cambiarlo puede agregar o anular renglones,
+ * y editarParto_ mantiene la garantia de no mover ninguno.
+ * ID de ternero, raza, hora, tipo de parto y notas no se corrigen desde la
+ * tablet: identifican al animal y los toca Nahuel en la planilla. */
 var EDITABLE_CRIA = {          // por cria: cada fila lleva la suya
-  peso: COL_PESO,
-  calidad_sin_mejorar: 9,      // J
-  mejorado: 10,                // K
-  calidad_mejorado: 11,        // L
-  consumido: 12,               // M
-  lts_ternero: 14,             // O
-  id_vaca_origen: 15           // P
+  peso: COL.peso,
+  origen_calostro: COL.origen_calostro,
+  id_vaca_origen: COL.id_vaca_origen,
+  calidad_ternero: COL.calidad_ternero,
+  lts_ternero: COL.lts_ternero
 };
-var EDITABLE_PARTO = {         // del parto: se repite igual en todas sus filas
-  lts_madre: 13,               // N
-  tambo: COL_TAMBO
+/* Del parto: se repiten iguales en todas sus filas. Los cuatro primeros son el
+ * calostro de la madre y viven DENTRO del bloque G-Q, asi que en una cria
+ * muerta no se pueden escribir: dejarian un valor suelto entre los '---'. */
+var EDITABLE_PARTO_EN_BLOQUE = {
+  calidad_sin_mejorar: COL.calidad_sin_mejorar,
+  mejorado: COL.mejorado,
+  calidad_mejorado: COL.calidad_mejorado,
+  lts_madre: COL.lts_madre
 };
+var EDITABLE_PARTO = { tambo: COL.tambo };   // fuera del bloque: se corrige siempre
 
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
 var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
@@ -79,7 +141,8 @@ var MAESTRO_MAP = {
   calidad_sin_mejorar: 'Calidad Calostro Sin Mejorar (de madre)',
   mejorado: 'Mejorado',
   calidad_mejorado: 'Calidad de Calostro Mejorado (de madre)',
-  consumido: 'Calostro Consumido al Momento',
+  // La calidad de lo que efectivamente tomo el ternero se valida contra la
+  // misma lista que la de la madre: es el mismo dominio de valores de Brix.
   lts_madre: 'Lts Calostro Madre',
   lts_ternero: 'Lts Calostro para Ternero',
   tambo: 'Tambo Vaca',
@@ -145,7 +208,7 @@ function doPost(e) {
       var filaLog = log.getLastRow();
 
       var filas = construirFilas_(ss, payload);
-      var hoja = ss.getSheetByName(HOJA_FORMATO);
+      var hoja = hojaRegistros_(ss);
       hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, filas[0].length).setValues(filas);
 
       log.getRange(filaLog, 4, 1, 2).setValues([[filas.length, 'ok']]);
@@ -153,7 +216,7 @@ function doPost(e) {
       return json_({
         ok: true,
         uuid: payload.uuid,
-        id_parto: filas[0][COL_ID_PARTO],
+        id_parto: filas[0][COL.id_parto],
         filas_escritas: filas.length
       });
     } finally {
@@ -172,6 +235,15 @@ function doGet(e) {
     if (p.action === 'ping') {
       return json_({ ok: true, version: VERSION, hoja: ss.getName(),
                      ts: new Date().toISOString() });
+    }
+
+    /* El backend escribe por posicion. Si alguien inserta o mueve una columna,
+       sigue escribiendo donde estaba y corrompe en silencio hasta que alguien
+       lo nota a ojo. Esto lo hace detectable desde verificar.sh. */
+    if (p.action === 'esquema') {
+      var a0 = autorizar_(p);
+      if (!a0.ok) return json_({ ok: false, error: a0.error });
+      return json_(esquema_(ss));
     }
 
     // Camino para scripts (verificar.sh, crons). El navegador usa POST, para no
@@ -199,13 +271,25 @@ function doGet(e) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Un parto -> una fila POR TERNERO. Parto simple = 1 fila (igual que hoy).
- * Mellizos = 2 filas con el mismo ID Parto y Cria 1/2 y 2/2.
+ * El calostro de la MADRE es del parto: lo produjo la vaca, no la cria. Se
+ * acepta arriba (formato r6) y, si no viene, en la primera cria (formato r5),
+ * para que una tablet que todavia no actualizo el service worker siga entrando.
+ */
+function calostroMadre_(p) {
+  var arriba = p.calostro || {};
+  if (arriba.calidad_sin_mejorar !== undefined || arriba.mejorado !== undefined) return arriba;
+  var t = (p.terneros || []).filter(function (x) { return x && x.vive !== false; })[0];
+  return (t && t.calostro) || {};
+}
+
+/**
+ * Un parto -> una fila POR TERNERO. Parto simple = 1 fila. Mellizos = 2 filas
+ * con el mismo ID Parto y Cria 1/2 y 2/2.
  *
- * Cada cria lleva SU sexo, SU estado y SU calostro: con el codigo 8 (M+M o M+H)
- * no habia forma de saber que fue cada una, ni de anotar que a cada ternero se
- * le dio un calostro distinto. Los litros que produjo la madre son del parto,
- * no de la cria, asi que se repiten iguales en las dos filas.
+ * Cada cria lleva SU sexo, SU estado y SU calostro suministrado (N-Q): con el
+ * codigo 8 (M+M o M+H) no habia forma de saber que fue cada una, ni de anotar
+ * que a cada ternero se le dio un calostro distinto. Lo que produjo la madre
+ * (J-M) es del parto y se repite igual en las dos filas.
  */
 function construirFilas_(ss, p) {
   var tz = ss.getSpreadsheetTimeZone();
@@ -214,38 +298,71 @@ function construirFilas_(ss, p) {
   var idParto = Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + p.id_vaca + '-' +
                 String(p.uuid).replace(/-/g, '').substring(0, 4);
   var cargadoEn = p.cargado_en ? new Date(p.cargado_en) : new Date();
+  var madre = calostroMadre_(p);
   var ltsMadre = ltsMadre_(p);
 
   var terneros = partoMuerto ? [null] : (p.terneros && p.terneros.length ? p.terneros : [null]);
 
   return terneros.map(function (t, i) {
     var muerto = partoMuerto || !t || t.vive === false;
-    // Se acepta el calostro por cria y, si no viene, el del parto (formato viejo).
-    var cal = (t && t.calostro) || p.calostro || {};
+    var cal = (t && t.calostro) || {};
 
-    // Cria muerta: el formato lleva '---' de G a P, igual que se hacia a mano.
+    // Cria muerta: el formato lleva '---' de G a Q, igual que se hacia a mano.
     var bloque = muerto
-      ? [VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO, VACIO]
+      ? repetir_(VACIO, BLOQUE_CRIA_HASTA - BLOQUE_CRIA_DESDE + 1)
       : [
           str_(t.id_ternero), str_(t.raza), num_(t.peso),
-          str_(cal.calidad_sin_mejorar), str_(cal.mejorado),
-          str_(cal.calidad_mejorado || VACIO), str_(cal.consumido),
-          num_(ltsMadre), num_(cal.lts_ternero), str_(cal.id_vaca_origen)
+          str_(madre.calidad_sin_mejorar), str_(madre.mejorado),
+          str_(madre.calidad_mejorado || VACIO), num_(ltsMadre),
+          str_(origenCalostro_(p, cal)), str_(idOrigen_(p, cal)),
+          str_(calidadTernero_(madre, cal)), num_(cal.lts_ternero)
         ];
 
     return [
       str_(p.operario), str_(p.id_vaca), fecha, str_(p.hora_nacimiento),
       str_(p.tipo_parto), str_(p.sexo)
     ].concat(bloque).concat([
-      // El rodeo ya no se carga en la tablet: la columna R queda vacia y la
-      // completa Nahuel en la planilla. Vacio se lee como "falta asignar",
-      // que es el estado real; '---' no sirve porque en G-P ya significa
-      // "cria muerta" y sumarle un segundo sentido lo vuelve ambiguo.
+      // El rodeo no se carga en la tablet: la columna S queda vacia y la escribe
+      // Nahuel desde 'Datos Carga DC'. Vacio se lee como "falta asignar", que es
+      // el estado real; '---' no sirve porque en G-Q ya significa "cria muerta"
+      // y sumarle un segundo sentido lo vuelve ambiguo.
       str_(p.tambo), '', str_(p.notas),
       sexoCria_(p, t), muerto ? 'Muerto' : 'Vivo',
-      idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn, str_(p.dispositivo)
+      idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn,
+      str_(p.dispositivo), '', false
     ]);
   });
+}
+
+function repetir_(v, n) {
+  var out = [];
+  for (var i = 0; i < n; i++) out.push(v);
+  return out;
+}
+
+/** De donde salio el calostro de esta cria. Sin dato, se asume la propia madre. */
+function origenCalostro_(p, cal) {
+  if (cal.origen) return cal.origen;
+  // Formato r5: solo venia el ID de la vaca origen. Si es la misma que pario,
+  // era su propia madre; si es otra, era de otra vaca.
+  if (cal.id_vaca_origen && String(cal.id_vaca_origen) !== String(p.id_vaca)) return ORIGEN_OTRA;
+  return ORIGEN_PROPIA;
+}
+
+/** Con 'Propia madre' el ID sale solo del parto: no se le pide al operario. */
+function idOrigen_(p, cal) {
+  if (origenCalostro_(p, cal) === ORIGEN_PROPIA) return p.id_vaca;
+  return cal.id_vaca_origen;
+}
+
+/** Los Brix de lo que efectivamente tomo el ternero. */
+function calidadTernero_(madre, cal) {
+  if (cal.calidad_ternero !== undefined && cal.calidad_ternero !== '') return cal.calidad_ternero;
+  // Sin dato (formato r5, o calostro de la propia madre): es lo que produjo la
+  // madre, mejorado si se mejoro.
+  if (String(madre.mejorado) === 'Si' && madre.calidad_mejorado &&
+      String(madre.calidad_mejorado) !== VACIO) return madre.calidad_mejorado;
+  return madre.calidad_sin_mejorar;
 }
 
 /* ------------------------------------------------------------------ */
@@ -258,7 +375,7 @@ function construirFilas_(ss, p) {
 var FORMATO_CAMPO = {
   peso: num_, lts_ternero: num_, lts_madre: num_,
   calidad_sin_mejorar: str_, mejorado: str_, calidad_mejorado: str_,
-  consumido: str_, id_vaca_origen: str_, tambo: str_
+  origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_
 };
 
 /**
@@ -279,7 +396,7 @@ function editarParto_(p, auth) {
 
   try {
     var ss = SpreadsheetApp.openById(SS_ID);
-    var hoja = ss.getSheetByName(HOJA_FORMATO);
+    var hoja = hojaRegistros_(ss);
     var tz = ss.getSpreadsheetTimeZone();
 
     var filas = filasDeUuid_(hoja, p.uuid);
@@ -287,7 +404,7 @@ function editarParto_(p, auth) {
 
     // La ventana es lo cargado HOY, no la fecha del parto: un parto de ayer
     // cargado esta manana todavia se corrige, y uno cargado ayer ya no.
-    if (!cargadoHoy_(filas[0].datos[COL_CARGADO_EN], tz)) {
+    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
       return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
     }
 
@@ -303,22 +420,42 @@ function editarParto_(p, auth) {
 
     filas.forEach(function (f, i) {
       var pre = filas.length > 1 ? 'cria ' + (i + 1) + ': ' : '';
-      // Una cria muerta lleva '---' de G a P, igual que se hacia a mano.
-      var muerta = String(f.datos[COL_ESTADO_CRIA]) === 'Muerto';
+      // Una cria muerta lleva '---' de G a Q, igual que se hacia a mano.
+      var muerta = String(f.datos[COL.estado_cria]) === 'Muerto';
+      var madre = calostroMadre_(p);
 
-      // El tambo (Q) es del parto y esta fuera de ese bloque: se corrige siempre.
+      // El tambo (R) es del parto y esta fuera de ese bloque: se corrige siempre.
       anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
 
-      // Los litros que produjo la madre tambien son del parto, pero viven en la
-      // columna N, que SI esta adentro del bloque. Escribirlos en una fila de
-      // cria muerta dejaria un numero suelto en el medio de los '---'.
+      // El calostro de la madre tambien es del parto, pero vive DENTRO del
+      // bloque G-Q. Escribirlo en una fila de cria muerta dejaria valores
+      // sueltos en el medio de los '---'.
+      var deMadre = { lts_madre: p.lts_madre };
+      Object.keys(EDITABLE_PARTO_EN_BLOQUE).forEach(function (clave) {
+        if (clave !== 'lts_madre') deMadre[clave] = madre[clave];
+      });
       if (muerta) {
-        if (p.lts_madre !== undefined) {
-          err.push(pre + 'cria muerta: de G a P va todo en ' + VACIO);
+        if (Object.keys(deMadre).some(function (k) { return deMadre[k] !== undefined; })) {
+          err.push(pre + 'cria muerta: de G a Q va todo en ' + VACIO);
         }
       } else {
-        anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.lts_madre, 'lts_madre',
-                      p.lts_madre, '');
+        Object.keys(EDITABLE_PARTO_EN_BLOQUE).forEach(function (clave) {
+          anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO_EN_BLOQUE[clave],
+                        clave, deMadre[clave], '');
+        });
+
+        // La columna L solo se habilita con Mejorado = Si. Se mira el resultado
+        // final, no lo que vino: se puede estar cambiando uno solo de los dos.
+        // Va aca, y no mas abajo, porque es del parto: abajo hay un return que
+        // corta cuando esta cria no trae datos propios.
+        var mejorado = resultanteParto_(f, madre, 'mejorado', COL.mejorado);
+        var calidad = resultanteParto_(f, madre, 'calidad_mejorado', COL.calidad_mejorado);
+        if (String(mejorado) === 'Si' && (!calidad || String(calidad) === VACIO)) {
+          err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
+        }
+        if (String(mejorado) !== 'Si' && calidad && String(calidad) !== VACIO) {
+          err.push(pre + 'calidad_mejorado cargada con mejorado=' + mejorado);
+        }
       }
 
       var t = terneros[i];
@@ -339,26 +476,19 @@ function editarParto_(p, auth) {
       // parto entero al corregir cualquier cosa, y reenviar el mismo peso no es
       // pesar. Si no, corregir el calostro quedaria bloqueado para todos menos
       // uno, sin motivo.
-      if (t.peso !== undefined && String(f.datos[COL_PESO]) !== String(num_(t.peso)) &&
-          String(p.operario) !== String(f.datos[COL_OPERARIO])) {
-        err.push(pre + 'el peso lo carga ' + f.datos[COL_OPERARIO] + ', que fue quien cargo el parto');
+      if (t.peso !== undefined && String(f.datos[COL.peso]) !== String(num_(t.peso)) &&
+          String(p.operario) !== String(f.datos[COL.operario])) {
+        err.push(pre + 'el peso lo carga ' + f.datos[COL.operario] + ', que fue quien cargo el parto');
       }
 
+      var cal = t.calostro || {};
       Object.keys(EDITABLE_CRIA).forEach(function (clave) {
-        var valor = clave === 'peso' ? t.peso : (t.calostro || {})[clave];
+        var valor = clave === 'peso' ? t.peso
+                  : clave === 'origen_calostro' ? cal.origen
+                  : clave === 'id_vaca_origen' ? idOrigenEditado_(p, f, cal)
+                  : cal[clave];
         anotarCambio_(cambios, err, listas, f, EDITABLE_CRIA[clave], clave, valor, pre);
       });
-
-      // La columna L solo se habilita con Mejorado = Si. Se mira el resultado
-      // final, no lo que vino: se puede estar cambiando uno solo de los dos.
-      var mejorado = resultante_(f, t, 'mejorado', 10);
-      var calidad = resultante_(f, t, 'calidad_mejorado', 11);
-      if (String(mejorado) === 'Si' && (!calidad || String(calidad) === VACIO)) {
-        err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
-      }
-      if (String(mejorado) !== 'Si' && calidad && String(calidad) !== VACIO) {
-        err.push(pre + 'calidad_mejorado cargada con mejorado=' + mejorado);
-      }
     });
 
     var log = ss.getSheetByName(HOJA_LOG);
@@ -403,9 +533,17 @@ function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
 }
 
 /** El valor que va a quedar: el que vino, o el que ya estaba si no vino. */
-function resultante_(f, t, clave, col) {
-  var v = (t.calostro || {})[clave];
+function resultanteParto_(f, madre, clave, col) {
+  var v = madre[clave];
   return v === undefined || v === null ? f.datos[col] : v;
+}
+
+/* Con 'Propia madre' el ID de origen no lo elige el operario: es la vaca que
+ * pario. Si no, quedaria libre poner cualquier numero y marcarlo como propio. */
+function idOrigenEditado_(p, f, cal) {
+  var origen = cal.origen === undefined ? f.datos[COL.origen_calostro] : cal.origen;
+  if (String(origen) === ORIGEN_PROPIA) return p.id_vaca || f.datos[COL.id_vaca];
+  return cal.id_vaca_origen;
 }
 
 function tocaAlgo_(t) {
@@ -420,7 +558,7 @@ function filasDeUuid_(hoja, uuid) {
   var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
   var out = [];
   for (var i = 0; i < datos.length; i++) {
-    if (String(datos[i][COL_UUID]) === String(uuid)) out.push({ fila: i + 2, datos: datos[i] });
+    if (String(datos[i][COL.uuid]) === String(uuid)) out.push({ fila: i + 2, datos: datos[i] });
   }
   return out;
 }
@@ -477,8 +615,21 @@ function validar_(p, listas) {
     err.push('sexo "' + p.sexo + '" no es de parto doble pero vinieron ' +
              terneros.length + ' terneros');
   }
-  // Los litros de la madre son del parto, no de la cria.
+  /* El calostro DE LA MADRE es del parto: lo produjo la vaca, no la cria.
+     Antes se validaba una vez por cria y en un mellizo se podian cargar dos
+     calidades distintas para la misma vaca. */
+  var madre = calostroMadre_(p);
   enLista_(err, listas, 'lts_madre', ltsMadre_(p));
+  enLista_(err, listas, 'calidad_sin_mejorar', madre.calidad_sin_mejorar);
+  enLista_(err, listas, 'mejorado', madre.mejorado);
+  if (String(madre.mejorado) === 'Si') {
+    enLista_(err, listas, 'calidad_mejorado', madre.calidad_mejorado);
+    if (!madre.calidad_mejorado || String(madre.calidad_mejorado) === VACIO) {
+      err.push('mejorado=Si pero calidad_mejorado vacia');
+    }
+  } else if (madre.calidad_mejorado && String(madre.calidad_mejorado) !== VACIO) {
+    err.push('calidad_mejorado cargada con mejorado=' + madre.mejorado);
+  }
 
   var ambiguo = String(p.sexo).charAt(0) === '8';   // 8 = M+M o M+H: hay que decir cual
 
@@ -497,20 +648,19 @@ function validar_(p, listas) {
     // La accion 'pesar' es la que lo vuelve obligatorio.
     enLista_(err, listas, 'peso', t.peso, pre);
 
-    var cal = t.calostro || p.calostro || {};
-    enLista_(err, listas, 'calidad_sin_mejorar', cal.calidad_sin_mejorar, pre);
-    enLista_(err, listas, 'mejorado', cal.mejorado, pre);
-    enLista_(err, listas, 'consumido', cal.consumido, pre);
+    /* Lo que tomo ESTE ternero: puede ser de su propia madre o de otra vaca,
+       y en ese caso con una calidad distinta a la que produjo la madre. */
+    var cal = t.calostro || {};
     enLista_(err, listas, 'lts_ternero', cal.lts_ternero, pre);
+    enLista_(err, listas, 'calidad_sin_mejorar', cal.calidad_ternero, pre);
 
-    // La columna L solo se habilita con Mejorado = Si; si no, va '---'.
-    if (cal.mejorado === 'Si') {
-      enLista_(err, listas, 'calidad_mejorado', cal.calidad_mejorado, pre);
-      if (String(cal.calidad_mejorado) === VACIO) {
-        err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
-      }
-    } else if (cal.calidad_mejorado && String(cal.calidad_mejorado) !== VACIO) {
-      err.push(pre + 'calidad_mejorado cargada con mejorado=' + cal.mejorado);
+    if (cal.origen !== undefined && ORIGENES.indexOf(String(cal.origen)) === -1) {
+      err.push(pre + 'origen de calostro invalido: "' + cal.origen + '"');
+    }
+    // Con 'Otra vaca' hace falta decir cual: si no, no hay como rastrear de
+    // donde salio ese calostro.
+    if (String(cal.origen) === ORIGEN_OTRA && !String(cal.id_vaca_origen || '').trim()) {
+      err.push(pre + 'falta el ID de la vaca que dio el calostro');
     }
   });
 
@@ -574,7 +724,7 @@ function leerMaestro_(ss) {
 }
 
 function partosDelDia_(ss, fechaISO) {
-  var hoja = ss.getSheetByName(HOJA_FORMATO);
+  var hoja = hojaRegistros_(ss);
   if (hoja.getLastRow() < 2) return [];
 
   var tz = ss.getSpreadsheetTimeZone();
@@ -584,22 +734,57 @@ function partosDelDia_(ss, fechaISO) {
   return datos.map(function (f, i) {
     return { f: f, fila: i + 2 };                 // +2: la 1 es el encabezado
   }).filter(function (r) {
-    var d = r.f[2];
+    var d = r.f[COL.fecha];
     return d instanceof Date && Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
   }).map(function (r) {
     var f = r.f;
     return {
       fila: r.fila,
-      operario: f[0], id_vaca: f[1],
-      fecha: Utilities.formatDate(f[2], tz, 'yyyy-MM-dd'), hora: f[3],
-      tipo_parto: f[4], sexo: f[5],
-      id_ternero: f[6], raza: f[7], peso: f[8],
-      calidad_sin_mejorar: f[9], lts_ternero: f[14],
-      tambo: f[16], rodeo: f[17], notas: f[18],
-      sexo_cria: f[19], estado_cria: f[20],
-      id_parto: f[21], cria: f[22], uuid: f[23]
+      operario: f[COL.operario], id_vaca: f[COL.id_vaca],
+      fecha: Utilities.formatDate(f[COL.fecha], tz, 'yyyy-MM-dd'), hora: f[COL.hora],
+      tipo_parto: f[COL.tipo_parto], sexo: f[COL.sexo],
+      id_ternero: f[COL.id_ternero], raza: f[COL.raza], peso: f[COL.peso],
+      calidad_sin_mejorar: f[COL.calidad_sin_mejorar], mejorado: f[COL.mejorado],
+      calidad_mejorado: f[COL.calidad_mejorado], lts_madre: f[COL.lts_madre],
+      origen_calostro: f[COL.origen_calostro], id_vaca_origen: f[COL.id_vaca_origen],
+      calidad_ternero: f[COL.calidad_ternero], lts_ternero: f[COL.lts_ternero],
+      tambo: f[COL.tambo], rodeo: f[COL.rodeo], notas: f[COL.notas],
+      sexo_cria: f[COL.sexo_cria], estado_cria: f[COL.estado_cria],
+      id_parto: f[COL.id_parto], cria: f[COL.cria], uuid: f[COL.uuid],
+      // La lista de la tablet muestra cuando se cargo, no solo la hora de
+      // nacimiento: son dos cosas distintas y se confundian.
+      cargado_en: f[COL.cargado_en] instanceof Date
+        ? Utilities.formatDate(f[COL.cargado_en], tz, 'yyyy-MM-dd HH:mm') : '',
+      dispositivo: f[COL.dispositivo],
+      anulada: String(f[COL.anulada]) === 'Si',
+      cargado_dc: f[COL.cargado_dc] === true
     };
+  }).filter(function (x) { return !x.anulada; });
+}
+
+/**
+ * La hoja de registros, con el nombre nuevo o el viejo. Tener los dos es lo que
+ * permite deployar y renombrar la pestaña en momentos distintos: si se
+ * renombrara antes de publicar, getSheetByName daria null y todo doPost
+ * explotaria. Se saca en r7, cuando el rename ya este hecho.
+ */
+function hojaRegistros_(ss) {
+  return ss.getSheetByName(HOJA_FORMATO) || ss.getSheetByName(HOJA_FORMATO_VIEJA);
+}
+
+/** Compara la fila 1 de la hoja contra el encabezado que espera el codigo. */
+function esquema_(ss) {
+  var hoja = hojaRegistros_(ss);
+  if (!hoja) return { ok: false, error: 'no existe la hoja de registros' };
+  var real = hoja.getRange(1, 1, 1, ENCABEZADOS.length).getValues()[0].map(str_);
+  var mal = [];
+  ENCABEZADOS.forEach(function (esperado, i) {
+    if (normalizar_(real[i]) !== normalizar_(esperado)) {
+      mal.push((i + 1) + ': esperaba "' + esperado + '" y hay "' + real[i] + '"');
+    }
   });
+  return { ok: !mal.length, version: VERSION, hoja: hoja.getName(),
+           columnas: ENCABEZADOS.length, encabezados: real, diferencias: mal };
 }
 
 /** Busca el uuid en la columna A de _log. TextFinder evita traer toda la hoja. */
@@ -776,6 +961,79 @@ function diagnostico() {
 }
 
 /**
+ * Migracion r5 -> r6 del layout de 'Registros'. Se corre A MANO desde el editor,
+ * una sola vez, con la app en pausa.
+ *
+ * Que cambia: desaparece 'Calostro Consumido al Momento'; el calostro de la
+ * madre y el que tomo el ternero quedan en bloques separados; y se suman
+ * Origen Calostro, Calidad Calostro Ternero, Anulada y Cargado a DC.
+ *
+ * Es idempotente: si el encabezado ya es el nuevo, no hace nada. Y antes de
+ * tocar la hoja deja una copia intacta, porque esto reescribe filas de
+ * produccion que incluyen el rodeo que Nahuel cargo a mano.
+ */
+function migrarR6() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var hoja = hojaRegistros_(ss);
+  if (!hoja) { Logger.log('No encuentro la hoja de registros.'); return; }
+
+  if (esquema_(ss).ok) {
+    Logger.log('Ya esta migrada: el encabezado coincide con r6. No toco nada.');
+    return;
+  }
+
+  var respaldo = 'Registros_backup_r5';
+  if (ss.getSheetByName(respaldo)) {
+    Logger.log('Ya existe ' + respaldo + '. Borralo o renombralo antes de repetir.');
+    return;
+  }
+  hoja.copyTo(ss).setName(respaldo);
+  Logger.log('Respaldo guardado en ' + respaldo);
+
+  var ultima = hoja.getLastRow();
+  var viejo = ultima > 1 ? hoja.getRange(2, 1, ultima - 1, 26).getValues() : [];
+
+  /* Mapa de la fila vieja (A..Z) a la nueva. Los indices de la izquierda son
+     los del layout r5: 12 era 'consumido' y se descarta. */
+  var filas = viejo.map(function (v) {
+    var muerta = String(v[6]) === VACIO;                 // G en '---': cria muerta
+    var idOrigenViejo = str_(v[15]);                     // P vieja
+    var origen = muerta ? VACIO
+      : (idOrigenViejo && idOrigenViejo !== VACIO && idOrigenViejo !== str_(v[1]))
+        ? ORIGEN_OTRA : ORIGEN_PROPIA;
+    // Lo que tomo el ternero no existia como dato: se reconstruye con lo que
+    // produjo la madre, mejorado si se mejoro. Es lo unico que se sabe.
+    var calTernero = muerta ? VACIO
+      : (String(v[10]) === 'Si' && v[11] && String(v[11]) !== VACIO ? v[11] : v[9]);
+    var idOrigen = muerta ? VACIO
+      : (origen === ORIGEN_PROPIA ? str_(v[1]) : idOrigenViejo);
+
+    return [
+      v[0], v[1], v[2], v[3], v[4], v[5],               // A-F igual
+      v[6], v[7], v[8],                                 // G-I igual
+      v[9], v[10], v[11],                               // J-L calostro madre, igual
+      v[13],                                            // N vieja -> M: lts madre
+      origen, idOrigen, calTernero, v[14],              // N-Q: lo del ternero
+      v[16], v[17], v[18],                              // Q,R,S viejas -> R,S,T
+      v[19], v[20],                                     // T,U viejas -> U,V
+      v[21], v[22], v[23], v[24], v[25],                // V-Z viejas -> W-AA
+      '', false                                         // AB Anulada, AC Cargado a DC
+    ];
+  });
+
+  hoja.clear();
+  hoja.getRange(1, 1, 1, ENCABEZADOS.length).setValues([ENCABEZADOS]);
+  if (filas.length) {
+    hoja.getRange(2, 1, filas.length, ANCHO_FILA).setValues(filas);
+  }
+  if (hoja.getName() !== HOJA_FORMATO) hoja.setName(HOJA_FORMATO);
+  configurarFormatos();
+
+  Logger.log('Migradas ' + filas.length + ' filas a r6. Hoja: ' + hoja.getName());
+  Logger.log('Revisa que la columna S (Rodeo) conserve lo que cargo Nahuel.');
+}
+
+/**
  * Genera el token compartido y lo guarda en Script Properties.
  * Copiar el valor que imprime y cargarlo en la tablet. No se guarda en el repo.
  */
@@ -789,13 +1047,12 @@ function generarToken() {
 
 /** Formatos de columna: IDs y hora como texto, fechas como fecha. */
 function configurarFormatos() {
-  var hoja = SpreadsheetApp.openById(SS_ID).getSheetByName(HOJA_FORMATO);
+  var hoja = hojaRegistros_(SpreadsheetApp.openById(SS_ID));
   var n = hoja.getMaxRows() - 1;
-  hoja.getRange(2, 2, n, 1).setNumberFormat('@');            // B  ID Vaca
-  hoja.getRange(2, 3, n, 1).setNumberFormat('dd/MM/yyyy');   // C  Fecha Parto
-  hoja.getRange(2, 4, n, 1).setNumberFormat('@');            // D  Hora Nacimiento
-  hoja.getRange(2, 7, n, 1).setNumberFormat('@');            // G  ID Ternero
-  hoja.getRange(2, 16, n, 1).setNumberFormat('@');           // P  ID Vaca Origen
-  hoja.getRange(2, 24, n, 1).setNumberFormat('@');           // X  UUID
-  hoja.getRange(2, 25, n, 1).setNumberFormat('dd/MM/yyyy HH:mm'); // Y Cargado en
+  var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'id_parto', 'cria', 'uuid'];
+  texto.forEach(function (k) { hoja.getRange(2, COL[k] + 1, n, 1).setNumberFormat('@'); });
+  hoja.getRange(2, COL.fecha + 1, n, 1).setNumberFormat('dd/MM/yyyy');
+  hoja.getRange(2, COL.cargado_en + 1, n, 1).setNumberFormat('dd/MM/yyyy HH:mm');
+  hoja.getRange(1, 1, 1, ENCABEZADOS.length).setValues([ENCABEZADOS]).setFontWeight('bold');
+  hoja.setFrozenRows(1);
 }

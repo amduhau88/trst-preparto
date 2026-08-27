@@ -96,8 +96,8 @@ parto() { # <uuid> <id_vaca> <sexo> <terneros_json> <nota>   [TOK=... para forza
 {"token":"${TOK:-$TOKEN}","uuid":"$1","dispositivo":"verificar.sh",
  "operario":"Julio","id_vaca":"$2","fecha_parto":"$FECHA","hora_nacimiento":"07:00",
  "tipo_parto":"1 Normal","sexo":"$3","terneros":$4,
- "calostro":{"calidad_sin_mejorar":"26","mejorado":"No","calidad_mejorado":"---",
-             "consumido":"Si","lts_madre":"5","lts_ternero":"4","id_vaca_origen":"119"},
+ "lts_madre":"5",
+ "calostro":{"calidad_sin_mejorar":"26","mejorado":"No","calidad_mejorado":"---"},
  "tambo":"2","notas":"PRUEBA $5 · $RUN"}
 JSON
 }
@@ -110,7 +110,7 @@ JSON
 
 # Version que espera este script. Tiene que coincidir con VERSION en Codigo.gs:
 # si no, lo que esta publicado no es el codigo de este repo.
-VERSION_ESPERADA='r5-edicion-2026-08-25'
+VERSION_ESPERADA='r6-calostro-2026-08-26'
 
 echo
 echo "1. Conectividad"
@@ -192,7 +192,7 @@ check "reenviar el mismo peso no cambia nada" \
 check "otro operario no puede pesarlo" \
       "$(post "$(editar "pesar-$RUN" Griselda '"terneros":[{"peso":46}]')")" 'lo carga Julio'
 check "pero si corrige el calostro" \
-      "$(post "$(editar "pesar-$RUN" Griselda '"terneros":[{"calostro":{"consumido":"No"}}]')")" \
+      "$(post "$(editar "pesar-$RUN" Griselda '"terneros":[{"calostro":{"lts_ternero":"5"}}]')")" \
       '"ok":true'
 check "y el tambo" \
       "$(post "$(editar "pesar-$RUN" Griselda '"tambo":"3"')")" '"ok":true'
@@ -204,7 +204,21 @@ check "mas crias que filas" \
       "$(post "$(editar "pesar-$RUN" Julio '"terneros":[{"peso":40},{"peso":41}]')")" 'cria'
 
 echo
-echo "9. Lectura"
+echo "9. Esquema de la hoja"
+# El backend escribe POR POSICION. Si alguien inserta o mueve una columna en la
+# planilla, sigue escribiendo donde estaba y corrompe en silencio hasta que
+# alguien lo nota a ojo. Esto es lo unico que lo detecta antes.
+ESQ="$(get "action=esquema&token=$TOKEN")"
+check "el encabezado coincide con el que espera el codigo" "$ESQ" '"ok":true'
+if ! grep -q '"ok":true' <<<"$ESQ"; then
+  printf '        diferencias: %s\n' "$(sed -n 's/.*"diferencias":\(\[[^]]*\]\).*/\1/p' <<<"$ESQ")"
+  printf '        >> NO deployar hasta arreglar esto: el backend escribiria en la columna equivocada.\n'
+fi
+check "la hoja es Registros" "$ESQ" '"hoja":"Registros"'
+check "esquema sin credencial" "$(get 'action=esquema')" 'falta sesion'
+
+echo
+echo "10. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
 check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
 check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'

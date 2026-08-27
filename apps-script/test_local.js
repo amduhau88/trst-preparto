@@ -19,7 +19,22 @@ function crearHoja(nombre, filas) {
   return {
     nombre,
     filas,
-    getName: () => nombre,
+    getName() { return this.nombre; },
+    setName(n) { this.nombre = n; return this; },
+    setFrozenRows() { return this; },
+    clear() { this.filas.length = 0; return this; },
+    copyTo(libro) {
+      const copia = crearHoja(this.nombre + ' (copia)', this.filas.map((f) => f.slice()));
+      libro._hojas[copia.nombre] = copia;
+      const setName = copia.setName.bind(copia);
+      copia.setName = (n) => {
+        delete libro._hojas[copia.nombre];
+        setName(n);
+        libro._hojas[n] = copia;
+        return copia;
+      };
+      return copia;
+    },
     getLastRow() { return this.filas.length; },
     getMaxRows() { return Math.max(this.filas.length, 1000); },
     appendRow(fila) { this.filas.push(fila.slice()); },
@@ -44,8 +59,10 @@ function crearHoja(nombre, filas) {
             while (hoja.filas.length <= idx) hoja.filas.push([]);
             fila.forEach((v, j) => { hoja.filas[idx][c - 1 + j] = v; });
           });
+          return this;
         },
         setNumberFormat() { return this; },
+        setFontWeight() { return this; },
         createTextFinder(txt) {
           return {
             matchEntireCell() { return this; },
@@ -82,13 +99,14 @@ function maestroReal() {
     6: ['Holando', 'Angus'],
     7: rango(25, 60),
     8: horas(),
-    9: rango(18, 35).concat(['mastitis', 'sangre', 'campo']),
+    // 0 = no se midio / no hubo calostro. La lista salta de 0 a 18 a proposito.
+    9: ['0'].concat(rango(18, 35)).concat(['mastitis', 'sangre', 'campo']),
     10: ['Si/No'],
     11: ['---'].concat(rango(26, 35)),
     12: ['Si/No'],
     13: rango(0, 20),
     14: rango(2, 6),
-    16: ['1', '2', '3'],
+    16: ['1', '2', '3', '4'],
     17: []   // Rodeo: VACIA en la planilla real
   };
 
@@ -109,28 +127,43 @@ function horas() {
   return o;
 }
 
-const HEAD_FORMATO = ['Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
-  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso', 'Cal sin mej', 'Mejorado',
-  'Cal mej', 'Consumido', 'Lts madre', 'Lts ternero', 'ID origen', 'Tambo', 'Rodeo',
-  'Notas', 'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'];
-// Posiciones de las columnas nuevas y las tecnicas, para no contar a mano.
-const COL = { sexoCria: 19, estado: 20, idParto: 21, cria: 22, uuid: 23 };
+/* El encabezado y las posiciones salen del propio Codigo.gs, no de una copia
+   escrita a mano: una copia se desincroniza en silencio, y era justo lo que
+   hacia que reordenar columnas fuera peligroso. Se completan despues de cargar
+   el backend en el sandbox (mas abajo). */
+let HEAD_FORMATO = null;
+let COL = null;
 
-function nuevoLibro() {
+function nuevoLibro(nombreHoja) {
   const hojas = {
-    'NUEVO FORMATO PREPARTO': crearHoja('NUEVO FORMATO PREPARTO', [HEAD_FORMATO.slice()]),
     'Maestro': crearHoja('Maestro', maestroReal()),
     '_log': crearHoja('_log', [['uuid', 'recibido_en', 'payload_json', 'filas_escritas', 'resultado']])
   };
-  return {
+  const nom = nombreHoja || 'Registros';
+  hojas[nom] = crearHoja(nom, [HEAD_FORMATO.slice()]);
+  const libro = {
     getName: () => 'TRST — Partos',
     getSpreadsheetTimeZone: () => TZ,
     getSheetByName: (n) => hojas[n],
-    _hojas: hojas
+    _hojas: hojas,
+    _hoja: nom
   };
+  // Renombrar una pestaña la mueve de lugar en el libro, como en Sheets.
+  Object.keys(hojas).forEach((k) => {
+    const h = hojas[k];
+    const original = h.setName.bind(h);
+    h.setName = (n) => {
+      delete hojas[h.getName()];
+      original(n);
+      hojas[n] = h;
+      if (libro._hoja === k) libro._hoja = n;
+      return h;
+    };
+  });
+  return libro;
 }
 
-let libro = nuevoLibro();
+let libro = null;
 
 const dosDigitos = (n) => String(n).padStart(2, '0');
 
@@ -202,24 +235,29 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'Codigo.gs'), 'utf8'), sandbox);
 
+HEAD_FORMATO = sandbox.ENCABEZADOS.slice();
+COL = sandbox.COL;
+libro = nuevoLibro();
+
 /* ---------- helpers de prueba ---------- */
 
 const post = (payload) => JSON.parse(
   sandbox.doPost({ postData: { contents: JSON.stringify(payload) } })._texto);
 const get = (parameter) => JSON.parse(sandbox.doGet({ parameter })._texto);
-const formato = () => libro._hojas['NUEVO FORMATO PREPARTO'].filas.slice(1);
+const formato = () => libro._hojas[libro._hoja].filas.slice(1);
 const log = () => libro._hojas['_log'].filas.slice(1);
 
-const calostroOk = {
-  calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---',
-  consumido: 'Si', lts_ternero: '4', id_vaca_origen: '119'
-};
+/* Lo que produjo la MADRE es del parto: se carga una vez y se repite igual en
+   las dos filas de un mellizo. Lo que tomo cada ternero es de la CRIA, y puede
+   venir de su propia madre o de otra vaca. */
+const calostroMadre = { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---' };
+const calostroOk = { origen: 'Propia madre', lts_ternero: '4' };
 
 const partoBase = (extra) => Object.assign({
   token: TOKEN, uuid: 'u-simple-0001', dispositivo: 'tablet-maternidad',
   operario: 'Julio', id_vaca: '4115', fecha_parto: '2026-08-12',
   hora_nacimiento: '07:00', tipo_parto: '1 Normal', sexo: '6 Macho Vivo',
-  lts_madre: '5',
+  lts_madre: '5', calostro: calostroMadre,
   terneros: [{ id_ternero: '24543', raza: 'Holando', peso: 42, vive: true, calostro: calostroOk }],
   tambo: '2', rodeo: '26', notas: ''
 }, extra || {});
@@ -239,8 +277,8 @@ check('escribe 1 fila', formato().length === 1, 'filas=' + formato().length);
 // El ID Parto sale del uuid del cliente, no de Utilities.getUuid().
 check('id_parto legible', r.id_parto === '20260812-4115-usim', r.id_parto);
 let f = formato()[0];
-check('columnas A-F', f.slice(0, 2).join('|') === 'Julio|4115' && f[4] === '1 Normal');
-check('fecha es Date real', f[2] instanceof Date && f[2].getMonth() === 7);
+check('columnas A-F', f.slice(0, 2).join('|') === 'Julio|4115' && f[COL.tipo_parto] === '1 Normal');
+check('fecha es Date real', f[COL.fecha] instanceof Date && f[COL.fecha].getMonth() === 7);
 check('cria 1/1', f[COL.cria] === '1/1', f[COL.cria]);
 check('uuid en la fila', f[COL.uuid] === 'u-simple-0001');
 check('log en ok', log()[0][4] === 'ok' && log()[0][3] === 1, JSON.stringify(log()[0].slice(3)));
@@ -255,21 +293,23 @@ r = post(partoBase({
   uuid: 'u-doble-0002', id_vaca: '5514', sexo: '2 Hembras Gemelas Vivas',
   terneros: [{ id_ternero: '9101', raza: 'Holando', peso: 32, vive: true, calostro: calostroOk },
              { id_ternero: '9102', raza: 'Holando', peso: 30, vive: true,
-               calostro: Object.assign({}, calostroOk, { lts_ternero: '3', id_vaca_origen: '226' }) }]
+               calostro: { origen: 'Otra vaca', id_vaca_origen: '226',
+                           calidad_ternero: '30', lts_ternero: '3' } }]
 }));
 check('responde ok', r.ok === true, JSON.stringify(r));
 check('escribe 2 filas', r.filas_escritas === 2 && formato().length === 3);
 const [d1, d2] = formato().slice(1);
-check('mismo ID Parto', d1[COL.idParto] === d2[COL.idParto], d1[COL.idParto] + ' vs ' + d2[COL.idParto]);
+check('mismo ID Parto', d1[COL.id_parto] === d2[COL.id_parto], d1[COL.id_parto] + ' vs ' + d2[COL.id_parto]);
 check('cria 1/2 y 2/2', d1[COL.cria] === '1/2' && d2[COL.cria] === '2/2', d1[COL.cria] + ' ' + d2[COL.cria]);
-check('terneros distintos', d1[6] === '9101' && d2[6] === '9102');
+check('terneros distintos', d1[COL.id_ternero] === '9101' && d2[COL.id_ternero] === '9102');
 
-console.log('\n4. Cria muerta -> --- de G a P');
+console.log('\n4. Cria muerta -> --- de G a Q');
 r = post(partoBase({ uuid: 'u-muerto-0003', id_vaca: '6865', sexo: '7 Macho Muerto', terneros: [] }));
 check('responde ok', r.ok === true, JSON.stringify(r));
 const m = formato()[3];
-check('G a P en ---', m.slice(6, 16).every((v) => v === '---'), JSON.stringify(m.slice(6, 16)));
-check('conserva vaca y tambo', m[1] === '6865' && m[16] === '2');
+const bloque = m.slice(COL.id_ternero, COL.lts_ternero + 1);
+check('G a Q en ---', bloque.every((v) => v === '---'), JSON.stringify(bloque));
+check('conserva vaca y tambo', m[COL.id_vaca] === '6865' && m[COL.tambo] === '2');
 
 console.log('\n5. Rechazos');
 check('token invalido', post(partoBase({ uuid: 'x1', token: 'mal' })).error === 'token invalido');
@@ -279,8 +319,8 @@ check('operario fuera de lista', r.ok === false && /operario fuera de lista/.tes
       JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-viva-0005', sexo: '1 Hembra Viva', terneros: [] }));
 check('cria viva sin ternero', r.ok === false && /sin datos de ternero/.test(r.detalles.join()));
-r = post(partoBase({ uuid: 'u-mej-0006', terneros: [{ id_ternero: '1', raza: 'Holando', peso: 40, vive: true,
-  calostro: Object.assign({}, calostroOk, { mejorado: 'Si', calidad_mejorado: '---' }) }] }));
+r = post(partoBase({ uuid: 'u-mej-0006',
+  calostro: { calidad_sin_mejorar: '26', mejorado: 'Si', calidad_mejorado: '---' } }));
 check('mejorado=Si sin calidad', r.ok === false, JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-simple2-0007', terneros: [
   { id_ternero: '1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk },
@@ -295,7 +335,8 @@ r = post(partoBase({ uuid: 'u-rodeo-0008', rodeo: '207' }));
 check('el alta entra igual', r.ok === true, JSON.stringify(r));
 // Aunque una tablet vieja siga mandando rodeo, la columna R queda vacia:
 // la asigna Nahuel en la planilla y la app no tiene que pisarsela.
-check('columna R vacia', formato().slice(-1)[0][17] === '', JSON.stringify(formato().slice(-1)[0][17]));
+check('columna del rodeo vacia', formato().slice(-1)[0][COL.rodeo] === '',
+      JSON.stringify(formato().slice(-1)[0][COL.rodeo]));
 
 console.log('\n7. doGet');
 r = get({ action: 'ping' });
@@ -313,7 +354,8 @@ check('partos de otro dia', get({ action: 'partos', token: TOKEN, fecha: '2026-0
 console.log('\n8. Fechas');
 libro = nuevoLibro();
 r = post(partoBase({ uuid: 'u-fecha-0009', fecha_parto: '12/08/2026' }));
-check('acepta DD/MM/YYYY', r.ok === true && formato()[0][2].getDate() === 12, JSON.stringify(r));
+check('acepta DD/MM/YYYY', r.ok === true && formato()[0][COL.fecha].getDate() === 12,
+      JSON.stringify(r));
 r = post(partoBase({ uuid: 'u-fecha-0010', fecha_parto: '2026-13-45' }));
 check('rechaza fecha invalida', r.ok === false, JSON.stringify(r));
 
@@ -327,33 +369,56 @@ const gemelos = (extra, t1, t2) => post(partoBase(Object.assign({
                     sexo: 'Macho', calostro: calostroOk }, t1 || {}),
     Object.assign({ id_ternero: '9102', raza: 'Holando', peso: 30, vive: true,
                     sexo: 'Hembra',
-                    calostro: Object.assign({}, calostroOk,
-                      { calidad_sin_mejorar: '30', lts_ternero: '3', id_vaca_origen: '226' }) }, t2 || {})
+                    calostro: { origen: 'Otra vaca', id_vaca_origen: '226',
+                                calidad_ternero: '30', lts_ternero: '3' } }, t2 || {})
   ]
 }, extra || {})));
 
 let g = gemelos();
 check('acepta el parto doble', g.ok === true && g.filas_escritas === 2, JSON.stringify(g));
 let [m1, m2] = formato().slice(-2);
-check('sexo por cria', m1[COL.sexoCria] === 'Macho' && m2[COL.sexoCria] === 'Hembra',
-      m1[COL.sexoCria] + ' / ' + m2[COL.sexoCria]);
-check('las dos vivas', m1[COL.estado] === 'Vivo' && m2[COL.estado] === 'Vivo');
-check('calostro distinto por cria', m1[9] === '26' && m2[9] === '30', m1[9] + ' / ' + m2[9]);
-check('litros para el ternero distintos', m1[14] === 4 && m2[14] === 3, m1[14] + ' / ' + m2[14]);
-check('vaca origen distinta', m1[15] === '119' && m2[15] === '226');
-check('litros de la MADRE iguales en las dos filas', m1[13] === m2[13] && m1[13] === 5,
-      m1[13] + ' / ' + m2[13]);
-check('mismo ID Parto', m1[COL.idParto] === m2[COL.idParto]);
+check('sexo por cria', m1[COL.sexo_cria] === 'Macho' && m2[COL.sexo_cria] === 'Hembra',
+      m1[COL.sexo_cria] + ' / ' + m2[COL.sexo_cria]);
+check('las dos vivas', m1[COL.estado_cria] === 'Vivo' && m2[COL.estado_cria] === 'Vivo');
+/* El calostro DE LA MADRE describe lo que produjo la vaca: es del parto y va
+   igual en las dos filas. Antes se cargaba por cria y un mellizo podia quedar
+   con dos calidades distintas para la misma madre. Lo que SI es de cada cria es
+   lo que efectivamente tomo. */
+check('la calidad de la madre es la misma en las dos filas',
+      m1[COL.calidad_sin_mejorar] === m2[COL.calidad_sin_mejorar] &&
+      m1[COL.calidad_sin_mejorar] === '26',
+      m1[COL.calidad_sin_mejorar] + ' / ' + m2[COL.calidad_sin_mejorar]);
+check('mejorado y calidad mejorada tambien',
+      m1[COL.mejorado] === m2[COL.mejorado] && m1[COL.calidad_mejorado] === m2[COL.calidad_mejorado]);
+check('litros de la MADRE iguales en las dos filas',
+      m1[COL.lts_madre] === m2[COL.lts_madre] && m1[COL.lts_madre] === 5,
+      m1[COL.lts_madre] + ' / ' + m2[COL.lts_madre]);
+check('pero lo que tomo cada ternero puede ser distinto',
+      m1[COL.calidad_ternero] === '26' && m2[COL.calidad_ternero] === '30',
+      m1[COL.calidad_ternero] + ' / ' + m2[COL.calidad_ternero]);
+check('litros para el ternero distintos',
+      m1[COL.lts_ternero] === 4 && m2[COL.lts_ternero] === 3,
+      m1[COL.lts_ternero] + ' / ' + m2[COL.lts_ternero]);
+check('origen del calostro por cria',
+      m1[COL.origen_calostro] === 'Propia madre' && m2[COL.origen_calostro] === 'Otra vaca',
+      m1[COL.origen_calostro] + ' / ' + m2[COL.origen_calostro]);
+check('con propia madre el ID de origen es la vaca que pario',
+      m1[COL.id_vaca_origen] === '5514', m1[COL.id_vaca_origen]);
+check('y con otra vaca, el que se cargo', m2[COL.id_vaca_origen] === '226',
+      m2[COL.id_vaca_origen]);
+check('mismo ID Parto', m1[COL.id_parto] === m2[COL.id_parto]);
 
 console.log('\n8c. Mellizos con una cria muerta');
 g = gemelos({}, {}, { vive: false });
 check('acepta', g.ok === true && g.filas_escritas === 2, JSON.stringify(g));
 [m1, m2] = formato().slice(-2);
-check('la viva conserva sus datos', m1[6] === '9101' && m1[COL.estado] === 'Vivo');
-check('la muerta va en --- de G a P', m2.slice(6, 16).every((v) => v === '---'),
-      JSON.stringify(m2.slice(6, 16)));
-check('pero queda registrado su sexo', m2[COL.sexoCria] === 'Hembra', m2[COL.sexoCria]);
-check('y que nacio muerta', m2[COL.estado] === 'Muerto', m2[COL.estado]);
+check('la viva conserva sus datos',
+      m1[COL.id_ternero] === '9101' && m1[COL.estado_cria] === 'Vivo');
+check('la muerta va en --- de G a Q',
+      m2.slice(COL.id_ternero, COL.lts_ternero + 1).every((v) => v === '---'),
+      JSON.stringify(m2.slice(COL.id_ternero, COL.lts_ternero + 1)));
+check('pero queda registrado su sexo', m2[COL.sexo_cria] === 'Hembra', m2[COL.sexo_cria]);
+check('y que nacio muerta', m2[COL.estado_cria] === 'Muerto', m2[COL.estado_cria]);
 
 console.log('\n8d. Reglas del codigo 8');
 g = gemelos({}, { sexo: '' });
@@ -384,14 +449,18 @@ check('acepta M+M con el codigo 8', g.ok === true, JSON.stringify(g));
 console.log('\n8e. Parto simple: el sexo sale del codigo, sin preguntarlo');
 libro = nuevoLibro();
 post(partoBase({ uuid: 'u-simple-sexo' }));                  // codigo 6 Macho Vivo
-check('deduce Macho del codigo 6', formato()[0][COL.sexoCria] === 'Macho', formato()[0][COL.sexoCria]);
+check('deduce Macho del codigo 6', formato()[0][COL.sexo_cria] === 'Macho', formato()[0][COL.sexo_cria]);
 post(partoBase({ uuid: 'u-hembra', sexo: '1 Hembra Viva' }));
-check('deduce Hembra del codigo 1', formato()[1][COL.sexoCria] === 'Hembra', formato()[1][COL.sexoCria]);
+check('deduce Hembra del codigo 1', formato()[1][COL.sexo_cria] === 'Hembra', formato()[1][COL.sexo_cria]);
 post(partoBase({ uuid: 'u-muerta-sexo', sexo: '4 Hembra Muerta', terneros: [] }));
-check('cria muerta: Hembra y Muerto', formato()[2][COL.sexoCria] === 'Hembra' &&
-      formato()[2][COL.estado] === 'Muerto', JSON.stringify(formato()[2].slice(19, 21)));
+check('cria muerta: Hembra y Muerto', formato()[2][COL.sexo_cria] === 'Hembra' &&
+      formato()[2][COL.estado_cria] === 'Muerto',
+      JSON.stringify(formato()[2].slice(COL.sexo_cria, COL.estado_cria + 1)));
 
-console.log('\n8f. Formato viejo (calostro a nivel parto) sigue entrando');
+console.log('\n8f. Formatos viejos siguen entrando');
+/* Cuando se publica el service worker nuevo hay tablets con partos ya guardados
+   en IndexedDB con el formato anterior. Si el backend los rechazara, esos partos
+   quedarian trabados justo el dia del deploy. */
 libro = nuevoLibro();
 const viejo = post({
   token: TOKEN, uuid: 'u-viejo-1', operario: 'Julio', id_vaca: '4115',
@@ -402,7 +471,29 @@ const viejo = post({
   tambo: '2', rodeo: '26', notas: ''
 });
 check('acepta el payload sin calostro por cria', viejo.ok === true, JSON.stringify(viejo));
-check('toma los litros de la madre de adentro de calostro', formato()[0][13] === 5, formato()[0][13]);
+check('toma los litros de la madre de adentro de calostro',
+      formato()[0][COL.lts_madre] === 5, formato()[0][COL.lts_madre]);
+check('ignora "consumido", que ya no existe',
+      formato()[0].indexOf('Si') === -1, JSON.stringify(formato()[0]));
+
+// r5: el calostro venia POR CRIA, sin nada a nivel parto.
+const r5 = post({
+  token: TOKEN, uuid: 'u-viejo-2', operario: 'Julio', id_vaca: '4115',
+  fecha_parto: '2026-08-12', hora_nacimiento: '07:00', tipo_parto: '1 Normal',
+  sexo: '6 Macho Vivo', lts_madre: '7',
+  terneros: [{ id_ternero: '24544', raza: 'Holando', peso: 42, vive: true,
+               calostro: { calidad_sin_mejorar: '31', mejorado: 'No', calidad_mejorado: '---',
+                           consumido: 'Si', lts_ternero: '4', id_vaca_origen: '226' } }],
+  tambo: '2', notas: ''
+});
+check('acepta el calostro por cria de r5', r5.ok === true, JSON.stringify(r5));
+let fr5 = formato()[1];
+check('lo sube a nivel parto', fr5[COL.calidad_sin_mejorar] === '31', fr5[COL.calidad_sin_mejorar]);
+check('y deduce que el calostro era de otra vaca',
+      fr5[COL.origen_calostro] === 'Otra vaca' && fr5[COL.id_vaca_origen] === '226',
+      fr5[COL.origen_calostro] + ' / ' + fr5[COL.id_vaca_origen]);
+check('con la calidad que tomo reconstruida', fr5[COL.calidad_ternero] === '31',
+      fr5[COL.calidad_ternero]);
 
 console.log('\n9. Identidad: solo cuentas del dominio');
 libro = nuevoLibro();
@@ -468,9 +559,9 @@ libro = nuevoLibro();
 const sinPeso = { id_ternero: '777', raza: 'Holando', vive: true, calostro: calostroOk };
 r = post(partoBase({ uuid: 'u-sinpeso-01', terneros: [sinPeso] }));
 check('el alta entra sin peso', r.ok === true, JSON.stringify(r));
-check('columna I vacia', formato()[0][8] === '', JSON.stringify(formato()[0][8]));
+check('columna I vacia', formato()[0][COL.peso] === '', JSON.stringify(formato()[0][COL.peso]));
 // Vacio y '---' son estados distintos: vacio es "falta pesar", '---' es cria muerta.
-check('vacio no es ---', formato()[0][8] !== '---');
+check('vacio no es ---', formato()[0][COL.peso] !== '---');
 r = post(partoBase({ uuid: 'u-sinpeso-02', terneros: [Object.assign({}, sinPeso, { peso: 999 })] }));
 check('un peso fuera de lista sigue rechazandose', r.ok === false, JSON.stringify(r));
 
@@ -482,24 +573,26 @@ const editar = (extra) => post(Object.assign({ token: TOKEN, accion: 'editar', u
 
 r = editar({ terneros: [{ peso: 44 }] });
 check('Julio pesa su parto', r.ok === true && r.cambios === 1, JSON.stringify(r));
-check('la columna I quedo en 44', formato()[0][8] === 44, JSON.stringify(formato()[0][8]));
+check('la columna I quedo en 44', formato()[0][COL.peso] === 44, JSON.stringify(formato()[0][COL.peso]));
 r = editar({ operario: 'Griselda', terneros: [{ peso: 46 }] });
 check('Griselda no pesa un parto de Julio', r.ok === false, JSON.stringify(r));
-check('el peso quedo intacto', formato()[0][8] === 44, JSON.stringify(formato()[0][8]));
+check('el peso quedo intacto', formato()[0][COL.peso] === 44, JSON.stringify(formato()[0][COL.peso]));
 // El resto de los campos si los corrige cualquiera.
 r = editar({ operario: 'Griselda', tambo: '3', terneros: [{ calostro: { lts_ternero: '5' } }] });
 check('Griselda corrige calostro y tambo', r.ok === true, JSON.stringify(r));
-check('tambo Q actualizado', formato()[0][16] === '3', JSON.stringify(formato()[0][16]));
-check('lts ternero O actualizado', formato()[0][14] === 5, JSON.stringify(formato()[0][14]));
+check('tambo actualizado', formato()[0][COL.tambo] === '3', JSON.stringify(formato()[0][COL.tambo]));
+check('lts ternero actualizado', formato()[0][COL.lts_ternero] === 5,
+      JSON.stringify(formato()[0][COL.lts_ternero]));
 
 console.log('\n15. Editar: lo que no se puede');
 r = editar({ terneros: [{ peso: 999 }] });
 check('peso fuera de lista', r.ok === false, JSON.stringify(r));
 r = editar({ terneros: [{ peso: '' }] });
 check('vaciar un campo no es corregir', r.ok === false, JSON.stringify(r));
-r = editar({ terneros: [{ calostro: { mejorado: 'Si' } }] });
+// Mejorado y calidad mejorada son del PARTO: viajan en calostro, no por cria.
+r = editar({ calostro: { mejorado: 'Si' } });
 check('mejorado=Si sin calidad_mejorado', r.ok === false, JSON.stringify(r));
-r = editar({ terneros: [{ calostro: { mejorado: 'Si', calidad_mejorado: '30' } }] });
+r = editar({ calostro: { mejorado: 'Si', calidad_mejorado: '30' } });
 check('mejorado=Si con calidad si entra', r.ok === true, JSON.stringify(r));
 r = post({ token: TOKEN, accion: 'editar', uuid: 'no-existe', operario: 'Julio',
            terneros: [{ peso: 40 }] });
@@ -510,16 +603,22 @@ r = editar({ terneros: [{ peso: 44 }] });
 check('reenviar el mismo valor no cambia nada', r.ok === true && r.cambios === 0, JSON.stringify(r));
 // La tablet manda el parto entero al corregir cualquier cosa. Reenviar el mismo
 // peso no es pesar, asi que no puede bloquear a los demas.
-r = editar({ operario: 'Griselda', terneros: [{ peso: 44, calostro: { consumido: 'No' } }] });
+r = editar({ operario: 'Griselda', terneros: [{ peso: 44, calostro: { lts_ternero: '6' } }] });
 check('reenviar el peso igual no bloquea a otro operario', r.ok === true, JSON.stringify(r));
-check('y el calostro se corrigio', formato()[0][12] === 'No', JSON.stringify(formato()[0][12]));
+check('y el calostro se corrigio', formato()[0][COL.lts_ternero] === 6,
+      JSON.stringify(formato()[0][COL.lts_ternero]));
 // Vaciar un dato que existe se rechaza (arriba), pero un opcional que nunca se
 // cargo vuelve vacio sin ser un borrado: la tablet manda el parto entero.
-post(partoBase({ uuid: 'u-ed-vacio', terneros: [{ id_ternero: '5', raza: 'Holando', peso: 40,
-  vive: true, calostro: Object.assign({}, calostroOk, { id_vaca_origen: '' }) }] }));
+/* Con 'Otra vaca' el ID de origen es obligatorio, pero el campo de notas y
+   otros opcionales pueden volver vacios sin que eso sea un borrado: la tablet
+   manda el parto entero al corregir cualquier cosa. */
+post(partoBase({ uuid: 'u-ed-vacio', id_vaca: '4116',
+  terneros: [{ id_ternero: '5', raza: 'Holando', peso: 40, vive: true,
+               calostro: { origen: 'Propia madre', lts_ternero: '4' } }] }));
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-vacio', operario: 'Julio',
-           terneros: [{ calostro: { id_vaca_origen: '', consumido: 'No' } }] });
-check('reenviar vacio algo que ya estaba vacio', r.ok === true && r.cambios === 1, JSON.stringify(r));
+           id_vaca: '4116',
+           terneros: [{ calostro: { origen: 'Propia madre', lts_ternero: '5' } }] });
+check('reenviar lo mismo y cambiar un dato', r.ok === true && r.cambios === 1, JSON.stringify(r));
 
 console.log('\n16. Editar: cria muerta y ventana del dia');
 libro = nuevoLibro();
@@ -531,10 +630,16 @@ check('cria muerta no lleva peso', r.ok === false && /muerta/.test(JSON.stringif
 // romperia la fila. Q, en cambio, esta afuera y se corrige igual.
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio', lts_madre: '9' });
 check('cria muerta no lleva lts madre', r.ok === false, JSON.stringify(r));
-check('el bloque G-P sigue entero', formato()[0].slice(6, 16).every((v) => v === '---'),
-      JSON.stringify(formato()[0].slice(6, 16)));
+check('el bloque G-Q sigue entero',
+      formato()[0].slice(COL.id_ternero, COL.lts_ternero + 1).every((v) => v === '---'),
+      JSON.stringify(formato()[0].slice(COL.id_ternero, COL.lts_ternero + 1)));
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio', tambo: '3' });
-check('pero el tambo si se corrige', r.ok === true && formato()[0][16] === '3', JSON.stringify(r));
+check('pero el tambo si se corrige', r.ok === true && formato()[0][COL.tambo] === '3',
+      JSON.stringify(r));
+// El calostro de la madre tambien vive adentro del bloque: mismo criterio.
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-muerto', operario: 'Julio',
+           calostro: { calidad_sin_mejorar: '30' } });
+check('cria muerta tampoco lleva calidad de calostro', r.ok === false, JSON.stringify(r));
 
 post(partoBase({ uuid: 'u-ed-ayer', terneros: [sinPeso],
                  cargado_en: '2026-08-01T10:00:00.000Z' }));
@@ -563,20 +668,138 @@ check('escribio 2 filas', formato().length === 2, 'filas=' + formato().length);
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-gem', operario: 'Julio',
            lts_madre: '7', terneros: [{ peso: 30 }, { peso: 35 }] });
 check('edita las dos crias', r.ok === true, JSON.stringify(r));
-check('cada cria con su peso', formato()[0][8] === 30 && formato()[1][8] === 35,
-      JSON.stringify([formato()[0][8], formato()[1][8]]));
+check('cada cria con su peso', formato()[0][COL.peso] === 30 && formato()[1][COL.peso] === 35,
+      JSON.stringify([formato()[0][COL.peso], formato()[1][COL.peso]]));
 // Los litros que produjo la madre son del parto: van iguales en las dos filas.
-check('lts madre iguales en las dos filas', formato()[0][13] === 7 && formato()[1][13] === 7,
-      JSON.stringify([formato()[0][13], formato()[1][13]]));
+check('lts madre iguales en las dos filas',
+      formato()[0][COL.lts_madre] === 7 && formato()[1][COL.lts_madre] === 7,
+      JSON.stringify([formato()[0][COL.lts_madre], formato()[1][COL.lts_madre]]));
+// Y el resto del calostro de la madre, tambien: es del parto.
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-gem', operario: 'Julio',
+           calostro: { calidad_sin_mejorar: '33' } });
+check('corregir la calidad de la madre toca las dos filas',
+      r.ok === true && formato()[0][COL.calidad_sin_mejorar] === '33' &&
+      formato()[1][COL.calidad_sin_mejorar] === '33', JSON.stringify(r));
 check('sigue habiendo 2 filas', formato().length === 2, 'filas=' + formato().length);
 
 console.log('\n18. Editar: la auditoria queda entera');
 const logGem = log().filter((l) => l[0] === 'u-ed-gem');
-check('el alta y la edicion son renglones distintos', logGem.length === 2,
+check('el alta y cada edicion son renglones distintos', logGem.length === 3,
       JSON.stringify(logGem.map((l) => l[4])));
 check('el renglon del alta no se piso', /^(recibido|ok)$/.test(logGem[0][4]), logGem[0][4]);
 check('la edicion dice quien la hizo', /editado por Julio/.test(logGem[1][4]), logGem[1][4]);
 check('la edicion guarda el mail', logGem[1][5] === 'script', logGem[1][5]);
+
+console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
+libro = nuevoLibro();
+r = get({ action: 'esquema', token: TOKEN });
+check('el encabezado real coincide con el que espera el codigo', r.ok === true,
+      JSON.stringify(r.diferencias));
+check('informa cuantas columnas son', r.columnas === HEAD_FORMATO.length, r.columnas);
+check('sin token no contesta', get({ action: 'esquema' }).ok === false);
+// Alguien inserta una columna en la planilla: el backend seguiria escribiendo
+// donde estaba y corromperia en silencio. Esto es lo que lo hace detectable.
+libro._hojas[libro._hoja].filas[0][COL.tambo] = 'Otra Cosa';
+r = get({ action: 'esquema', token: TOKEN });
+check('detecta una columna cambiada', r.ok === false && r.diferencias.length === 1,
+      JSON.stringify(r.diferencias));
+
+console.log('\n20. La hoja se encuentra con el nombre nuevo y con el viejo');
+/* Tener los dos nombres es lo que permite deployar y renombrar la pestaña en
+   momentos distintos. Renombrar antes de publicar daria null y todo doPost
+   explotaria. */
+libro = nuevoLibro('NUEVO FORMATO PREPARTO');
+r = post(partoBase({ uuid: 'u-nombre-viejo' }));
+check('entra con el nombre viejo', r.ok === true, JSON.stringify(r));
+check('y escribio la fila', formato().length === 1, 'filas=' + formato().length);
+
+libro = nuevoLibro('Registros');
+libro._hojas['NUEVO FORMATO PREPARTO'] = crearHoja('NUEVO FORMATO PREPARTO', [HEAD_FORMATO.slice()]);
+post(partoBase({ uuid: 'u-nombre-nuevo' }));
+check('con las dos, gana Registros',
+      libro._hojas['Registros'].filas.length === 2 &&
+      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 1,
+      libro._hojas['Registros'].filas.length + ' / ' +
+      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length);
+
+console.log('\n21. Migracion r5 -> r6 del layout');
+/* Es lo unico de r6 que reescribe filas de produccion, y adentro va el rodeo
+   que Nahuel carga a mano. Si eso se pierde, no hay como reconstruirlo. */
+const HEAD_R5 = ['Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
+  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
+  'Calostro Consumido al Momento', 'Lts Calostro Madre Produjo',
+  'Lts Calostro para Ternero', 'ID Vaca Origen Calostro',
+  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Notas Nahuel',
+  'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'];
+
+const cargado = new Date(2026, 7, 20, 8, 30);
+const filaViva = ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
+  '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
+  '2', '21', 'una nota', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-mig-1', cargado, 'tablet'];
+const filaPropia = ['Trini', '5514', new Date(2026, 7, 20), '09:00', '1 Normal', '1 Hembra Viva',
+  '9001', 'Holando', 38, '28', 'Si', '32', 'No', 6, 3, '5514',
+  '1', '23', '', 'Hembra', 'Vivo', 'IDP-2', '1/1', 'u-mig-2', cargado, 'tablet'];
+const filaMuerta = ['Griselda', '6865', new Date(2026, 7, 20), '11:00', '1 Normal', '7 Macho Muerto',
+  '---', '---', '---', '---', '---', '---', '---', '---', '---', '---',
+  '3', '26', '', 'Macho', 'Muerto', 'IDP-3', '1/1', 'u-mig-3', cargado, 'tablet'];
+
+libro = nuevoLibro('NUEVO FORMATO PREPARTO');
+libro._hojas['NUEVO FORMATO PREPARTO'].filas = [HEAD_R5.slice(), filaViva.slice(),
+                                                filaPropia.slice(), filaMuerta.slice()];
+sandbox.migrarR6();
+
+const mig = libro._hojas['Registros'];
+check('renombro la pestaña a Registros', !!mig, Object.keys(libro._hojas).join(', '));
+check('dejo un respaldo antes de tocar nada', !!libro._hojas['Registros_backup_r5']);
+check('el respaldo conserva el layout viejo',
+      libro._hojas['Registros_backup_r5'].filas[0].length === 26);
+check('escribio el encabezado nuevo',
+      mig.filas[0].join('|') === HEAD_FORMATO.join('|'), mig.filas[0].join('|'));
+check('no perdio ni agrego filas', mig.filas.length === 4, 'filas=' + mig.filas.length);
+
+const v = mig.filas[1];
+check('el rodeo de Nahuel sobrevivio', v[COL.rodeo] === '21', JSON.stringify(v[COL.rodeo]));
+check('las notas tambien', v[COL.notas] === 'una nota', JSON.stringify(v[COL.notas]));
+check('los litros de la madre se movieron de N a M', v[COL.lts_madre] === 5, v[COL.lts_madre]);
+check('los del ternero, de O a Q', v[COL.lts_ternero] === 4, v[COL.lts_ternero]);
+check('el calostro de la madre quedo donde estaba', v[COL.calidad_sin_mejorar] === '26');
+check('desaparecio "consumido"', v.indexOf('Si') === -1, JSON.stringify(v));
+check('deduce que el calostro era de otra vaca',
+      v[COL.origen_calostro] === 'Otra vaca' && v[COL.id_vaca_origen] === '119',
+      v[COL.origen_calostro] + ' / ' + v[COL.id_vaca_origen]);
+check('y reconstruye lo que tomo el ternero', v[COL.calidad_ternero] === '26',
+      v[COL.calidad_ternero]);
+check('las tecnicas se corrieron enteras',
+      v[COL.uuid] === 'u-mig-1' && v[COL.cria] === '1/1' && v[COL.dispositivo] === 'tablet',
+      JSON.stringify([v[COL.uuid], v[COL.cria], v[COL.dispositivo]]));
+check('arranca sin anular y sin cargar a DC',
+      v[COL.anulada] === '' && v[COL.cargado_dc] === false,
+      JSON.stringify([v[COL.anulada], v[COL.cargado_dc]]));
+
+const pr = mig.filas[2];
+check('calostro de la propia madre queda marcado asi',
+      pr[COL.origen_calostro] === 'Propia madre' && pr[COL.id_vaca_origen] === '5514',
+      pr[COL.origen_calostro] + ' / ' + pr[COL.id_vaca_origen]);
+check('si fue mejorado, el ternero tomo el mejorado', pr[COL.calidad_ternero] === '32',
+      pr[COL.calidad_ternero]);
+
+const mu = mig.filas[3];
+check('la cria muerta extiende los --- hasta Q',
+      mu.slice(COL.id_ternero, COL.lts_ternero + 1).every((x) => x === '---'),
+      JSON.stringify(mu.slice(COL.id_ternero, COL.lts_ternero + 1)));
+check('pero conserva tambo, rodeo y estado',
+      mu[COL.tambo] === '3' && mu[COL.rodeo] === '26' && mu[COL.estado_cria] === 'Muerto');
+
+// Correrla dos veces no puede duplicar ni volver a tocar nada.
+const antesDeRepetir = JSON.stringify(mig.filas);
+sandbox.migrarR6();
+check('correrla de nuevo no hace nada', JSON.stringify(mig.filas) === antesDeRepetir);
+
+// Y despues de migrar, un parto nuevo entra normal.
+r = post(partoBase({ uuid: 'u-post-migracion' }));
+check('la app sigue escribiendo despues de migrar', r.ok === true, JSON.stringify(r));
+check('en la hoja renombrada', mig.filas.length === 5, 'filas=' + mig.filas.length);
 
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);
