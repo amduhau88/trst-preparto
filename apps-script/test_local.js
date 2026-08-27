@@ -1099,6 +1099,18 @@ check('la vista DC no se arma con columnas corridas',
       sandbox.reconstruirDC_(libro) === -1);
 check('y queda vacia', libro._hojas['Datos Carga DC'].filas.length === 1);
 
+/* Los triggers simples corren con el codigo GUARDADO, no con el publicado: en
+   cuanto se pega r6 en el editor, onEdit ya esta vivo. Sobre la planilla vieja
+   escribiria el rodeo en la columna de las notas. */
+const dcTemp = libro._hojas['Datos Carga DC'];
+dcTemp.filas.push(['900', '', '', '', '', '', '', '', '', '', '', '', '', '',
+                   '207', false, 'u-cualquiera|1/1']);
+const antesDeOnEdit = JSON.stringify(libro._hojas[libro._hoja].filas);
+sandbox.onEdit({ range: dcTemp.getRange(2, sandbox.DC.rodeo + 1, 1, 1) });
+check('onEdit no toca nada mientras la planilla no este migrada',
+      JSON.stringify(libro._hojas[libro._hoja].filas) === antesDeOnEdit);
+dcTemp.filas.length = 1;
+
 // Y apenas se migra, lo mismo entra sin que nadie toque nada.
 sandbox.migrarR6();
 r = post(partoBase({ uuid: 'u-sin-migrar' }));

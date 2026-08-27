@@ -1161,6 +1161,11 @@ function onEdit(e) {
     var ss = vista.getParent();
     var hoja = hojaRegistros_(ss);
     if (!hoja) return;
+    /* Los triggers simples corren con el codigo GUARDADO, no con el publicado:
+       apenas se pega r6 en el editor, este ya esta vivo aunque el deploy siga
+       siendo el viejo. Sobre la planilla sin migrar escribiria el rodeo en la
+       columna de las notas. */
+    if (!esquemaOk_(ss)) return;
 
     for (var i = 0; i < e.range.getNumRows(); i++) {
       var fila = e.range.getRow() + i;
