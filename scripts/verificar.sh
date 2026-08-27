@@ -218,7 +218,16 @@ check "la hoja es Registros" "$ESQ" '"hoja":"Registros"'
 check "esquema sin credencial" "$(get 'action=esquema')" 'falta sesion'
 
 echo
-echo "10. Lectura"
+echo "10. Consultar el calostro de otra vaca"
+check "encuentra una vaca que ya pario" \
+      "$(get "action=calostro&token=$TOKEN&vaca=4115")" '"ok":true'
+check "una vaca sin partos no es un error" \
+      "$(get "action=calostro&token=$TOKEN&vaca=999999")" '"encontrada":false'
+check "sin numero de vaca" "$(get "action=calostro&token=$TOKEN")" 'falta el numero'
+check "sin credencial" "$(get 'action=calostro&vaca=4115')" 'falta sesion'
+
+echo
+echo "11. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
 check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
 check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'

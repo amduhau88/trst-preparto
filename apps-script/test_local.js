@@ -44,7 +44,10 @@ function crearHoja(nombre, filas) {
     getMaxRows() { return Math.max(this.filas.length, 1000); },
     appendRow(fila) { this.filas.push(fila.slice()); },
     getDataRange() { return this.rango(1, 1, this.filas.length, anchoMax(this.filas)); },
-    getRange(f, c, nf, nc) { return this.rango(f, c, nf, nc); },
+    // getRange(fila, col) sin tamaño es UNA celda, igual que en Sheets.
+    getRange(f, c, nf, nc) {
+      return this.rango(f, c, nf === undefined ? 1 : nf, nc === undefined ? 1 : nc);
+    },
     rango(f, c, nf, nc) {
       const hoja = this;
       return {
@@ -68,6 +71,21 @@ function crearHoja(nombre, filas) {
         },
         setNumberFormat() { return this; },
         setFontWeight() { return this; },
+        setValue(v) { this.setValues([[v]]); return this; },
+        getValue() { return this.getValues()[0][0]; },
+        getRow: () => f,
+        getColumn: () => c,
+        getNumRows: () => nf,
+        getNumColumns: () => nc,
+        getSheet: () => hoja,
+        clearContent() {
+          for (let i = 0; i < nf; i++) {
+            const fila = hoja.filas[f - 1 + i];
+            if (!fila) continue;
+            for (let j = 0; j < nc; j++) fila[c - 1 + j] = '';
+          }
+          return this;
+        },
         createTextFinder(txt) {
           return {
             matchEntireCell() { return this; },
@@ -154,6 +172,8 @@ function nuevoLibro(nombreHoja) {
   };
   const nom = nombreHoja || 'Registros';
   hojas[nom] = crearHoja(nom, [HEAD_FORMATO.slice()]);
+  hojas[sandbox.HOJA_DC || 'Datos Carga DC'] =
+    crearHoja('Datos Carga DC', [(sandbox.DC_ENCABEZADOS || []).slice()]);
   const libro = {
     getName: () => 'TRST — Partos',
     getSpreadsheetTimeZone: () => TZ,
@@ -164,6 +184,7 @@ function nuevoLibro(nombreHoja) {
   // Renombrar una pestaña la mueve de lugar en el libro, como en Sheets.
   Object.keys(hojas).forEach((k) => {
     const h = hojas[k];
+    h.getParent = () => libro;
     const original = h.setName.bind(h);
     h.setName = (n) => {
       delete hojas[h.getName()];
@@ -904,6 +925,108 @@ const antesDeEditar = formato().length;
 post({ token: TOKEN, accion: 'editar', uuid: 'u-sex', operario: 'Julio', tambo: '3' });
 check('editar sigue sin agregar ni borrar filas', formato().length === antesDeEditar,
       antesDeEditar + ' -> ' + formato().length);
+
+console.log('\n18e. La vista Datos Carga DC');
+/* Es una tabla mantenida por script, no formulas: un checkbox dentro de un
+   derrame queda anclado a una POSICION, y cambiar el sexo inserta filas en el
+   medio de Registros. Todos los tildes de abajo pasarian a la cria equivocada,
+   en silencio. Aca cada fila lleva su clave uuid|cria. */
+libro = nuevoLibro();
+const DC = sandbox.DC;
+const vista = () => libro._hojas['Datos Carga DC'].filas.slice(1);
+
+post(partoBase({ uuid: 'u-dc-1', id_vaca: '900',
+  terneros: [{ id_ternero: '9001', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho',
+               calostro: calostroOk }] }));
+check('la vista se llena sola al entrar un parto', vista().length === 1,
+      'filas=' + vista().length);
+let d = vista()[0];
+check('el ID de la vaca va primero', d[DC.id_vaca] === '900', d[DC.id_vaca]);
+check('la inicial del sexo va pegada al ID del ternero', d[DC.sexo_id] === 'M9001',
+      d[DC.sexo_id]);
+check('el metodo es fijo', d[DC.metodo] === 'Sonda', d[DC.metodo]);
+check('la clave es uuid|cria', d[DC.clave] === 'u-dc-1|1/1', d[DC.clave]);
+check('arranca sin rodeo y sin tildar', d[DC.rodeo] === '' && d[DC.cargado] === false,
+      JSON.stringify([d[DC.rodeo], d[DC.cargado]]));
+
+// Hembra lleva H, no F.
+post(partoBase({ uuid: 'u-dc-2', id_vaca: '901', sexo: '1 Hembra Viva',
+  terneros: [{ id_ternero: '9002', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] }));
+check('una hembra lleva H', vista()[1][DC.sexo_id] === 'H9002', vista()[1][DC.sexo_id]);
+
+// Las dos calidades de la madre, natural y final.
+post(partoBase({ uuid: 'u-dc-3', id_vaca: '902',
+  calostro: { calidad_sin_mejorar: '22', mejorado: 'Si', calidad_mejorado: '31' },
+  terneros: [{ id_ternero: '9003', raza: 'Holando', peso: 40, vive: true,
+               calostro: { origen: 'Propia madre', calidad_ternero: '31', lts_ternero: '4' } }] }));
+d = vista()[2];
+check('informa la calidad natural de la madre', d[DC.calostro_madre] === '22', d[DC.calostro_madre]);
+check('y la final por separado', d[DC.calostro_final] === '31', d[DC.calostro_final]);
+check('mas lo que efectivamente tomo el ternero', d[DC.calidad_ternero] === '31',
+      d[DC.calidad_ternero]);
+
+// Una cria muerta entra igual: la vaca vuelve a un rodeo lo mismo.
+post(partoBase({ uuid: 'u-dc-4', id_vaca: '903', sexo: '7 Macho Muerto', terneros: [] }));
+d = vista()[3];
+check('la cria muerta aparece, para poder asignarle el rodeo', d[DC.id_vaca] === '903',
+      d[DC.id_vaca]);
+check('pero sin datos de calostro',
+      d[DC.calostro_madre] === '' && d[DC.calidad_ternero] === '' && d[DC.id_ternero] === '',
+      JSON.stringify([d[DC.calostro_madre], d[DC.calidad_ternero], d[DC.id_ternero]]));
+
+console.log('\n18f. El rodeo y el tilde se replican por clave, no por posicion');
+/* Esta es la prueba que justifica que la vista sea una tabla y no una formula. */
+const hojaDC = libro._hojas['Datos Carga DC'];
+const registros = libro._hojas[libro._hoja];
+
+// Nahuel escribe el rodeo de la ULTIMA fila y tilda la primera.
+hojaDC.filas[4][DC.rodeo] = '207';
+hojaDC.filas[1][DC.cargado] = true;
+sandbox.onEdit({ range: hojaDC.getRange(5, DC.rodeo + 1, 1, 1) });
+sandbox.onEdit({ range: hojaDC.getRange(2, DC.cargado + 1, 1, 1) });
+check('el rodeo bajo a Registros', registros.filas[4][COL.rodeo] === '207',
+      JSON.stringify(registros.filas[4][COL.rodeo]));
+check('y el tilde tambien', registros.filas[1][COL.cargado_dc] === true,
+      JSON.stringify(registros.filas[1][COL.cargado_dc]));
+
+/* Ahora se inserta una fila EN EL MEDIO: es lo que hace cambiar el sexo. Con
+   una vista por posicion, el rodeo de abajo pasaria a la cria equivocada. */
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-dc-1', op_uuid: 'op-dc-1',
+           operario: 'Julio', sexo: '8 Otros Gemelos (M+M o M+H)',
+           calostro: calostroMadre, lts_madre: '5',
+           terneros: [{ id_ternero: '9001', raza: 'Holando', peso: 40, vive: true,
+                        sexo: 'Macho', calostro: calostroOk },
+                      { id_ternero: '9009', raza: 'Holando', peso: 39, vive: true,
+                        sexo: 'Hembra', calostro: calostroOk }] });
+check('el cambio de sexo entra', r.ok === true && r.agregadas === 1, JSON.stringify(r));
+const cerca = vista().find((f) => f[DC.clave] === 'u-dc-4|1/1');
+check('el rodeo sigue con SU cria, aunque se corrio de fila',
+      cerca && cerca[DC.rodeo] === '207', JSON.stringify(cerca && cerca[DC.rodeo]));
+const tildada = vista().find((f) => f[DC.clave] === 'u-dc-1|1/2');
+check('y el tilde tambien sigue a la suya', tildada && tildada[DC.cargado] === true,
+      JSON.stringify(tildada && tildada[DC.cargado]));
+check('la cria nueva aparece en la vista',
+      vista().some((f) => f[DC.sexo_id] === 'H9009'),
+      JSON.stringify(vista().map((f) => f[DC.sexo_id])));
+
+// Una cria anulada sale de la vista: no va a DairyComp.
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-dc-1', op_uuid: 'op-dc-2',
+           operario: 'Julio', sexo: '6 Macho Vivo', calostro: calostroMadre, lts_madre: '5',
+           terneros: [{ id_ternero: '9001', raza: 'Holando', peso: 40, vive: true,
+                        calostro: calostroOk }] });
+check('anular saca la fila de la vista',
+      !vista().some((f) => f[DC.id_ternero] === '9009'),
+      JSON.stringify(vista().map((f) => f[DC.id_ternero])));
+check('pero el rodeo del vecino sigue intacto',
+      (vista().find((f) => f[DC.clave] === 'u-dc-4|1/1') || {})[DC.rodeo] === '207');
+
+/* Un rodeo cargado directo en Registros sube a la vista, no se pierde. (Se
+   busca la fila por uuid: los cambios de sexo de arriba las corrieron.) */
+registros.filas.find((f) => f[COL.uuid] === 'u-dc-2')[COL.rodeo] = '26';
+post(partoBase({ uuid: 'u-dc-5', id_vaca: '904' }));       // dispara la reconstruccion
+check('un rodeo escrito en Registros aparece en la vista',
+      (vista().find((f) => f[DC.clave] === 'u-dc-2|1/1') || {})[DC.rodeo] === '26',
+      JSON.stringify(vista().map((f) => f[DC.rodeo])));
 
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();

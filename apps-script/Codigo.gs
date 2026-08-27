@@ -99,6 +99,44 @@ var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // Q
  * si no hubo calostro, no hay nada que mejorar. */
 var SIN_CALOSTRO = '0';
 
+/* ---------- La vista 'Datos Carga DC' ---------- */
+
+/* Las columnas en el orden en que Nahuel carga en DairyComp. Es una tabla real
+ * mantenida por script, NO formulas: una celda editable dentro de un derrame
+ * queda anclada a una POSICION de grilla, y cambiar el sexo de un parto inserta
+ * filas en el medio de Registros. El rodeo y el tilde de todas las filas de
+ * abajo pasarian a la cria equivocada, en silencio. Aca cada fila lleva su
+ * clave y todo se replica por clave, nunca por posicion. */
+var DC = {
+  id_vaca: 0,
+  fecha: 1,
+  sexo_id: 2,           // inicial del sexo pegada al ID: H25045 / M25045
+  tipo_parto: 3,
+  calostro_madre: 4,    // el natural, tal como lo produjo la vaca
+  calostro_final: 5,    // el mejorado si se mejoro
+  sexo: 6,
+  id_ternero: 7,
+  lts_ternero: 8,
+  calidad_ternero: 9,
+  raza: 10,
+  lts_madre: 11,
+  metodo: 12,
+  operario: 13,
+  rodeo: 14,            // lo escribe Nahuel aca
+  cargado: 15,          // checkbox, lo tilda Nahuel aca
+  clave: 16             // oculta: uuid|cria
+};
+var DC_ANCHO = 17;
+var DC_METODO = 'Sonda';
+var DC_ENCABEZADOS = [
+  'ID Vaca', 'Fecha', 'Sexo + ID Ternero', 'Tipo Parto',
+  'Calidad Calostro Madre', 'Calidad Calostro Madre (final)',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Lts Calostro para Ternero',
+  'Calidad Calostro que tomo el ternero', 'Raza', 'Lts Calostro Madre Produjo',
+  'Metodo', 'Operario', 'Asignacion Rodeo', 'Cargado a DC', 'clave'
+];
+var DC_INICIAL = { 'Hembra': 'H', 'Macho': 'M' };
+
 var ORIGEN_PROPIA = 'Propia madre';
 var ORIGEN_OTRA = 'Otra vaca';
 var ORIGENES = [ORIGEN_PROPIA, ORIGEN_OTRA];
@@ -228,6 +266,7 @@ function doPost(e) {
       log.getRange(filaLog, 4, 1, 2).setValues([[filas.length, 'ok']]);
       // Esta vaca acaba de parir: lo que diga el cache sobre su calostro quedo viejo.
       try { CacheService.getScriptCache().remove('cal_' + str_(payload.id_vaca)); } catch (e) {}
+      actualizarDC_(ss);
 
       return json_({
         ok: true,
@@ -534,6 +573,7 @@ function editarParto_(p, auth) {
 
     log.appendRow([p.uuid, new Date(), JSON.stringify(cambios), cambios.length,
                    'editado por ' + str_(p.operario), auth.email]);
+    actualizarDC_(ss);
 
     return json_({ ok: true, uuid: p.uuid, cambios: cambios.length, detalle: cambios });
   } finally {
@@ -705,6 +745,7 @@ function cambiarSexo_(p, auth) {
     log.getRange(filaLog, 4, 1, 2).setValues([[destino.length,
       'sexo cambiado a "' + str_(p.sexo) + '" por ' + str_(p.operario)]]);
     try { CacheService.getScriptCache().remove('cal_' + str_(completo.id_vaca)); } catch (e) {}
+    actualizarDC_(ss);
 
     return json_({ ok: true, uuid: p.uuid, sexo: str_(p.sexo), filas: destino.length,
                    agregadas: agregadas, revividas: revividas, anuladas: sobran.length });
@@ -955,6 +996,162 @@ function esquema_(ss) {
 }
 
 /**
+ * Reconstruye 'Datos Carga DC' desde 'Registros'.
+ *
+ * Lo que Nahuel escribe en la vista —el rodeo y el tilde— se conserva POR
+ * CLAVE, no por posicion, y de paso se replica a Registros: asi, si el trigger
+ * de onEdit se perdio una edicion, la reconstruccion la recupera en vez de
+ * pisarla.
+ *
+ * Las crias anuladas no entran. Las muertas SI: la vaca vuelve igual a un
+ * rodeo, y si no aparecieran no habria donde asignarselo.
+ */
+function reconstruirDC_(ss) {
+  var hoja = hojaRegistros_(ss);
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (!hoja || !dc) return 0;
+
+  // Lo que ya escribio Nahuel, indexado por clave.
+  var previo = {};
+  if (dc.getLastRow() > 1) {
+    dc.getRange(2, 1, dc.getLastRow() - 1, DC_ANCHO).getValues().forEach(function (f) {
+      var k = str_(f[DC.clave]);
+      if (k) previo[k] = { rodeo: f[DC.rodeo], cargado: f[DC.cargado] === true };
+    });
+  }
+
+  var datos = hoja.getLastRow() > 1
+    ? hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues() : [];
+
+  var salida = [];
+  var replicar = [];
+  var tz = ss.getSpreadsheetTimeZone();
+
+  datos.forEach(function (f, i) {
+    if (String(f[COL.anulada]) === 'Si') return;
+
+    var clave = str_(f[COL.uuid]) + '|' + str_(f[COL.cria]);
+    var vista = previo[clave];
+
+    /* Un valor NUNCA se pisa con un vacio. Si Nahuel escribio el rodeo en la
+       vista, ese manda; si lo escribio directo en Registros, la vista lo toma.
+       Borrar un rodeo desde la vista lo baja igual, porque de eso ya se
+       encargo el trigger de onEdit antes de llegar aca. */
+    var rodeo = (vista && str_(vista.rodeo) !== '') ? vista.rodeo : f[COL.rodeo];
+    // El tilde solo vive en la vista, asi que ahi manda siempre: destildar es
+    // una accion tan valida como tildar.
+    var cargado = vista ? vista.cargado : f[COL.cargado_dc] === true;
+
+    if (str_(rodeo) !== str_(f[COL.rodeo]) || cargado !== (f[COL.cargado_dc] === true)) {
+      replicar.push({ fila: i + 2, rodeo: rodeo, cargado: cargado });
+    }
+
+    var muerta = String(f[COL.estado_cria]) === 'Muerto' || str_(f[COL.id_ternero]) === VACIO;
+    var id = str_(f[COL.id_ternero]);
+    var inicial = DC_INICIAL[str_(f[COL.sexo_cria])] || '';
+    var limpio = function (v) { return muerta || str_(v) === VACIO ? '' : v; };
+
+    salida.push([
+      f[COL.id_vaca],
+      f[COL.fecha] instanceof Date ? Utilities.formatDate(f[COL.fecha], tz, 'dd/MM/yyyy') : '',
+      inicial + (id === VACIO ? '' : id),
+      f[COL.tipo_parto],
+      limpio(f[COL.calidad_sin_mejorar]),
+      limpio(calostroFinal_(f)),
+      f[COL.sexo],
+      limpio(id),
+      limpio(f[COL.lts_ternero]),
+      limpio(f[COL.calidad_ternero]),
+      limpio(f[COL.raza]),
+      limpio(f[COL.lts_madre]),
+      DC_METODO,
+      f[COL.operario],
+      rodeo,
+      cargado,
+      clave
+    ]);
+  });
+
+  // Se limpia solo el cuerpo: la fila 1 lleva los encabezados y el checkbox.
+  if (dc.getLastRow() > 1) {
+    dc.getRange(2, 1, dc.getLastRow() - 1, DC_ANCHO).clearContent();
+  }
+  if (salida.length) dc.getRange(2, 1, salida.length, DC_ANCHO).setValues(salida);
+
+  replicar.forEach(function (r) {
+    hoja.getRange(r.fila, COL.rodeo + 1).setValue(r.rodeo);
+    hoja.getRange(r.fila, COL.cargado_dc + 1).setValue(r.cargado);
+  });
+
+  return salida.length;
+}
+
+/** Los Brix con los que quedo el calostro de la madre: el mejorado si se mejoro. */
+function calostroFinal_(f) {
+  var mejor = str_(f[COL.calidad_mejorado]);
+  return (String(f[COL.mejorado]) === 'Si' && mejor && mejor !== VACIO)
+    ? mejor : f[COL.calidad_sin_mejorar];
+}
+
+/** Se llama despues de escribir; que falle no puede tumbar la carga del parto. */
+function actualizarDC_(ss) {
+  try { reconstruirDC_(ss); } catch (err) { /* la vista se recupera con el reloj */ }
+}
+
+/** El trigger de tiempo. Existe por si alguna reconstruccion fallo. */
+function reconstruirDCporReloj() {
+  reconstruirDC_(SpreadsheetApp.openById(SS_ID));
+}
+
+/**
+ * Nahuel escribe el rodeo o tilda "Cargado a DC" en la vista, y eso baja a
+ * Registros. Se ubica por la clave uuid|cria, NUNCA por numero de fila:
+ * cambiar el sexo de un parto inserta renglones en el medio.
+ *
+ * Es un onEdit simple, asi que no se dispara con las escrituras del propio
+ * script: no hay bucle con la reconstruccion.
+ */
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    var vista = e.range.getSheet();
+    if (vista.getName() !== HOJA_DC) return;
+
+    var desde = e.range.getColumn();
+    var hasta = desde + e.range.getNumColumns() - 1;
+    if (hasta < DC.rodeo + 1 || desde > DC.cargado + 1) return;
+
+    var ss = vista.getParent();
+    var hoja = hojaRegistros_(ss);
+    if (!hoja) return;
+
+    for (var i = 0; i < e.range.getNumRows(); i++) {
+      var fila = e.range.getRow() + i;
+      if (fila < 2) continue;
+      var clave = str_(vista.getRange(fila, DC.clave + 1).getValue());
+      var destino = clave ? filaPorClave_(hoja, clave) : 0;
+      if (!destino) continue;
+      hoja.getRange(destino, COL.rodeo + 1)
+          .setValue(vista.getRange(fila, DC.rodeo + 1).getValue());
+      hoja.getRange(destino, COL.cargado_dc + 1)
+          .setValue(vista.getRange(fila, DC.cargado + 1).getValue() === true);
+    }
+  } catch (err) {
+    // Un trigger simple no puede romperle la edicion al usuario.
+  }
+}
+
+/** La fila de Registros que corresponde a una clave uuid|cria. */
+function filaPorClave_(hoja, clave) {
+  var partes = String(clave).split('|');
+  var filas = filasDeUuid_(hoja, partes[0]);
+  for (var i = 0; i < filas.length; i++) {
+    if (str_(filas[i].datos[COL.cria]) === partes[1]) return filas[i].fila;
+  }
+  return 0;
+}
+
+/**
  * Con que calostro cuenta una vaca. Lo usa la tablet cuando el ternero toma
  * calostro de OTRA madre: se carga el numero de esa vaca y la app muestra los
  * Brix que quedaron registrados cuando ella pario, en vez de pedirselos de
@@ -1178,6 +1375,50 @@ function diagnostico() {
   } catch (err) {
     Logger.log('Planilla          : FALLO -> ' + err);
   }
+}
+
+/**
+ * Crea y configura la pestaña 'Datos Carga DC'. Se corre A MANO desde el editor,
+ * una sola vez, igual que generarToken().
+ *
+ * Deja editables SOLO las dos columnas que carga Nahuel (rodeo y el tilde);
+ * el resto sale de Registros y no tiene sentido tocarlo aca.
+ */
+function configurarDC() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var dc = ss.getSheetByName(HOJA_DC) || ss.insertSheet(HOJA_DC);
+
+  dc.getRange(1, 1, 1, DC_ANCHO).setValues([DC_ENCABEZADOS]).setFontWeight('bold');
+  dc.setFrozenRows(1);
+
+  var n = Math.max(dc.getMaxRows() - 1, 1);
+  dc.getRange(2, DC.cargado + 1, n, 1)
+    .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+  dc.hideColumns(DC.clave + 1);
+  dc.getRange(2, DC.id_vaca + 1, n, 1).setNumberFormat('@');
+  dc.getRange(2, DC.id_ternero + 1, n, 1).setNumberFormat('@');
+
+  // Se protege todo salvo las dos columnas que se editan aca.
+  try {
+    dc.getProtections(SpreadsheetApp.ProtectionType.SHEET)
+      .forEach(function (p) { p.remove(); });
+    var prot = dc.protect().setDescription('Vista derivada de Registros');
+    prot.setUnprotectedRanges([dc.getRange(2, DC.rodeo + 1, n, 2)]);
+    prot.setWarningOnly(true);
+  } catch (err) {
+    Logger.log('No se pudo proteger la hoja: ' + err);
+  }
+
+  // Un reloj cada 10 minutos, por si alguna reconstruccion fallo.
+  var yaEsta = ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'reconstruirDCporReloj';
+  });
+  if (!yaEsta) {
+    ScriptApp.newTrigger('reconstruirDCporReloj').timeBased().everyMinutes(10).create();
+    Logger.log('Trigger de reconstruccion creado (cada 10 min).');
+  }
+
+  Logger.log('Filas escritas en la vista: ' + reconstruirDC_(ss));
 }
 
 /**
