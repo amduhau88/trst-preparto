@@ -1060,16 +1060,94 @@ check('con las dos, gana Registros',
       libro._hojas['Registros'].filas.length + ' / ' +
       libro._hojas['NUEVO FORMATO PREPARTO'].filas.length);
 
+console.log('\n20b. Deployar antes de migrar no rompe nada, ni frena a nadie');
+/* Es lo que permite publicar el backend sin pausar las tablets. Escribir sobre
+   la planilla vieja seria escribir en la columna equivocada, asi que se
+   rechaza — pero como error de SERVIDOR, no de validacion: la tablet lo deja
+   en la cola y lo reintenta sola. Apenas se migra, la cola se drena. */
+const HEAD_VIEJO = sandbox.ENCABEZADOS_R5.slice();
+
+libro = nuevoLibro();
+libro._hojas[libro._hoja].filas = [HEAD_VIEJO.slice()];      // planilla sin migrar
+
+r = post(partoBase({ uuid: 'u-sin-migrar' }));
+check('el alta se rechaza', r.ok === false, JSON.stringify(r));
+check('y dice exactamente que falta', /migrada a r6/.test(r.error), r.error);
+check('NO como error de validacion: si no, la tablet lo daria por perdido',
+      r.error !== 'validacion' && r.detalles === undefined, JSON.stringify(r));
+check('no escribio ninguna fila', formato().length === 0, 'filas=' + formato().length);
+check('ni reclamo el uuid en _log', !log().some((l) => l[0] === 'u-sin-migrar'),
+      JSON.stringify(log().map((l) => l[0])));
+
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-sin-migrar', operario: 'Julio',
+           terneros: [{ peso: 40 }] });
+check('corregir tampoco', r.ok === false && /migrada a r6/.test(r.error), JSON.stringify(r));
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-sin-migrar', op_uuid: 'op-sm',
+           operario: 'Julio', sexo: '6 Macho Vivo' });
+check('ni cambiar el sexo', r.ok === false && /migrada a r6/.test(r.error), JSON.stringify(r));
+
+// Las lecturas no explotan: devuelven vacio en vez de datos de otras columnas.
+check('partos del dia devuelve vacio, no basura',
+      get({ action: 'partos', token: TOKEN, fecha: '2026-08-12' }).partos.length === 0);
+r = get({ action: 'calostro', token: TOKEN, vaca: '4115' });
+check('la consulta de calostro dice que no encontro', r.ok === true && r.encontrada === false,
+      JSON.stringify(r));
+check('y el esquema lo reporta', get({ action: 'esquema', token: TOKEN }).ok === false);
+
+// La vista DC se puede crear antes de migrar: queda vacia, no corrida.
+check('la vista DC no se arma con columnas corridas',
+      sandbox.reconstruirDC_(libro) === -1);
+check('y queda vacia', libro._hojas['Datos Carga DC'].filas.length === 1);
+
+// Y apenas se migra, lo mismo entra sin que nadie toque nada.
+sandbox.migrarR6();
+r = post(partoBase({ uuid: 'u-sin-migrar' }));
+check('despues de migrar, el mismo parto entra solo', r.ok === true, JSON.stringify(r));
+check('y ahora si escribio', formato().length === 1, 'filas=' + formato().length);
+check('la vista DC tambien se lleno', libro._hojas['Datos Carga DC'].filas.length === 2,
+      'filas=' + libro._hojas['Datos Carga DC'].filas.length);
+
+console.log('\n20c. La migracion se ensaya antes de correrla');
+/* Mapea POR POSICION. Si la hoja real no es exactamente la de r5 —alguien
+   inserto una columna, renombro un encabezado— mover los datos los mezclaria,
+   y eso no se nota hasta mucho despues. */
+libro = nuevoLibro('NUEVO FORMATO PREPARTO');
+libro._hojas['NUEVO FORMATO PREPARTO'].filas = [
+  sandbox.ENCABEZADOS_R5.slice(),
+  ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
+   '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
+   '2', '21', '', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-p1', new Date(2026, 7, 20), 'tablet'],
+  ['Trini', '5514', new Date(2026, 7, 20), '09:00', '1 Normal', '7 Macho Muerto',
+   '---', '---', '---', '---', '---', '---', '---', '---', '---', '---',
+   '1', '', '', 'Macho', 'Muerto', 'IDP-2', '1/1', 'u-p2', new Date(2026, 7, 20), 'tablet']
+];
+let plan = sandbox.planMigracionR6_(libro);
+check('con el encabezado correcto, da luz verde', plan.ok === true, plan.log.join(' | '));
+check('cuenta las filas', /Filas de datos: 2/.test(plan.log.join(' ')), plan.log.join(' | '));
+check('y sobre todo cuantos rodeos hay en juego',
+      /con rodeo cargado a mano: 1/.test(plan.log.join(' ')), plan.log.join(' | '));
+check('avisa que deja un respaldo', /Registros_backup_r5/.test(plan.log.join(' ')));
+check('el ensayo NO escribe nada',
+      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 3 &&
+      !libro._hojas['Registros_backup_r5'],
+      'filas=' + libro._hojas['NUEVO FORMATO PREPARTO'].filas.length);
+
+// Un encabezado que no es el de r5: la migracion se planta.
+libro._hojas['NUEVO FORMATO PREPARTO'].filas[0][12] = 'Alguna Columna Nueva';
+plan = sandbox.planMigracionR6_(libro);
+check('un encabezado distinto corta el paso', plan.ok === false, plan.log.join(' | '));
+check('y dice exactamente cual', /col 13/.test(plan.log.join(' ')), plan.log.join(' | '));
+sandbox.migrarR6();
+check('migrarR6 se niega a correr', !libro._hojas['Registros'],
+      Object.keys(libro._hojas).join(', '));
+check('sin dejar ni el respaldo', !libro._hojas['Registros_backup_r5']);
+check('y sin tocar los datos',
+      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 3);
+
 console.log('\n21. Migracion r5 -> r6 del layout');
 /* Es lo unico de r6 que reescribe filas de produccion, y adentro va el rodeo
    que Nahuel carga a mano. Si eso se pierde, no hay como reconstruirlo. */
-const HEAD_R5 = ['Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
-  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
-  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
-  'Calostro Consumido al Momento', 'Lts Calostro Madre Produjo',
-  'Lts Calostro para Ternero', 'ID Vaca Origen Calostro',
-  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Notas Nahuel',
-  'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'];
+const HEAD_R5 = sandbox.ENCABEZADOS_R5.slice();
 
 const cargado = new Date(2026, 7, 20, 8, 30);
 const filaViva = ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',

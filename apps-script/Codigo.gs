@@ -91,6 +91,19 @@ var ENCABEZADOS = [
   'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo', 'Anulada', 'Cargado a DC'
 ];
 
+/* El encabezado de r5, tal como quedo en produccion. La migracion mapea POR
+ * POSICION, asi que si la hoja real no es exactamente esta, mover las columnas
+ * mezclaria los datos. Se compara antes de tocar nada. */
+var ENCABEZADOS_R5 = [
+  'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
+  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
+  'Calostro Consumido al Momento', 'Lts Calostro Madre Produjo',
+  'Lts Calostro para Ternero', 'ID Vaca Origen Calostro',
+  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Notas Nahuel',
+  'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'
+];
+
 // De G a Q va todo en '---' cuando la cria nacio muerta, igual que se hacia a mano.
 var BLOQUE_CRIA_DESDE = COL.id_ternero;      // G
 var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // Q
@@ -245,6 +258,8 @@ function doPost(e) {
       if (buscarUuid_(log, payload.uuid)) {
         return json_({ ok: true, duplicado: true, uuid: payload.uuid });
       }
+
+      if (!esquemaOk_(ss)) return json_({ ok: false, error: SIN_MIGRAR });
 
       var listas = leerMaestro_(ss);
       var errores = validar_(payload, listas);
@@ -457,6 +472,7 @@ function editarParto_(p, auth) {
 
   try {
     var ss = SpreadsheetApp.openById(SS_ID);
+    if (!esquemaOk_(ss)) return json_({ ok: false, error: SIN_MIGRAR });
     var hoja = hojaRegistros_(ss);
     var tz = ss.getSpreadsheetTimeZone();
 
@@ -645,6 +661,7 @@ function cambiarSexo_(p, auth) {
 
   try {
     var ss = SpreadsheetApp.openById(SS_ID);
+    if (!esquemaOk_(ss)) return json_({ ok: false, error: SIN_MIGRAR });
     var hoja = hojaRegistros_(ss);
     var log = ss.getSheetByName(HOJA_LOG);
     var tz = ss.getSpreadsheetTimeZone();
@@ -933,7 +950,8 @@ function leerMaestro_(ss) {
 
 function partosDelDia_(ss, fechaISO) {
   var hoja = hojaRegistros_(ss);
-  if (hoja.getLastRow() < 2) return [];
+  // Sin migrar, leer por posicion devolveria datos de otras columnas.
+  if (!hoja || hoja.getLastRow() < 2 || !esquemaOk_(ss)) return [];
 
   var tz = ss.getSpreadsheetTimeZone();
   var buscada = fechaISO || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
@@ -980,6 +998,22 @@ function hojaRegistros_(ss) {
   return ss.getSheetByName(HOJA_FORMATO) || ss.getSheetByName(HOJA_FORMATO_VIEJA);
 }
 
+/* Mensaje unico, para reconocerlo de un vistazo en _log y en la tablet. */
+var SIN_MIGRAR = 'la planilla todavia no esta migrada a r6: correr migrarR6()';
+
+/**
+ * ¿La hoja tiene el layout que este codigo espera?
+ *
+ * Es lo que permite deployar SIN frenar a los operarios. Entre el deploy y la
+ * migracion, escribir seria escribir en la columna equivocada; devolver un
+ * error de servidor —no de validacion— hace que la tablet deje el parto en la
+ * cola y lo reintente sola. Apenas la planilla queda migrada, la cola se drena
+ * sin que nadie toque nada.
+ */
+function esquemaOk_(ss) {
+  try { return esquema_(ss).ok === true; } catch (err) { return false; }
+}
+
 /** Compara la fila 1 de la hoja contra el encabezado que espera el codigo. */
 function esquema_(ss) {
   var hoja = hojaRegistros_(ss);
@@ -1010,6 +1044,9 @@ function reconstruirDC_(ss) {
   var hoja = hojaRegistros_(ss);
   var dc = ss.getSheetByName(HOJA_DC);
   if (!hoja || !dc) return 0;
+  // Antes de migrar, la vista se armaria con las columnas corridas. Mejor
+  // vacia: asi se puede crear la pestaña con la app en marcha, sin apuro.
+  if (!esquemaOk_(ss)) return -1;
 
   // Lo que ya escribio Nahuel, indexado por clave.
   var previo = {};
@@ -1176,7 +1213,7 @@ function consultaCalostro_(ss, vaca) {
   var r = { ok: true, vaca: id, encontrada: false };
   var hoja = hojaRegistros_(ss);
 
-  if (hoja && hoja.getLastRow() > 1) {
+  if (hoja && hoja.getLastRow() > 1 && esquemaOk_(ss)) {
     // TextFinder sobre una sola columna: evita traer la hoja entera por consulta.
     var hits = hoja.getRange(2, COL.id_vaca + 1, hoja.getLastRow() - 1, 1)
                    .createTextFinder(id).matchEntireCell(true).findAll();
@@ -1418,7 +1455,13 @@ function configurarDC() {
     Logger.log('Trigger de reconstruccion creado (cada 10 min).');
   }
 
-  Logger.log('Filas escritas en la vista: ' + reconstruirDC_(ss));
+  var n = reconstruirDC_(ss);
+  if (n < 0) {
+    Logger.log('Pestaña y trigger listos. La vista se va a llenar sola en cuanto');
+    Logger.log('corras migrarR6(): antes de eso, las columnas todavia estan corridas.');
+  } else {
+    Logger.log('Filas escritas en la vista: ' + n);
+  }
 }
 
 /**
@@ -1433,21 +1476,90 @@ function configurarDC() {
  * tocar la hoja deja una copia intacta, porque esto reescribe filas de
  * produccion que incluyen el rodeo que Nahuel cargo a mano.
  */
-function migrarR6() {
+/**
+ * Ensayo de la migracion: NO escribe nada. Dice exactamente que va a pasar.
+ * Correrla ANTES de migrarR6(), mirar el Registro de ejecucion, y recien
+ * entonces migrar.
+ */
+function revisarMigracionR6() {
   var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR6_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  Logger.log(plan.ok ? '>> LISTO para correr migrarR6().'
+                     : '>> NO migrar todavia: ver arriba.');
+  return plan.ok;
+}
+
+/** Lo que la migracion encontraria. Solo lee. */
+function planMigracionR6_(ss) {
+  var out = { ok: false, log: [] };
+  var di = function (t) { out.log.push(t); };
+
   var hoja = hojaRegistros_(ss);
-  if (!hoja) { Logger.log('No encuentro la hoja de registros.'); return; }
+  if (!hoja) { di('No encuentro la hoja de registros.'); return out; }
+  di('Hoja: "' + hoja.getName() + '"');
 
   if (esquema_(ss).ok) {
-    Logger.log('Ya esta migrada: el encabezado coincide con r6. No toco nada.');
-    return;
+    di('Ya esta migrada: el encabezado coincide con r6. No hay nada que hacer.');
+    return out;
   }
 
-  var respaldo = 'Registros_backup_r5';
-  if (ss.getSheetByName(respaldo)) {
-    Logger.log('Ya existe ' + respaldo + '. Borralo o renombralo antes de repetir.');
-    return;
+  // Mapear por posicion sobre un encabezado distinto mezclaria los datos.
+  var real = hoja.getRange(1, 1, 1, ENCABEZADOS_R5.length).getValues()[0].map(str_);
+  var mal = [];
+  ENCABEZADOS_R5.forEach(function (esp, i) {
+    if (normalizar_(real[i]) !== normalizar_(esp)) {
+      mal.push('  col ' + (i + 1) + ': esperaba "' + esp + '" y hay "' + real[i] + '"');
+    }
+  });
+  if (mal.length) {
+    di('El encabezado NO es el de r5. La migracion mapea por posicion, asi que');
+    di('con estas diferencias mezclaria los datos:');
+    mal.forEach(di);
+    return out;
   }
+  di('Encabezado r5 confirmado, columna por columna.');
+
+  var ultima = hoja.getLastRow();
+  if (ultima < 2) { di('La hoja no tiene datos. Migrar es solo cambiar el encabezado.');
+                    out.ok = true; return out; }
+
+  var filas = hoja.getRange(2, 1, ultima - 1, 26).getValues();
+  var conRodeo = 0, muertas = 0, mejorados = 0, deOtraVaca = 0, sinFecha = 0;
+  filas.forEach(function (v) {
+    if (str_(v[17]).trim() && str_(v[17]) !== VACIO) conRodeo++;
+    if (str_(v[6]) === VACIO) muertas++;
+    if (String(v[10]) === 'Si') mejorados++;
+    var org = str_(v[15]);
+    if (org && org !== VACIO && org !== str_(v[1])) deOtraVaca++;
+    if (!(v[2] instanceof Date)) sinFecha++;
+  });
+
+  di('Filas de datos: ' + filas.length);
+  di('  con rodeo cargado a mano: ' + conRodeo + '  <- esto es lo que NO se puede perder');
+  di('  de cria muerta: ' + muertas);
+  di('  con calostro mejorado: ' + mejorados);
+  di('  que tomaron calostro de otra vaca: ' + deOtraVaca);
+  if (sinFecha) di('  OJO: ' + sinFecha + ' fila(s) sin fecha valida en la columna C');
+
+  var respaldo = ss.getSheetByName('Registros_backup_r5');
+  if (respaldo) {
+    di('Ya existe "Registros_backup_r5": borralo o renombralo antes de migrar.');
+    return out;
+  }
+  di('Se va a guardar una copia intacta en "Registros_backup_r5" antes de tocar nada.');
+  out.ok = true;
+  return out;
+}
+
+function migrarR6() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR6_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  if (!plan.ok) { Logger.log('>> No se migro nada.'); return; }
+
+  var hoja = hojaRegistros_(ss);
+  var respaldo = 'Registros_backup_r5';
   hoja.copyTo(ss).setName(respaldo);
   Logger.log('Respaldo guardado en ' + respaldo);
 
@@ -1492,6 +1604,7 @@ function migrarR6() {
 
   Logger.log('Migradas ' + filas.length + ' filas a r6. Hoja: ' + hoja.getName());
   Logger.log('Revisa que la columna S (Rodeo) conserve lo que cargo Nahuel.');
+  Logger.log('Despues: correr configurarDC() si todavia no existe la vista.');
 }
 
 /**

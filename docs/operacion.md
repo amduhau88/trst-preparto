@@ -172,6 +172,26 @@ En orden:
 | `pwa/*` (pantalla) | Nada: al pushear, GitHub Pages publica solo. **Subir `CACHE` en `pwa/sw.js`** o las tablets siguen con la versión vieja |
 | `apps-script/Codigo.gs` | **Subir `VERSION`** (y `VERSION_ESPERADA` en `verificar.sh`), pegar en el editor y redeployar con el lápiz (ver README) |
 
+### Publicar r6 sin frenar a los operarios
+
+El backend se **niega a escribir** si la planilla todavía tiene el layout viejo, y lo
+hace con un error de servidor, no de validación: la tablet deja el parto en la cola y
+lo reintenta sola. Así el deploy y la migración no tienen que ser simultáneos, y nadie
+deja de cargar partos en el corral.
+
+Orden:
+
+1. **`revisarMigracionR6()`** desde el editor — no escribe nada. Dice si el encabezado
+   real es el de r5 columna por columna, cuántas filas hay y **cuántos rodeos están en
+   juego**. Si algo no cierra, se planta y no migra.
+2. Redeployar el backend con el lápiz. Desde acá y hasta el paso 3, los partos que se
+   carguen quedan en la cola de las tablets. No se pierde ninguno.
+3. **`migrarR6()`** — deja el respaldo en `Registros_backup_r5` y reescribe. Minutos.
+   Al terminar, las colas se drenan solas.
+4. **`configurarDC()`** — crea la vista y el reloj. Se puede correr antes del paso 3:
+   queda vacía hasta que la planilla esté migrada.
+5. `./scripts/verificar.sh "$URL"` y, recién ahí, pushear la PWA a `main`.
+
 Antes de tocar producción:
 
 ```bash
