@@ -76,6 +76,7 @@ const recibidos = [];
 const ediciones = [];
 const filas = [];
 const uuidsVistos = new Set();
+const opsVistas = new Set();          // idempotencia de las operaciones de cambio de sexo
 const sinSesion = [];          // requests que llegaron sin credencial valida
 let caidoHasta = 0;
 let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token parezca vivo
@@ -127,7 +128,36 @@ const api = http.createServer((req, res) => {
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
     if (p.accion === 'partos') {
-      return responder({ ok: true, partos: filas.filter((f) => f.fecha === p.fecha) });
+      return responder({ ok: true, partos: filas.filter((f) => f.fecha === p.fecha && !f.anulada) });
+    }
+
+    /* Cambiar el sexo: la unica operacion que cambia CUANTAS filas tiene un
+       parto. La que sobra se anula, no se borra. */
+    if (p.accion === 'cambiar_sexo') {
+      if (!p.op_uuid) return responder({ ok: false, error: 'falta op_uuid' });
+      if (opsVistas.has(p.op_uuid)) return responder({ ok: true, duplicado: true, uuid: p.uuid });
+      const vivas = filas.filter((f) => f.uuid === p.uuid && !f.anulada);
+      if (!vivas.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+      opsVistas.add(p.op_uuid);
+
+      const n = Math.max(1, (p.terneros || []).length);
+      let anuladas = 0, agregadas = 0;
+      vivas.slice(n).forEach((f) => { f.anulada = true; anuladas++; });
+      const activas = vivas.slice(0, n);
+      while (activas.length < n) {
+        const nueva = Object.assign({}, vivas[0]);
+        filas.push(nueva); activas.push(nueva); agregadas++;
+      }
+      activas.forEach((f, i) => {
+        const t = (p.terneros || [])[i] || {};
+        f.sexo = p.sexo; f.cria = `${i + 1}/${n}`;
+        f.id_ternero = t.id_ternero; f.peso = t.peso;
+        f.estado_cria = t.vive === false ? 'Muerto' : 'Vivo';
+        f.calostro = t.calostro; f.madre = p.calostro;
+        if (p.tambo !== undefined) f.tambo = p.tambo;
+        if (p.operario) f.operario = p.operario;
+      });
+      return responder({ ok: true, uuid: p.uuid, filas: n, agregadas, anuladas });
     }
 
     // Con cuanto calostro cuenta una vaca: el ultimo parto suyo que lo tenga medido.
@@ -897,14 +927,17 @@ const visible = (page, sel) => page.evaluate((s) => {
           await pesoTxtAhora());
 
     console.log('\n11c. Corrigiendo: lo que no se toca queda bloqueado');
-    for (const [id, nombre] of [['fVaca', 'ID de vaca'], ['cSexo', 'codigo de sexo'],
-                                ['cTipo', 'tipo de parto'], ['cFecha', 'fecha'],
-                                ['fHora', 'hora']]) {
+    for (const [id, nombre] of [['fVaca', 'ID de vaca'], ['cTipo', 'tipo de parto'],
+                                ['cFecha', 'fecha'], ['fHora', 'hora']]) {
       check(`${nombre} bloqueado`,
             await page.$eval('#' + id, (e) => e.classList.contains('bloqueado')));
     }
-    check('el ID del ternero tambien',
+    check('el ID del ternero tambien, mientras el sexo no cambie',
           await page.$eval('#terneros [data-ternero]', (e) => e.classList.contains('bloqueado')));
+    // Desde r6 el codigo de sexo SI se corrige: es el error tipico, y mandarlo
+    // a la planilla significaba que nadie lo arreglara.
+    check('pero el codigo de sexo YA NO esta bloqueado',
+          await page.$eval('#cSexo', (e) => !e.classList.contains('bloqueado')));
     // El tambo y el calostro SI se corrigen: son el objeto del pedido.
     check('el tambo NO esta bloqueado',
           await page.$eval('#cTambo', (e) => !e.classList.contains('bloqueado')));
@@ -953,6 +986,115 @@ const visible = (page, sel) => page.evaluate((s) => {
           JSON.stringify(filas.find((f) => f.vaca === '7001')));
     check('sin tocar el peso', (filas.find((f) => f.vaca === '7001') || {}).peso === 43);
     check('y sigue sin agregar filas', filas.length === filasAntesDePesar + 1);
+
+    console.log('\n11j. Corregir el codigo de sexo');
+    /* Hasta r5 esto se mandaba a la planilla, o sea que nadie lo arreglaba.
+       Es el error tipico: un macho cargado como hembra, un mellizo que no se
+       vio. Pero el codigo dice cuantas crias tiene el parto, asi que corregirlo
+       agrega o anula un renglon: es la operacion mas delicada del sistema. */
+    await page.evaluate(() => ver('form'));
+    await esperar(250);
+    await elegirSexo(page, 6);                       // 6 Macho Vivo, una cria
+    await esperar(300);
+    await cargarParto(page, '8100', '8801');
+    await esperarSync(page, 15);
+    check('entro con una sola fila',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 1);
+
+    await page.evaluate(() => ver('list'));
+    await esperar(300);
+    await abrirFila('8100');
+    await esperar(400);
+    check('el ID del ternero arranca bloqueado',
+          await page.$eval('#terneros [data-ternero]', (e) => e.classList.contains('bloqueado')));
+
+    await elegirSexo(page, 8);                       // era mellizo, no simple
+    await esperar(400);
+    check('aparece la ficha de la segunda cria',
+          await page.$$eval('#terneros .subcard', (c) => c.length) === 2);
+    // No se puede agregar una cria sin darle caravana: el campo se desbloquea.
+    check('y ahora el ID del ternero se puede escribir',
+          await page.$eval('#terneros [data-ternero]', (e) => !e.classList.contains('bloqueado')));
+    check('el aviso explica que se reescribe el parto',
+          /código de sexo/.test(await page.$eval('#avisoEdicion', (e) => e.textContent)),
+          await page.$eval('#avisoEdicion', (e) => e.textContent));
+
+    await page.evaluate(() => {
+      const ids = document.querySelectorAll('#terneros [data-ternero]');
+      ids[1].value = '8802'; ids[1].dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-caja="sexoc:0"] [data-val="Macho"]').click();
+      document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
+    });
+    await esperar(300);
+    await page.click('#btnGuardarEd');
+    await esperar(500);
+    check('agregar una cria NO pide confirmacion', !(await visible(page, '#modalConf')));
+    await esperarSync(page, 20);
+    check('la planilla quedo con 2 crias',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 2,
+          String(filas.filter((f) => f.vaca === '8100').length));
+    check('renumeradas 1/2 y 2/2',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).map((f) => f.cria).join(' ') === '1/2 2/2',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).map((f) => f.cria).join(' '));
+
+    // Y al revés: sacar una cria SI pide confirmacion, nombrandola.
+    await page.evaluate(() => ver('list'));
+    await esperar(300);
+    await abrirFila('8100');
+    await esperar(400);
+    await elegirSexo(page, 6);
+    await esperar(400);
+    await page.click('#btnGuardarEd');
+    await esperar(500);
+    check('anular una cria SI pide confirmacion', await visible(page, '#modalConf'));
+    const textoConf = await page.$eval('#confDetalle', (e) => e.textContent);
+    check('y dice cual es, con la caravana', /8802/.test(textoConf), textoConf);
+    await page.click('#btnConfNo');
+    await esperar(400);
+    check('cancelar no manda nada',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 2);
+
+    await page.click('#btnGuardarEd');
+    await esperar(400);
+    await page.click('#btnConfSi');
+    await esperar(500);
+    await esperarSync(page, 20);
+    check('confirmando, queda una sola cria activa',
+          filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 1,
+          String(filas.filter((f) => f.vaca === '8100' && !f.anulada).length));
+    // Anular no es borrar: el renglon sigue ahi.
+    check('pero el renglon no se borro',
+          filas.filter((f) => f.vaca === '8100').length === 2,
+          String(filas.filter((f) => f.vaca === '8100').length));
+    check('la cria que sobraba quedo anulada',
+          filas.some((f) => f.vaca === '8100' && f.anulada && f.id_ternero === '8802'));
+
+    // El reintento a ciegas de la cola no puede duplicar nada.
+    const antesDeReintentar = filas.filter((f) => f.vaca === '8100').length;
+    const opRepetida = ediciones.length;
+    await page.evaluate(async () => {
+      const reg = await new Promise((ok) => {
+        const req = indexedDB.open('preparto', 1);
+        req.onsuccess = () => {
+          const s = req.result.transaction('partos', 'readonly').objectStore('partos');
+          const g = s.getAll();
+          g.onsuccess = () => ok(g.result.find((r) => r.payload.id_vaca === '8100'));
+        };
+      });
+      // Se reenvia la MISMA operacion, como haria la cola tras un error de red.
+      await enviar({ accion: 'cambiar_sexo', uuid: reg.uuid, op_uuid: 'op-repetida',
+                     operario: 'Julio', sexo: reg.payload.sexo,
+                     lts_madre: reg.payload.lts_madre, calostro: reg.payload.calostro,
+                     tambo: reg.payload.tambo, terneros: reg.payload.terneros });
+      await enviar({ accion: 'cambiar_sexo', uuid: reg.uuid, op_uuid: 'op-repetida',
+                     operario: 'Julio', sexo: reg.payload.sexo,
+                     lts_madre: reg.payload.lts_madre, calostro: reg.payload.calostro,
+                     tambo: reg.payload.tambo, terneros: reg.payload.terneros });
+    });
+    await esperar(600);
+    check('mandar dos veces la misma operacion no agrega filas',
+          filas.filter((f) => f.vaca === '8100').length === antesDeReintentar,
+          antesDeReintentar + ' -> ' + filas.filter((f) => f.vaca === '8100').length);
 
     console.log('\n11i. La lista muestra los partos de TODAS las tablets');
     /* Leia solo IndexedDB, asi que cada tablet veia unicamente lo suyo: con tres

@@ -186,6 +186,13 @@ function doPost(e) {
       return editarParto_(payload, auth);
     }
 
+    // Cambiar el codigo de sexo es lo unico que puede cambiar CUANTAS filas
+    // tiene un parto. Va por su propia puerta para que editarParto_ conserve
+    // intacta su garantia de no mover nunca un renglon.
+    if (payload.accion === 'cambiar_sexo') {
+      return cambiarSexo_(payload, auth);
+    }
+
     if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
 
     var lock = LockService.getScriptLock();
@@ -414,7 +421,7 @@ function editarParto_(p, auth) {
     var hoja = hojaRegistros_(ss);
     var tz = ss.getSpreadsheetTimeZone();
 
-    var filas = filasDeUuid_(hoja, p.uuid);
+    var filas = filasActivas_(filasDeUuid_(hoja, p.uuid));
     if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
 
     // La ventana es lo cargado HOY, no la fecha del parto: un parto de ayer
@@ -571,6 +578,143 @@ function tocaAlgo_(t) {
   var cal = t.calostro || {};
   return Object.keys(cal).some(function (k) { return cal[k] !== undefined; });
 }
+
+/**
+ * Cambiar el codigo de sexo de un parto ya escrito.
+ *
+ * Es la unica operacion que cambia CUANTAS filas tiene un parto, y por eso no
+ * entra por 'editar': ahi la garantia es que nunca se agrega ni se mueve un
+ * renglon, y vale la pena conservarla entera.
+ *
+ * El payload describe el ESTADO FINAL completo del parto, no un diff: aplicarlo
+ * dos veces converge al mismo resultado. Y trae su propio op_uuid, porque la
+ * cola de la tablet reintenta a ciegas ante un error de red y un reintento que
+ * agregue otra cria seria un desastre silencioso.
+ *
+ * Una cria que sobra NO se borra: se anula. Borrar es irreversible y esto se
+ * hace con el animal delante. La fila queda con G-Q en '---' y Anulada = Si,
+ * fuera de la vista de DairyComp, y su contenido anterior entero en _log.
+ * Si el parto vuelve a ser doble, esa misma fila se reutiliza.
+ */
+function cambiarSexo_(p, auth) {
+  if (!p.uuid) return json_({ ok: false, error: 'falta uuid' });
+  if (!p.op_uuid) return json_({ ok: false, error: 'falta op_uuid' });
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) return json_({ ok: false, error: 'ocupado, reintentar' });
+
+  try {
+    var ss = SpreadsheetApp.openById(SS_ID);
+    var hoja = hojaRegistros_(ss);
+    var log = ss.getSheetByName(HOJA_LOG);
+    var tz = ss.getSpreadsheetTimeZone();
+
+    if (buscarUuid_(log, p.op_uuid)) {
+      return json_({ ok: true, duplicado: true, uuid: p.uuid });
+    }
+
+    var filas = filasDeUuid_(hoja, p.uuid).sort(function (a, b) { return a.fila - b.fila; });
+    if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
+
+    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
+      return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
+    }
+
+    /* El parto entero, como va a quedar. Lo que este cambio no decide sale de
+       la fila que ya existe, y asi se valida con las MISMAS reglas del alta en
+       vez de con una copia que se desincroniza. */
+    var base = filas[0].datos;
+    var completo = {
+      uuid: p.uuid,
+      operario: str_(p.operario) || str_(base[COL.operario]),
+      id_vaca: str_(base[COL.id_vaca]),
+      fecha_parto: Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd'),
+      hora_nacimiento: str_(base[COL.hora]),
+      tipo_parto: str_(base[COL.tipo_parto]),
+      sexo: str_(p.sexo),
+      lts_madre: p.lts_madre !== undefined ? p.lts_madre : base[COL.lts_madre],
+      calostro: p.calostro || {
+        calidad_sin_mejorar: str_(base[COL.calidad_sin_mejorar]),
+        mejorado: str_(base[COL.mejorado]),
+        calidad_mejorado: str_(base[COL.calidad_mejorado])
+      },
+      terneros: p.terneros || [],
+      tambo: p.tambo !== undefined ? str_(p.tambo) : str_(base[COL.tambo]),
+      notas: str_(base[COL.notas]),
+      cargado_en: base[COL.cargado_en],
+      dispositivo: str_(base[COL.dispositivo])
+    };
+
+    var listas = leerMaestro_(ss);
+    var err = validar_(completo, listas);
+    if (err.length) {
+      log.appendRow([p.op_uuid, new Date(), JSON.stringify(p), 0,
+                     'cambio de sexo rechazado: ' + err.join(' | '), auth.email]);
+      return json_({ ok: false, error: 'validacion', detalles: err });
+    }
+
+    var nuevas = construirFilas_(ss, completo);
+
+    // Se reclama el op_uuid ANTES de tocar la hoja: si algo falla en el medio,
+    // el reintento lo ve reclamado y no vuelve a agregar filas.
+    log.appendRow([p.op_uuid, new Date(), JSON.stringify(p), 0, 'recibido', auth.email]);
+    var filaLog = log.getLastRow();
+
+    var activas = filas.filter(function (f) { return !esAnulada_(f); });
+    var dormidas = filas.filter(esAnulada_);
+    var destino = activas.slice();
+    var revividas = 0, agregadas = 0;
+
+    // Primero se reutiliza lo que ya existe anulado: mejor que insertar de nuevo.
+    while (destino.length < nuevas.length && dormidas.length) {
+      destino.push(dormidas.shift());
+      revividas++;
+    }
+    var ultima = filas[filas.length - 1].fila;
+    while (destino.length < nuevas.length) {
+      // Insertar corre hacia abajo lo que sigue, con su rodeo incluido: Sheets
+      // mueve los valores junto con la fila, no se corrompe nada.
+      hoja.insertRowAfter(ultima);
+      ultima++;
+      destino.push({ fila: ultima, datos: repetir_('', ANCHO_FILA), nueva: true });
+      agregadas++;
+    }
+    var sobran = destino.splice(nuevas.length);
+
+    destino.forEach(function (d, i) {
+      var fila = nuevas[i].slice();
+      if (!d.nueva) {
+        // El rodeo lo carga Nahuel y el tilde de DC tambien: no los decide esto.
+        fila[COL.rodeo] = d.datos[COL.rodeo];
+        fila[COL.cargado_dc] = d.datos[COL.cargado_dc];
+      }
+      fila[COL.anulada] = '';
+      hoja.getRange(d.fila, 1, 1, ANCHO_FILA).setValues([fila]);
+    });
+
+    sobran.forEach(function (d) {
+      log.appendRow([p.uuid, new Date(), JSON.stringify(d.datos), -1,
+                     'cria anulada por cambio de sexo', auth.email]);
+      var fila = d.datos.slice();
+      for (var c = BLOQUE_CRIA_DESDE; c <= BLOQUE_CRIA_HASTA; c++) fila[c] = VACIO;
+      fila[COL.cria] = 'anulada';
+      fila[COL.anulada] = 'Si';
+      hoja.getRange(d.fila, 1, 1, ANCHO_FILA).setValues([fila]);
+    });
+
+    log.getRange(filaLog, 4, 1, 2).setValues([[destino.length,
+      'sexo cambiado a "' + str_(p.sexo) + '" por ' + str_(p.operario)]]);
+    try { CacheService.getScriptCache().remove('cal_' + str_(completo.id_vaca)); } catch (e) {}
+
+    return json_({ ok: true, uuid: p.uuid, sexo: str_(p.sexo), filas: destino.length,
+                   agregadas: agregadas, revividas: revividas, anuladas: sobran.length });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+var esAnulada_ = function (f) { return String(f.datos[COL.anulada]) === 'Si'; };
+var filasActivas_ = function (filas) { return filas.filter(function (f) { return !esAnulada_(f); }); };
 
 /** Todas las filas de un parto, por uuid (columna X). Mellizos devuelven dos. */
 function filasDeUuid_(hoja, uuid) {

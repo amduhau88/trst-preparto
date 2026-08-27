@@ -472,6 +472,18 @@
   </div>
 </div>
 
+<div class="modal hidden" id="modalConf" role="dialog" aria-modal="true" aria-labelledby="confTitulo">
+  <div class="modal-caja">
+    <div class="tilde" style="background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)">!</div>
+    <h2 id="confTitulo">¿Seguro?</h2>
+    <p class="detalle" id="confDetalle"></p>
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn" type="button" id="btnConfNo" style="flex:1">Cancelar</button>
+      <button class="btn primary" type="button" id="btnConfSi" style="flex:1">Sí</button>
+    </div>
+  </div>
+</div>
+
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>

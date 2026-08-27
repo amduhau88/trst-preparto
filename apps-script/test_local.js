@@ -23,6 +23,11 @@ function crearHoja(nombre, filas) {
     setName(n) { this.nombre = n; return this; },
     setFrozenRows() { return this; },
     clear() { this.filas.length = 0; return this; },
+    insertRowAfter(n) {
+      // Igual que Sheets: lo que estaba abajo baja un lugar, con sus valores.
+      this.filas.splice(n, 0, []);
+      return this;
+    },
     copyTo(libro) {
       const copia = crearHoja(this.nombre + ' (copia)', this.filas.map((f) => f.slice()));
       libro._hojas[copia.nombre] = copia;
@@ -776,6 +781,129 @@ r = post(partoBase({ uuid: 'u-cal-origen-malo', id_vaca: '802',
 check('un origen inventado se rechaza',
       r.ok === false && /origen de calostro invalido/.test((r.detalles || []).join()),
       JSON.stringify(r));
+
+console.log('\n18d. Cambiar el sexo: la unica operacion que mueve renglones');
+/* Es la primera vez que el backend reestructura un parto ya escrito, asi que
+   lo que se prueba no es que funcione: es que no rompa nada al lado. */
+libro = nuevoLibro();
+const conCrias = (n, extra) => partoBase(Object.assign({
+  uuid: 'u-sex', id_vaca: '4444',
+  sexo: n === 2 ? '8 Otros Gemelos (M+M o M+H)' : '6 Macho Vivo',
+  terneros: n === 2
+    ? [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+       { id_ternero: 'A2', raza: 'Holando', peso: 41, vive: true, sexo: 'Hembra', calostro: calostroOk }]
+    : [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }]
+}, extra || {}));
+
+post(conCrias(1));
+// Un vecino de abajo, para comprobar que insertar no le pisa el rodeo a nadie.
+post(partoBase({ uuid: 'u-vecino', id_vaca: '5555' }));
+libro._hojas[libro._hoja].filas[1][COL.rodeo] = '21';     // rodeo cargado a mano
+libro._hojas[libro._hoja].filas[2][COL.rodeo] = '23';
+
+const cambiar = (extra) => post(Object.assign({
+  token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-sex', operario: 'Julio'
+}, extra));
+
+r = cambiar({ op_uuid: 'op-1', sexo: '8 Otros Gemelos (M+M o M+H)',
+  calostro: calostroMadre, lts_madre: '5',
+  terneros: [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+             { id_ternero: 'A2', raza: 'Holando', peso: 41, vive: true, sexo: 'Hembra', calostro: calostroOk }] });
+check('de simple a mellizo agrega una fila', r.ok === true && r.agregadas === 1,
+      JSON.stringify(r));
+check('ahora el parto tiene 2 filas', formato().filter((f) => f[COL.uuid] === 'u-sex').length === 2,
+      'filas=' + formato().length);
+let ss1 = formato().filter((f) => f[COL.uuid] === 'u-sex');
+check('renumera las crias', ss1[0][COL.cria] === '1/2' && ss1[1][COL.cria] === '2/2',
+      ss1[0][COL.cria] + ' ' + ss1[1][COL.cria]);
+check('el ID Parto es el mismo', ss1[0][COL.id_parto] === ss1[1][COL.id_parto]);
+check('y el uuid tambien', ss1[1][COL.uuid] === 'u-sex');
+check('el rodeo de la fila que ya estaba no se toco', ss1[0][COL.rodeo] === '21',
+      JSON.stringify(ss1[0][COL.rodeo]));
+check('la fila nueva arranca sin rodeo', ss1[1][COL.rodeo] === '', JSON.stringify(ss1[1][COL.rodeo]));
+check('el parto de abajo conserva SU rodeo',
+      formato().filter((f) => f[COL.uuid] === 'u-vecino')[0][COL.rodeo] === '23',
+      JSON.stringify(formato().filter((f) => f[COL.uuid] === 'u-vecino')[0][COL.rodeo]));
+check('cada cria con su sexo', ss1[0][COL.sexo_cria] === 'Macho' && ss1[1][COL.sexo_cria] === 'Hembra');
+
+// El reintento a ciegas de la cola: NO puede agregar otra cria.
+const antesDeRepetir18d = formato().length;
+r = cambiar({ op_uuid: 'op-1', sexo: '8 Otros Gemelos (M+M o M+H)',
+  calostro: calostroMadre, lts_madre: '5',
+  terneros: [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+             { id_ternero: 'A2', raza: 'Holando', peso: 41, vive: true, sexo: 'Hembra', calostro: calostroOk }] });
+check('el mismo op_uuid otra vez es duplicado', r.ok === true && r.duplicado === true,
+      JSON.stringify(r));
+check('y NO agrega filas', formato().length === antesDeRepetir18d,
+      antesDeRepetir18d + ' -> ' + formato().length);
+
+// De mellizo a simple: la cria que sobra se ANULA, no se borra.
+r = cambiar({ op_uuid: 'op-2', sexo: '6 Macho Vivo', calostro: calostroMadre, lts_madre: '5',
+  terneros: [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] });
+check('de mellizo a simple anula una', r.ok === true && r.anuladas === 1, JSON.stringify(r));
+check('el renglon NO se borro', formato().length === antesDeRepetir18d,
+      antesDeRepetir18d + ' -> ' + formato().length);
+ss1 = formato().filter((f) => f[COL.uuid] === 'u-sex');
+check('la que queda vuelve a 1/1', ss1[0][COL.cria] === '1/1', ss1[0][COL.cria]);
+check('la anulada queda marcada', ss1[1][COL.anulada] === 'Si', JSON.stringify(ss1[1][COL.anulada]));
+check('con G a Q en ---',
+      ss1[1].slice(COL.id_ternero, COL.lts_ternero + 1).every((x) => x === '---'),
+      JSON.stringify(ss1[1].slice(COL.id_ternero, COL.lts_ternero + 1)));
+check('y su contenido anterior guardado en _log',
+      log().some((l) => /cria anulada/.test(l[4]) && /A2/.test(l[2])),
+      JSON.stringify(log().map((l) => l[4])));
+check('la lista del dia ya no la muestra',
+      get({ action: 'partos', token: TOKEN, fecha: '2026-08-12' })
+        .partos.filter((x) => x.uuid === 'u-sex').length === 1);
+
+// Y si vuelve a ser doble, se reutiliza esa misma fila en vez de insertar otra.
+r = cambiar({ op_uuid: 'op-3', sexo: '8 Otros Gemelos (M+M o M+H)',
+  calostro: calostroMadre, lts_madre: '5',
+  terneros: [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+             { id_ternero: 'A3', raza: 'Holando', peso: 39, vive: true, sexo: 'Hembra', calostro: calostroOk }] });
+check('volver a mellizo reutiliza la fila anulada',
+      r.ok === true && r.revividas === 1 && r.agregadas === 0, JSON.stringify(r));
+check('sin agregar renglones', formato().length === antesDeRepetir18d,
+      antesDeRepetir18d + ' -> ' + formato().length);
+ss1 = formato().filter((f) => f[COL.uuid] === 'u-sex');
+check('y ya no esta anulada', ss1[1][COL.anulada] === '' && ss1[1][COL.id_ternero] === 'A3',
+      JSON.stringify([ss1[1][COL.anulada], ss1[1][COL.id_ternero]]));
+
+// Lo que NO se puede.
+r = cambiar({ sexo: '6 Macho Vivo' });
+check('sin op_uuid no se hace nada', r.ok === false && /op_uuid/.test(r.error), JSON.stringify(r));
+r = cambiar({ op_uuid: 'op-4', sexo: '2 Hembras Gemelas Vivas', calostro: calostroMadre,
+  lts_madre: '5',
+  terneros: [{ id_ternero: 'A1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+             { id_ternero: 'A3', raza: 'Holando', peso: 39, vive: true, sexo: 'Hembra', calostro: calostroOk }] });
+check('el codigo 2 con un macho se sigue rechazando',
+      r.ok === false && /no admite machos/.test((r.detalles || []).join()), JSON.stringify(r));
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'no-existe', op_uuid: 'op-5',
+           operario: 'Julio', sexo: '6 Macho Vivo' });
+check('un uuid que no existe', r.ok === false && /no existe/.test(r.error), JSON.stringify(r));
+
+// Un parto cargado otro dia: misma ventana que corregir.
+post(partoBase({ uuid: 'u-sex-ayer', id_vaca: '6666', cargado_en: '2026-08-01T10:00:00.000Z' }));
+r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-sex-ayer', op_uuid: 'op-6',
+           operario: 'Julio', sexo: '1 Hembra Viva', calostro: calostroMadre, lts_madre: '5',
+           terneros: [{ id_ternero: 'B1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] });
+check('un parto de otro dia ya no se toca', r.ok === false && /hoy/.test(r.error), JSON.stringify(r));
+
+// Pasar a cria muerta colapsa a una fila con todo en ---.
+r = cambiar({ op_uuid: 'op-7', sexo: '7 Macho Muerto', terneros: [] });
+check('vivo a muerto entra', r.ok === true, JSON.stringify(r));
+ss1 = formato().filter((f) => f[COL.uuid] === 'u-sex' && f[COL.anulada] !== 'Si');
+check('queda una sola cria activa', ss1.length === 1, 'filas=' + ss1.length);
+check('con el bloque en ---',
+      ss1[0].slice(COL.id_ternero, COL.lts_ternero + 1).every((x) => x === '---'),
+      JSON.stringify(ss1[0].slice(COL.id_ternero, COL.lts_ternero + 1)));
+check('y el rodeo intacto', ss1[0][COL.rodeo] === '21', JSON.stringify(ss1[0][COL.rodeo]));
+
+// editar sigue sin mover renglones nunca: esa garantia no se toco.
+const antesDeEditar = formato().length;
+post({ token: TOKEN, accion: 'editar', uuid: 'u-sex', operario: 'Julio', tambo: '3' });
+check('editar sigue sin agregar ni borrar filas', formato().length === antesDeEditar,
+      antesDeEditar + ' -> ' + formato().length);
 
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();

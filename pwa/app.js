@@ -633,7 +633,7 @@ function elegirChip(chip) {
   }
 
   st[clave] = val;
-  if (clave === 'sexo') pintarTerneros();
+  if (clave === 'sexo') { pintarTerneros(); if (st.editando) pintarModoEdicion(); }
 }
 
 /**
@@ -778,10 +778,12 @@ document.addEventListener('input', (e) => {
 /* Guardar                                                             */
 /* ------------------------------------------------------------------ */
 
+const nuevoUuid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : Date.now() + '-' + Math.random().toString(16).slice(2));
+
 function armarPayload() {
   const p = {
-    uuid: (crypto.randomUUID ? crypto.randomUUID()
-           : Date.now() + '-' + Math.random().toString(16).slice(2)),
+    uuid: nuevoUuid(),
     dispositivo: cfg.dispositivo,
     cargado_en: new Date().toISOString(),
     operario: $('fOperario').value,
@@ -912,12 +914,19 @@ async function guardarParto() {
    Lo que no se corrige queda a la vista pero bloqueado, para que se pueda
    confirmar que es el parto buscado sin poder cambiarle la identidad.
 
-   Que NO se corrige: el codigo de sexo manda cuantas crias hay, y cambiarlo
-   obligaria a agregar o borrar renglones en el bloque que leen Nahuel y
-   DairyComp. ID de ternero, raza, hora y tipo de parto van por el mismo
-   criterio: los corrige Nahuel en la planilla. */
+   El codigo de sexo SI se corrige, desde r6: es el error tipico (macho por
+   hembra, un mellizo que no se vio) y mandarlo a la planilla significaba que
+   nadie lo arreglara. Pero dice cuantas crias tiene el parto, asi que va por
+   su propia accion en el backend y puede agregar o anular un renglon.
 
-const BLOQUEADO_AL_EDITAR = ['cFecha', 'cTipo', 'cSexo', 'fVaca', 'fHora', 'fNotas'];
+   ID de ternero y raza se desbloquean SOLO cuando el sexo cambio: no se puede
+   agregar una cria sin darle una caravana. Hora y tipo de parto siguen
+   afuera: los corrige Nahuel en la planilla. */
+
+const BLOQUEADO_AL_EDITAR = ['cFecha', 'cTipo', 'fVaca', 'fHora', 'fNotas'];
+
+/** El codigo de sexo cambio respecto de como estaba guardado el parto. */
+const sexoCambio = () => !!st.editando && st.sexo !== st.sexoOriginal;
 
 /** Pasa un parto guardado al estado del formulario. Es el inverso de armarPayload. */
 function aEstado(p) {
@@ -925,6 +934,7 @@ function aEstado(p) {
   st.fecha = p.fecha_parto;
   st.tipo_parto = p.tipo_parto;
   st.sexo = p.sexo;
+  st.sexoOriginal = p.sexo;
   st.tambo = p.tambo || '';
   st.lts_madre = p.lts_madre === undefined || p.lts_madre === '' ? null : +p.lts_madre;
 
@@ -1005,17 +1015,22 @@ function pintarModoEdicion() {
     const el = $(id);
     if (el) el.classList.toggle('bloqueado', editando);
   });
-  // El ID y la raza de cada cria tampoco: identifican al animal.
+  // ID y raza identifican al animal, asi que normalmente no se tocan. Pero si
+  // el sexo cambio puede haber una cria nueva, y una cria sin caravana no sirve.
   document.querySelectorAll('#terneros [data-ternero], #terneros [data-caja^="raza:"]')
-    .forEach((el) => el.classList.toggle('bloqueado', editando));
+    .forEach((el) => el.classList.toggle('bloqueado', editando && !sexoCambio()));
 
   aviso.classList.toggle('hidden', !editando);
   if (!editando) return;
 
   aviso.innerHTML =
-    `Corrigiendo el parto de la vaca <b>${$('fVaca').value}</b> · ${aDDMMAAAA(st.fecha)}.
-     Se pueden cambiar <b>peso, calostro y tambo</b>; el resto lo corrige Nahuel en la planilla.
-     <button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
+    `Corrigiendo el parto de la vaca <b>${$('fVaca').value}</b> · ${aDDMMAAAA(st.fecha)}.` +
+    (sexoCambio()
+      ? ` Cambiaste el <b>código de sexo</b>: se va a reescribir el parto entero,
+         así que revisá los datos de cada cría.`
+      : ` Se pueden cambiar <b>sexo, peso, calostro y tambo</b>;
+         el resto lo corrige Nahuel en la planilla.`) +
+    `<button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
   $('btnCancelarEd').onclick = cancelarEdicion;
 }
 
@@ -1078,9 +1093,73 @@ function faltantesEdicion(reg) {
   return f;
 }
 
+/* Cambiar el sexo reescribe el parto entero, asi que se valida con las reglas
+   del ALTA, no con las de la correccion: puede haber una cria nueva que todavia
+   no tiene ni caravana. */
+async function guardarCambioSexo(reg) {
+  const p = armarPayload();
+  const faltan = faltantes(p);
+  if (faltan.length) return avisar('Falta: ' + faltan.join(', '), true);
+  const incoherencia = coherenciaSexo();
+  if (incoherencia) return avisar(incoherencia, true);
+
+  const antes = (reg.payload.terneros || []).length;
+  const ahora = (p.terneros || []).length;
+  if (ahora < antes) {
+    // Se anula, no se borra. Pero se dice cual, con la caravana: esto se hace
+    // con el animal delante y equivocarse de cria no se ve hasta mucho despues.
+    const sobran = (reg.payload.terneros || []).slice(ahora)
+      .map((t) => t.id_ternero || 'sin ID').join(', ');
+    const ok = await confirmar('Se va a anular una cría',
+      `El parto pasa de <b>${antes}</b> a <b>${ahora}</b> cría${ahora > 1 ? 's' : ''}.
+       El renglón de <b>${sobran}</b> queda anulado en la planilla; no se borra,
+       pero deja de contar y de ir a DairyComp.`, 'Sí, anular');
+    if (!ok) return;
+  }
+
+  // El parto local queda como va a quedar la planilla.
+  p.uuid = reg.uuid;
+  p.cargado_en = reg.payload.cargado_en;
+  p.dispositivo = reg.payload.dispositivo;
+
+  if (reg.estado === 'pendiente' || reg.estado === 'error') {
+    // Todavia no entro a la planilla: no hay nada que reestructurar del otro
+    // lado, sube ya corregido.
+    reg.payload = p;
+    reg.estado = 'pendiente';
+    reg.cambioSexo = null;
+  } else {
+    reg.payload = p;
+    reg.cambioSexo = {
+      accion: 'cambiar_sexo',
+      uuid: reg.uuid,
+      op_uuid: nuevoUuid(),          // idempotencia de ESTA operacion
+      operario: p.operario,
+      sexo: p.sexo,
+      lts_madre: p.lts_madre,
+      calostro: p.calostro,
+      tambo: p.tambo,
+      terneros: p.terneros
+    };
+    reg.edicion = null;              // el cambio de sexo la subsume
+  }
+  reg.error = '';
+  reg.revisarEdicion = false;
+
+  await guardarLocal(reg);
+  st.editando = null;
+  limpiar();
+  ver('list');
+  await refrescar();
+  sincronizar();
+  avisar('Parto corregido');
+}
+
 async function guardarEdicion() {
   const reg = (await todosLocal()).find((r) => r.uuid === st.editando);
   if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+
+  if (sexoCambio()) return guardarCambioSexo(reg);
 
   const faltan = faltantesEdicion(reg);
   if (faltan.length) return avisar('Falta: ' + faltan.join(', '), true);
@@ -1162,6 +1241,21 @@ function mostrarExito(p) {
 
   $('modalOk').classList.remove('hidden');
   $('btnOtroParto').focus();
+}
+
+/* Un paso irreversible con la tablet en la mano necesita un freno explicito.
+   Nada de confirm(): un dialogo nativo bloquea la app entera. */
+function confirmar(titulo, detalle, textoSi) {
+  return new Promise((ok) => {
+    $('confTitulo').textContent = titulo;
+    $('confDetalle').innerHTML = detalle;
+    $('btnConfSi').textContent = textoSi || 'Sí';
+    $('modalConf').classList.remove('hidden');
+    const cerrar = (v) => { $('modalConf').classList.add('hidden'); ok(v); };
+    $('btnConfSi').onclick = () => cerrar(true);
+    $('btnConfNo').onclick = () => cerrar(false);
+    $('btnConfNo').focus();
+  });
 }
 
 function cerrarExito() {
@@ -1247,6 +1341,8 @@ async function sincronizar() {
     (await todosLocal()).sort((a, b) => a.creado - b.creado).forEach((reg) => {
       if (reg.estado === 'pendiente') tareas.push({ reg, tipo: 'alta' });
       else if (reg.estado === 'error' && reintentable(reg)) tareas.push({ reg, tipo: 'alta' });
+      // El cambio de sexo va antes que la correccion: reestructura el parto.
+      else if (reg.estado === 'ok' && reg.cambioSexo) tareas.push({ reg, tipo: 'sexo' });
       else if (reg.estado === 'ok' && reg.edicion) tareas.push({ reg, tipo: 'editar' });
     });
     if (!tareas.length) { sesionVencida = false; fallosToken = 0; return; }
@@ -1264,7 +1360,8 @@ async function sincronizar() {
     for (const { reg, tipo } of tareas) {
       let res;
       try {
-        res = await enviar(tipo === 'alta' ? reg.payload : reg.edicion);
+        res = await enviar(tipo === 'alta' ? reg.payload
+                         : tipo === 'sexo' ? reg.cambioSexo : reg.edicion);
       } catch (e) {
         // Sin red: no se toca el registro, se reintenta despues. Cortar la tanda.
         reg.intentos++;
@@ -1277,6 +1374,8 @@ async function sincronizar() {
           reg.estado = 'ok';
           reg.id_parto = res.id_parto || reg.id_parto || '';
           reg.reintentos = 0;
+        } else if (tipo === 'sexo') {
+          reg.cambioSexo = null;
         } else {
           reg.edicion = null;
         }
@@ -1294,8 +1393,10 @@ async function sincronizar() {
           // corregido: se avisa cual es, en vez de reintentar para siempre.
           // La fila no puede seguir en verde: dice una cosa y la planilla otra.
           reg.edicion = null;
+          reg.cambioSexo = null;
           reg.revisarEdicion = true;
-          reg.error = 'corrección rechazada: ' + (res.detalles || []).join(' · ');
+          reg.error = (tipo === 'sexo' ? 'cambio de sexo rechazado: ' : 'corrección rechazada: ') +
+                      (res.detalles || []).join(' · ');
         }
       } else {
         // Sesion caida o error del servidor: cortar, no quemar la cola entera.
