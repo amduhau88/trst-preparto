@@ -1489,6 +1489,43 @@ function configurarDC() {
  * produccion que incluyen el rodeo que Nahuel cargo a mano.
  */
 /**
+ * Muestra QUE hay realmente en la hoja: el encabezado columna por columna y las
+ * primeras filas. Solo lee. Es lo primero que hay que mirar cuando la revision
+ * de la migracion se queja de algo.
+ */
+function verEncabezado() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var hoja = hojaRegistros_(ss);
+  if (!hoja) { Logger.log('No encuentro la hoja de registros.'); return; }
+
+  var ancho = Math.max(hoja.getLastColumn(), 26);
+  Logger.log('Hoja "' + hoja.getName() + '": ' + hoja.getLastRow() + ' filas, ' +
+             hoja.getLastColumn() + ' columnas con contenido.');
+
+  var enc = hoja.getRange(1, 1, 1, ancho).getValues()[0];
+  Logger.log('--- ENCABEZADO (fila 1) ---');
+  enc.forEach(function (v, i) {
+    Logger.log('  ' + (i + 1) + ' ' + letraCol_(i) + ': ' + JSON.stringify(str_(v)));
+  });
+
+  var n = Math.min(3, Math.max(hoja.getLastRow() - 1, 0));
+  for (var f = 0; f < n; f++) {
+    var fila = hoja.getRange(2 + f, 1, 1, ancho).getValues()[0];
+    Logger.log('--- FILA DE DATOS ' + (f + 1) + ' (renglon ' + (2 + f) + ') ---');
+    fila.forEach(function (v, i) {
+      var t = v instanceof Date ? 'Date ' + Utilities.formatDate(v,
+        ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm') : JSON.stringify(str_(v));
+      Logger.log('  ' + (i + 1) + ' ' + letraCol_(i) + ': ' + t);
+    });
+  }
+}
+
+function letraCol_(i) {
+  return i < 26 ? String.fromCharCode(65 + i)
+                : String.fromCharCode(64 + Math.floor(i / 26)) + String.fromCharCode(65 + (i % 26));
+}
+
+/**
  * Ensayo de la migracion: NO escribe nada. Dice exactamente que va a pasar.
  * Correrla ANTES de migrarR6(), mirar el Registro de ejecucion, y recien
  * entonces migrar.
@@ -1516,35 +1553,90 @@ function planMigracionR6_(ss) {
     return out;
   }
 
-  // Mapear por posicion sobre un encabezado distinto mezclaria los datos.
-  var real = hoja.getRange(1, 1, 1, ENCABEZADOS_R5.length).getValues()[0].map(str_);
-  var mal = [];
-  ENCABEZADOS_R5.forEach(function (esp, i) {
-    if (normalizar_(real[i]) !== normalizar_(esp)) {
-      mal.push('  col ' + (i + 1) + ': esperaba "' + esp + '" y hay "' + real[i] + '"');
-    }
-  });
-  if (mal.length) {
-    di('El encabezado NO es el de r5. La migracion mapea por posicion, asi que');
-    di('con estas diferencias mezclaria los datos:');
-    mal.forEach(di);
+  /* Lo que se valida son los DATOS, no el texto del encabezado.
+   *
+   * El codigo r5 nunca escribio la fila 1: solo apendeaba filas de datos. Asi
+   * que ese texto es lo que alguien tipeo a mano —con saltos de linea, con "(de
+   * madre)", con un "parto" encima del rotulo de Operario— y no prueba nada
+   * sobre donde estan las columnas. Lo que si esta garantizado es la forma de
+   * los datos, porque los escribio el codigo por posicion.
+   *
+   * Y es justamente lo que se rompe si alguien inserto una columna: las fechas
+   * dejan de caer en C, los uuid dejan de caer en X. */
+  var ultima = hoja.getLastRow();
+  if (ultima < 2) {
+    di('La hoja no tiene datos. Migrar es solo escribir el encabezado nuevo.');
+    out.ok = true;
     return out;
   }
-  di('Encabezado r5 confirmado, columna por columna.');
 
-  var ultima = hoja.getLastRow();
-  if (ultima < 2) { di('La hoja no tiene datos. Migrar es solo cambiar el encabezado.');
-                    out.ok = true; return out; }
+  var ancho = hoja.getLastColumn();
+  if (ancho > 26) {
+    di('La hoja tiene ' + ancho + ' columnas con contenido y r5 usaba 26.');
+    di('Correr verEncabezado() y mirar que hay de la 27 en adelante antes de migrar.');
+    return out;
+  }
 
   var filas = hoja.getRange(2, 1, ultima - 1, 26).getValues();
-  var conRodeo = 0, muertas = 0, mejorados = 0, deOtraVaca = 0, sinFecha = 0;
+  var siNo = function (v) { return ['Si', 'No', VACIO, ''].indexOf(str_(v).trim()) !== -1; };
+  var forma = [
+    { col: 3,  que: 'Fecha Parto (C) tiene que ser una fecha',
+      ok: function (v) { return v[2] instanceof Date; } },
+    { col: 11, que: 'Mejorado (K) tiene que ser Si / No / ---',
+      ok: function (v) { return siNo(v[10]); } },
+    { col: 13, que: 'Consumido (M) tiene que ser Si / No / ---',
+      ok: function (v) { return siNo(v[12]); } },
+    { col: 22, que: 'ID Parto (V) tiene que ser aaaammdd-vaca-xxxx',
+      ok: function (v) { return /^\d{8}-.+-.+$/.test(str_(v[21])); } },
+    { col: 23, que: 'Cria (W) tiene que ser n/m',
+      ok: function (v) { return /^\d+\/\d+$/.test(str_(v[22])); } },
+    { col: 24, que: 'UUID (X) no puede estar vacio',
+      ok: function (v) { return str_(v[23]).length > 0; } },
+    { col: 25, que: 'Cargado en (Y) tiene que ser una fecha',
+      ok: function (v) { return v[24] instanceof Date; } }
+  ];
+
+  var roto = false;
+  forma.forEach(function (chk) {
+    var malas = [];
+    filas.forEach(function (v, i) {
+      if (!chk.ok(v)) malas.push(i + 2);
+    });
+    if (malas.length) {
+      roto = true;
+      di('columna ' + chk.col + ' NO cierra: ' + chk.que);
+      di('  ' + malas.length + ' fila(s), por ejemplo el renglon ' + malas[0] +
+         ' con: ' + JSON.stringify(str_(filas[malas[0] - 2][chk.col - 1])));
+    }
+  });
+  if (roto) {
+    di('Los datos no estan en las posiciones de r5. Correr verEncabezado() y');
+    di('revisar si alguien inserto o movio una columna. NO migrar asi.');
+    return out;
+  }
+  di('Datos en las posiciones de r5: fechas, uuid, ID Parto y Cria donde tienen que estar.');
+
+  // El texto del encabezado es informativo: la migracion lo reescribe entero.
+  var real = hoja.getRange(1, 1, 1, 26).getValues()[0].map(str_);
+  var distintos = [];
+  ENCABEZADOS_R5.forEach(function (esp, i) {
+    if (normalizar_(real[i]) !== normalizar_(esp)) {
+      distintos.push('  col ' + (i + 1) + ': "' + real[i].replace(/\n/g, ' ') + '"');
+    }
+  });
+  if (distintos.length) {
+    di('Nota: ' + distintos.length + ' encabezado(s) estan escritos distinto. No importa');
+    di('—la migracion los reescribe— pero quedan listados por las dudas:');
+    distintos.forEach(di);
+  }
+
+  var conRodeo = 0, muertas = 0, mejorados = 0, deOtraVaca = 0;
   filas.forEach(function (v) {
     if (str_(v[17]).trim() && str_(v[17]) !== VACIO) conRodeo++;
     if (str_(v[6]) === VACIO) muertas++;
     if (String(v[10]) === 'Si') mejorados++;
     var org = str_(v[15]);
     if (org && org !== VACIO && org !== str_(v[1])) deOtraVaca++;
-    if (!(v[2] instanceof Date)) sinFecha++;
   });
 
   di('Filas de datos: ' + filas.length);
@@ -1552,8 +1644,6 @@ function planMigracionR6_(ss) {
   di('  de cria muerta: ' + muertas);
   di('  con calostro mejorado: ' + mejorados);
   di('  que tomaron calostro de otra vaca: ' + deOtraVaca);
-  if (sinFecha) di('  OJO: ' + sinFecha + ' fila(s) sin fecha valida en la columna C');
-
   var respaldo = ss.getSheetByName('Registros_backup_r5');
   if (respaldo) {
     di('Ya existe "Registros_backup_r5": borralo o renombralo antes de migrar.');

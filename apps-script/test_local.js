@@ -41,6 +41,7 @@ function crearHoja(nombre, filas) {
       return copia;
     },
     getLastRow() { return this.filas.length; },
+    getLastColumn() { return anchoMax(this.filas); },
     getMaxRows() { return Math.max(this.filas.length, 1000); },
     appendRow(fila) { this.filas.push(fila.slice()); },
     getDataRange() { return this.rango(1, 1, this.filas.length, anchoMax(this.filas)); },
@@ -1084,7 +1085,7 @@ libro._hojas['NUEVO FORMATO PREPARTO'].filas = [
   sandbox.ENCABEZADOS_R5.slice(),
   ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
    '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
-   '2', '21', '', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-ts2',
+   '2', '21', '', 'Macho', 'Vivo', '20260820-4115-aa01', '1/1', 'u-ts2',
    new Date(marcaCarga), 'tablet']
 ];
 sandbox.migrarR6();
@@ -1188,21 +1189,26 @@ check('la vista DC tambien se lleno', libro._hojas['Datos Carga DC'].filas.lengt
       'filas=' + libro._hojas['Datos Carga DC'].filas.length);
 
 console.log('\n20c. La migracion se ensaya antes de correrla');
-/* Mapea POR POSICION. Si la hoja real no es exactamente la de r5 —alguien
-   inserto una columna, renombro un encabezado— mover los datos los mezclaria,
-   y eso no se nota hasta mucho despues. */
-libro = nuevoLibro('NUEVO FORMATO PREPARTO');
-libro._hojas['NUEVO FORMATO PREPARTO'].filas = [
-  sandbox.ENCABEZADOS_R5.slice(),
+/* Mapea POR POSICION, asi que hay que estar seguro de donde estan las columnas.
+   Lo que se valida son los DATOS, no el texto del encabezado: el codigo r5
+   nunca escribio la fila 1, solo apendeo filas, asi que ese texto es lo que
+   alguien tipeo a mano y no prueba nada. La forma de los datos si, porque la
+   escribio el codigo por posicion. */
+const filaR5 = (extra) => Object.assign(
   ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
    '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
-   '2', '21', '', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-p1', new Date(2026, 7, 20), 'tablet'],
-  ['Trini', '5514', new Date(2026, 7, 20), '09:00', '1 Normal', '7 Macho Muerto',
-   '---', '---', '---', '---', '---', '---', '---', '---', '---', '---',
-   '1', '', '', 'Macho', 'Muerto', 'IDP-2', '1/1', 'u-p2', new Date(2026, 7, 20), 'tablet']
-];
+   '2', '21', '', 'Macho', 'Vivo', '20260820-4115-aaaa', '1/1', 'u-p1',
+   new Date(2026, 7, 20), 'tablet'], extra || {});
+
+const libroR5 = (filas) => {
+  const l = nuevoLibro('NUEVO FORMATO PREPARTO');
+  l._hojas['NUEVO FORMATO PREPARTO'].filas = [sandbox.ENCABEZADOS_R5.slice()].concat(filas);
+  return l;
+};
+
+libro = libroR5([filaR5(), filaR5({ 1: '5514', 17: '', 23: 'u-p2' })]);
 let plan = sandbox.planMigracionR6_(libro);
-check('con el encabezado correcto, da luz verde', plan.ok === true, plan.log.join(' | '));
+check('con los datos en su lugar, da luz verde', plan.ok === true, plan.log.join(' | '));
 check('cuenta las filas', /Filas de datos: 2/.test(plan.log.join(' ')), plan.log.join(' | '));
 check('y sobre todo cuantos rodeos hay en juego',
       /con rodeo cargado a mano: 1/.test(plan.log.join(' ')), plan.log.join(' | '));
@@ -1212,17 +1218,47 @@ check('el ensayo NO escribe nada',
       !libro._hojas['Registros_backup_r5'],
       'filas=' + libro._hojas['NUEVO FORMATO PREPARTO'].filas.length);
 
-// Un encabezado que no es el de r5: la migracion se planta.
-libro._hojas['NUEVO FORMATO PREPARTO'].filas[0][12] = 'Alguna Columna Nueva';
+/* Un encabezado escrito distinto NO bloquea: en la planilla real alguien
+   escribio "parto" encima de "Operario" y le agrego "(de madre)" a un par mas.
+   Nada de eso mueve un dato, y la migracion reescribe la fila 1 igual. */
+libro = libroR5([filaR5()]);
+libro._hojas['NUEVO FORMATO PREPARTO'].filas[0][0] = 'parto';
+libro._hojas['NUEVO FORMATO PREPARTO'].filas[0][9] = 'Calidad Calostro Sin Mejorar\n(de madre)';
 plan = sandbox.planMigracionR6_(libro);
-check('un encabezado distinto corta el paso', plan.ok === false, plan.log.join(' | '));
-check('y dice exactamente cual', /col 13/.test(plan.log.join(' ')), plan.log.join(' | '));
+check('un encabezado tipeado distinto no frena la migracion', plan.ok === true,
+      plan.log.join(' | '));
+check('pero queda listado, por las dudas',
+      /estan escritos distinto/.test(plan.log.join(' ')) && /col 1/.test(plan.log.join(' ')),
+      plan.log.join(' | '));
+
+// Lo que SI tiene que frenar: los datos fuera de posicion.
+libro = libroR5([filaR5({ 24: 'no es una fecha' })]);       // Y deberia ser Date
+plan = sandbox.planMigracionR6_(libro);
+check('una fecha de carga que no es fecha corta el paso', plan.ok === false,
+      plan.log.join(' | '));
+check('y dice cual columna y en que renglon',
+      /columna 25/.test(plan.log.join(' ')) && /renglon 2/.test(plan.log.join(' ')),
+      plan.log.join(' | '));
+
+libro = libroR5([filaR5({ 22: 'primera' })]);               // W deberia ser n/m
+plan = sandbox.planMigracionR6_(libro);
+check('un Cria con formato raro tambien', plan.ok === false, plan.log.join(' | '));
+check('y nombra la columna 23', /columna 23/.test(plan.log.join(' ')), plan.log.join(' | '));
+
+// Una columna insertada: la hoja queda mas ancha que las 26 de r5.
+libro = libroR5([filaR5().concat(['algo'])]);
+plan = sandbox.planMigracionR6_(libro);
+check('una columna de mas corta el paso', plan.ok === false, plan.log.join(' | '));
+check('y manda a mirar que hay ahi', /verEncabezado/.test(plan.log.join(' ')),
+      plan.log.join(' | '));
+
+// Y en ninguno de esos casos migrarR6 toca nada.
 sandbox.migrarR6();
 check('migrarR6 se niega a correr', !libro._hojas['Registros'],
       Object.keys(libro._hojas).join(', '));
 check('sin dejar ni el respaldo', !libro._hojas['Registros_backup_r5']);
 check('y sin tocar los datos',
-      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 3);
+      libro._hojas['NUEVO FORMATO PREPARTO'].filas.length === 2);
 
 console.log('\n21. Migracion r5 -> r6 del layout');
 /* Es lo unico de r6 que reescribe filas de produccion, y adentro va el rodeo
@@ -1232,13 +1268,13 @@ const HEAD_R5 = sandbox.ENCABEZADOS_R5.slice();
 const cargado = new Date(2026, 7, 20, 8, 30);
 const filaViva = ['Julio', '4115', new Date(2026, 7, 20), '07:00', '1 Normal', '6 Macho Vivo',
   '24543', 'Holando', 42, '26', 'No', '---', 'Si', 5, 4, '119',
-  '2', '21', 'una nota', 'Macho', 'Vivo', 'IDP-1', '1/1', 'u-mig-1', cargado, 'tablet'];
+  '2', '21', 'una nota', 'Macho', 'Vivo', '20260820-4115-aa01', '1/1', 'u-mig-1', cargado, 'tablet'];
 const filaPropia = ['Trini', '5514', new Date(2026, 7, 20), '09:00', '1 Normal', '1 Hembra Viva',
   '9001', 'Holando', 38, '28', 'Si', '32', 'No', 6, 3, '5514',
-  '1', '23', '', 'Hembra', 'Vivo', 'IDP-2', '1/1', 'u-mig-2', cargado, 'tablet'];
+  '1', '23', '', 'Hembra', 'Vivo', '20260820-5514-aa02', '1/1', 'u-mig-2', cargado, 'tablet'];
 const filaMuerta = ['Griselda', '6865', new Date(2026, 7, 20), '11:00', '1 Normal', '7 Macho Muerto',
   '---', '---', '---', '---', '---', '---', '---', '---', '---', '---',
-  '3', '26', '', 'Macho', 'Muerto', 'IDP-3', '1/1', 'u-mig-3', cargado, 'tablet'];
+  '3', '26', '', 'Macho', 'Muerto', '20260820-6865-aa03', '1/1', 'u-mig-3', cargado, 'tablet'];
 
 libro = nuevoLibro('NUEVO FORMATO PREPARTO');
 libro._hojas['NUEVO FORMATO PREPARTO'].filas = [HEAD_R5.slice(), filaViva.slice(),
