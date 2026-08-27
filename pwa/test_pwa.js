@@ -90,12 +90,13 @@ const LISTAS = {
   peso: Array.from({ length: 36 }, (_, i) => String(25 + i)),
   hora_nacimiento: Array.from({ length: 48 }, (_, i) =>
     String(Math.floor(i / 2)).padStart(2, '0') + ':' + (i % 2 ? '30' : '00')),
-  calidad_sin_mejorar: Array.from({ length: 18 }, (_, i) => String(18 + i)).concat(['mastitis', 'sangre', 'campo']),
+  // 0 = no se midio / no hubo calostro. La lista salta de 0 a 18 a proposito.
+  calidad_sin_mejorar: ['0'].concat(Array.from({ length: 18 }, (_, i) => String(18 + i)))
+    .concat(['mastitis', 'sangre', 'campo']),
   mejorado: ['Si', 'No'], calidad_mejorado: ['---'].concat(Array.from({ length: 10 }, (_, i) => String(26 + i))),
-  consumido: ['Si', 'No'],
   lts_madre: Array.from({ length: 21 }, (_, i) => String(i)),
   lts_ternero: ['2', '3', '4', '5', '6'],
-  tambo: ['1', '2', '3'], rodeo: ['21', '23', '26', '201', '202']
+  tambo: ['1', '2', '3', '4'], rodeo: ['21', '23', '26', '201', '202']
 };
 
 const api = http.createServer((req, res) => {
@@ -436,6 +437,28 @@ const visible = (page, sel) => page.evaluate((s) => {
 
     // Dejarlo en un valor razonable para las pruebas que siguen
     await page.evaluate(() => { st.terneros[0].peso = 42; pintarTerneros(); });
+
+    console.log('\n3d. Listas con huecos: el stepper salta, no inventa valores');
+    /* La lista de Brix es 0 y despues 18 a 35. Sumando 1 y recortando contra el
+       minimo, bajar desde 18 daba 17, 16, 15... valores que no estan en Maestro
+       y que el backend rechaza: el parto entraba y aparecia en "Revisar" sin
+       que nada en la tablet lo hubiera avisado. */
+    const brixAhora = () => page.$eval('#calostros .stepper .val', (e) => e.textContent.trim());
+    const BRIX_MENOS = '#calostros .stepper button[data-step^="brix"][data-step$=":-1"]';
+    const BRIX_MAS = '#calostros .stepper button[data-step^="brix"][data-step$=":1"]';
+
+    await page.evaluate(() => { st.terneros[0].cal.brix = 18; pintarCalostros(); });
+    await apretar(BRIX_MENOS); await soltar();
+    check('bajar desde 18 salta a 0, no a 17', /^0/.test(await brixAhora()), await brixAhora());
+    await apretar(BRIX_MAS); await soltar();
+    check('y subir desde 0 vuelve a 18', /^18/.test(await brixAhora()), await brixAhora());
+    await apretar(BRIX_MENOS); await esperar(1200); await soltar();
+    check('mantenerlo apretado no baja de 0', /^0/.test(await brixAhora()), await brixAhora());
+    await page.evaluate(() => { st.terneros[0].cal.brix = 26; pintarCalostros(); });
+
+    check('el tambo 4 esta disponible',
+          await page.evaluate(() => [...document.querySelectorAll('[data-chip="tambo"]')]
+            .some((b) => b.dataset.val === '4')));
 
     console.log('\n4. Carga con señal');
     await cargarParto(page, '4115', '24543');

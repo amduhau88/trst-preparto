@@ -182,13 +182,14 @@ const LISTAS_BASE = {
   raza: ['Holando', 'Angus'],
   peso: rango(25, 60),
   hora_nacimiento: horas(),
-  calidad_sin_mejorar: rango(18, 35).concat(['mastitis', 'sangre', 'campo']),
+  // El 0 significa "no se midio / no hubo calostro". La lista salta de 0 a 18
+  // a proposito: entre medio no hay valores validos.
+  calidad_sin_mejorar: ['0'].concat(rango(18, 35)).concat(['mastitis', 'sangre', 'campo']),
   mejorado: ['Si', 'No'],
   calidad_mejorado: [VACIO].concat(rango(26, 35)),
-  consumido: ['Si', 'No'],
   lts_madre: rango(0, 20),
   lts_ternero: rango(2, 6),
-  tambo: ['1', '2', '3'],
+  tambo: ['1', '2', '3', '4'],
   rodeo: []
 };
 
@@ -579,14 +580,14 @@ function mover(spec, boton) {
     // No se repinta la tarjeta: destruiria el boton que el operario esta
     // manteniendo apretado, y la repeticion rapida seguiria escribiendo en un
     // elemento que ya no esta en pantalla.
-    t.peso = acotar(t.peso === null ? medio('peso') : t.peso + paso, numeros('peso'));
+    t.peso = t.peso === null ? medio('peso') : siguienteEnLista(t.peso, paso, numeros('peso'));
     return celda ? escribir(pesoTxt(t.peso)) : pintarTerneros();
   }
   if (campo.startsWith('brix')) {
     const c = st.terneros[+campo.slice(4)].cal;
     const teniaExcepcion = !!c.brixExc;
     c.brixExc = '';                              // tocar el numero descarta la excepcion
-    c.brix = acotar(c.brix + paso, numeros('calidad_sin_mejorar'));
+    c.brix = siguienteEnLista(c.brix, paso, numeros('calidad_sin_mejorar'));
     // Solo hace falta repintar la primera vez, para apagar el chip de excepcion.
     if (teniaExcepcion || !celda) return pintarCalostros();
     return escribir(`${c.brix}<span>Brix</span>`);
@@ -594,13 +595,13 @@ function mover(spec, boton) {
   if (campo.startsWith('mej')) {
     const c = st.terneros[+campo.slice(3)].cal;
     if (c.mejorado !== 'Si') return;
-    c.mej = acotar((c.mej === VACIO ? medio('calidad_mejorado') : c.mej + paso),
-                   numeros('calidad_mejorado'));
+    c.mej = c.mej === VACIO ? medio('calidad_mejorado')
+                            : siguienteEnLista(c.mej, paso, numeros('calidad_mejorado'));
     return celda ? escribir(`${c.mej}<span>Brix</span>`) : pintarCalostros();
   }
   if (campo === 'ltsMadre') {
-    st.lts_madre = acotar((st.lts_madre === null ? medio('lts_madre') : st.lts_madre + paso),
-                          numeros('lts_madre'));
+    st.lts_madre = st.lts_madre === null ? medio('lts_madre')
+                                         : siguienteEnLista(st.lts_madre, paso, numeros('lts_madre'));
   }
   pintarSteppers();
 }
@@ -645,8 +646,31 @@ document.addEventListener('pointerdown', (e) => {
   addEventListener(ev, frenarRepeticion));
 addEventListener('visibilitychange', frenarRepeticion);
 
-const acotar = (v, lista) => !lista.length ? v
-  : Math.min(Math.max(v, Math.min(...lista)), Math.max(...lista));
+/**
+ * Mueve un stepper UN LUGAR sobre la lista de Maestro, en vez de sumar 1 y
+ * recortar contra el minimo y el maximo.
+ *
+ * Con una lista no contigua —0 y despues 18 a 35— la aritmetica producia 17,
+ * 16, 15... valores que no estan en Maestro y que el backend rechaza: el
+ * operario cargaba un parto que despues aparecia en "Revisar" sin que nada en
+ * la tablet le hubiera avisado. Por indice, cualquier lista con huecos que
+ * Nahuel escriba a futuro funciona sola.
+ */
+function siguienteEnLista(actual, paso, lista) {
+  if (!lista.length) return actual;
+  const orden = lista.slice().sort((a, b) => a - b);
+  const n = Number(actual);
+  let i = orden.indexOf(n);
+  if (i === -1) {
+    // El valor no esta en la lista: viene de un parto viejo, o de Maestro
+    // editado. Se arranca del mas cercano.
+    i = orden.reduce((mejor, v, j) =>
+      Math.abs(v - n) < Math.abs(orden[mejor] - n) ? j : mejor, 0);
+    // Si el mas cercano ya esta del lado hacia el que se iba, ese es el paso.
+    if ((paso > 0 && orden[i] > n) || (paso < 0 && orden[i] < n)) return orden[i];
+  }
+  return orden[Math.min(Math.max(i + paso, 0), orden.length - 1)];
+}
 
 document.addEventListener('input', (e) => {
   const t = e.target.closest('[data-ternero]');

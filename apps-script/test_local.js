@@ -690,6 +690,32 @@ check('el renglon del alta no se piso', /^(recibido|ok)$/.test(logGem[0][4]), lo
 check('la edicion dice quien la hizo', /editado por Julio/.test(logGem[1][4]), logGem[1][4]);
 check('la edicion guarda el mail', logGem[1][5] === 'script', logGem[1][5]);
 
+console.log('\n18b. Tambo 4 y calidad 0');
+libro = nuevoLibro();
+r = post(partoBase({ uuid: 'u-tambo4', tambo: '4' }));
+check('el tambo 4 entra', r.ok === true, JSON.stringify(r));
+check('y queda escrito', formato()[0][COL.tambo] === '4', formato()[0][COL.tambo]);
+r = post(partoBase({ uuid: 'u-tambo9', tambo: '9' }));
+check('un tambo que no esta en Maestro sigue rechazado', r.ok === false, JSON.stringify(r));
+
+// 0 = no se midio / no hubo calostro.
+r = post(partoBase({ uuid: 'u-brix0',
+  calostro: { calidad_sin_mejorar: '0', mejorado: 'No', calidad_mejorado: '---' } }));
+check('calidad 0 entra', r.ok === true, JSON.stringify(r));
+r = post(partoBase({ uuid: 'u-brix0-mej',
+  calostro: { calidad_sin_mejorar: '0', mejorado: 'Si', calidad_mejorado: '30' } }));
+check('pero no se puede mejorar lo que no hubo',
+      r.ok === false && /nada que mejorar/.test((r.detalles || []).join()), JSON.stringify(r));
+// Y tampoco corrigiendo despues.
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-brix0', operario: 'Julio',
+           calostro: { mejorado: 'Si', calidad_mejorado: '30' } });
+check('tampoco al corregir', r.ok === false && /nada que mejorar/.test(JSON.stringify(r)),
+      JSON.stringify(r));
+// Un valor intermedio, que es lo que producia el stepper viejo, sigue afuera.
+r = post(partoBase({ uuid: 'u-brix17',
+  calostro: { calidad_sin_mejorar: '17', mejorado: 'No', calidad_mejorado: '---' } }));
+check('17 no existe en la lista y se rechaza', r.ok === false, JSON.stringify(r));
+
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();
 r = get({ action: 'esquema', token: TOKEN });

@@ -95,6 +95,10 @@ var ENCABEZADOS = [
 var BLOQUE_CRIA_DESDE = COL.id_ternero;      // G
 var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // Q
 
+/* '0' Brix quiere decir "no se midio / no hubo calostro". No es un numero mas:
+ * si no hubo calostro, no hay nada que mejorar. */
+var SIN_CALOSTRO = '0';
+
 var ORIGEN_PROPIA = 'Propia madre';
 var ORIGEN_OTRA = 'Otra vaca';
 var ORIGENES = [ORIGEN_PROPIA, ORIGEN_OTRA];
@@ -450,6 +454,11 @@ function editarParto_(p, auth) {
         // corta cuando esta cria no trae datos propios.
         var mejorado = resultanteParto_(f, madre, 'mejorado', COL.mejorado);
         var calidad = resultanteParto_(f, madre, 'calidad_mejorado', COL.calidad_mejorado);
+        var sinMejorar = resultanteParto_(f, madre, 'calidad_sin_mejorar',
+                                          COL.calidad_sin_mejorar);
+        if (String(sinMejorar) === SIN_CALOSTRO && String(mejorado) === 'Si') {
+          err.push(pre + 'calidad ' + SIN_CALOSTRO + ' es "sin calostro": no hay nada que mejorar');
+        }
         if (String(mejorado) === 'Si' && (!calidad || String(calidad) === VACIO)) {
           err.push(pre + 'mejorado=Si pero calidad_mejorado vacia');
         }
@@ -622,6 +631,9 @@ function validar_(p, listas) {
   enLista_(err, listas, 'lts_madre', ltsMadre_(p));
   enLista_(err, listas, 'calidad_sin_mejorar', madre.calidad_sin_mejorar);
   enLista_(err, listas, 'mejorado', madre.mejorado);
+  if (String(madre.calidad_sin_mejorar) === SIN_CALOSTRO && String(madre.mejorado) === 'Si') {
+    err.push('calidad ' + SIN_CALOSTRO + ' es "sin calostro": no hay nada que mejorar');
+  }
   if (String(madre.mejorado) === 'Si') {
     enLista_(err, listas, 'calidad_mejorado', madre.calidad_mejorado);
     if (!madre.calidad_mejorado || String(madre.calidad_mejorado) === VACIO) {
