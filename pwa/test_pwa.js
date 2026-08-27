@@ -127,6 +127,21 @@ const api = http.createServer((req, res) => {
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     if (p.accion === 'partos') return responder({ ok: true, partos: [] });
 
+    // Con cuanto calostro cuenta una vaca: el ultimo parto suyo que lo tenga medido.
+    if (p.accion === 'calostro') {
+      if (!p.vaca) return responder({ ok: false, error: 'falta el numero de vaca' });
+      const suyas = filas.filter((f) => String(f.vaca) === String(p.vaca) &&
+                                        f.madre && f.madre.calidad_sin_mejorar);
+      if (!suyas.length) return responder({ ok: true, vaca: p.vaca, encontrada: false });
+      const m = suyas[suyas.length - 1].madre;
+      const mejor = m.mejorado === 'Si' && m.calidad_mejorado && m.calidad_mejorado !== '---';
+      return responder({ ok: true, vaca: p.vaca, encontrada: true,
+                         brix_natural: m.calidad_sin_mejorar, mejorado: m.mejorado,
+                         brix_mejorado: mejor ? m.calidad_mejorado : '',
+                         brix_final: mejor ? m.calidad_mejorado : m.calidad_sin_mejorar,
+                         fecha: '2026-08-12' });
+    }
+
     // Corregir: mismo contrato que Codigo.gs. Ubica las filas por uuid, no
     // agrega ni borra ninguna, y el peso solo lo mueve quien cargo el parto.
     if (p.accion === 'editar') {
@@ -161,7 +176,8 @@ const api = http.createServer((req, res) => {
     for (let i = 0; i < n; i++) {
       const t = (p.terneros || [])[i] || {};
       filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
-                   operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro });
+                   operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro,
+                   madre: p.calostro });
     }
     responder({ ok: true, uuid: p.uuid, id_parto: 'X-' + p.id_vaca, filas_escritas: n });
   });
@@ -443,18 +459,25 @@ const visible = (page, sel) => page.evaluate((s) => {
        minimo, bajar desde 18 daba 17, 16, 15... valores que no estan en Maestro
        y que el backend rechaza: el parto entraba y aparecia en "Revisar" sin
        que nada en la tablet lo hubiera avisado. */
-    const brixAhora = () => page.$eval('#calostros .stepper .val', (e) => e.textContent.trim());
-    const BRIX_MENOS = '#calostros .stepper button[data-step^="brix"][data-step$=":-1"]';
-    const BRIX_MAS = '#calostros .stepper button[data-step^="brix"][data-step$=":1"]';
+    const brixAhora = () => page.$eval('#vBrix', (e) => e.textContent.trim());
+    const BRIX_MENOS = 'button[data-step="brix:-1"]';
+    const BRIX_MAS = 'button[data-step="brix:1"]';
 
-    await page.evaluate(() => { st.terneros[0].cal.brix = 18; pintarCalostros(); });
+    await page.evaluate(() => { st.cal.brix = 18; pintarCalostroMadre(); });
     await apretar(BRIX_MENOS); await soltar();
     check('bajar desde 18 salta a 0, no a 17', /^0/.test(await brixAhora()), await brixAhora());
     await apretar(BRIX_MAS); await soltar();
     check('y subir desde 0 vuelve a 18', /^18/.test(await brixAhora()), await brixAhora());
     await apretar(BRIX_MENOS); await esperar(1200); await soltar();
     check('mantenerlo apretado no baja de 0', /^0/.test(await brixAhora()), await brixAhora());
-    await page.evaluate(() => { st.terneros[0].cal.brix = 26; pintarCalostros(); });
+    // Y 0 apaga "Mejorado": no hay calostro que mejorar.
+    await apretar(BRIX_MENOS); await soltar();
+    check('en 0 se apaga la caja de mejorado',
+          await page.$eval('#cajaMejorado', (e) => e.classList.contains('off')));
+    check('y lo explica', await visible(page, '#notaSinCalostro'));
+    await page.evaluate(() => { st.cal.brix = 26; pintarCalostroMadre(); pintarCalostros(); });
+    check('con un valor real vuelve a habilitarse',
+          await page.$eval('#cajaMejorado', (e) => !e.classList.contains('off')));
 
     check('el tambo 4 esta disponible',
           await page.evaluate(() => [...document.querySelectorAll('[data-chip="tambo"]')]
@@ -495,11 +518,30 @@ const visible = (page, sel) => page.evaluate((s) => {
             .join(' | ').includes('9101 · Macho'),
           (await page.$$eval('#calostros .quien', (q) => q.map((x) => x.textContent))).join(' | '));
 
+    // La primera cria toma de su propia madre; la segunda, de otra vaca.
     await page.evaluate(() => {
       document.querySelector('[data-caja="ltsTernero:1"] [data-val="3"]').click();
-      const orig = document.querySelectorAll('[data-origen]');
-      orig[0].value = '119'; orig[0].dispatchEvent(new Event('input', { bubbles: true }));
-      orig[1].value = '226'; orig[1].dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-caja="origen:1"] [data-val="Otra vaca"]').click();
+    });
+    await esperar(300);
+    check('con la propia madre el ID no se escribe a mano',
+          await page.$eval('[data-origen="0"]', (e) => e.readOnly));
+    check('y ya muestra la vaca que parió',
+          await page.$eval('[data-origen="0"]', (e) => e.value) === '5514',
+          await page.$eval('[data-origen="0"]', (e) => e.value));
+    check('con otra vaca, si', await page.$eval('[data-origen="1"]', (e) => !e.readOnly));
+    await page.evaluate(() => {
+      const o = document.querySelector('[data-origen="1"]');
+      o.value = '226'; o.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esperar(1400);                      // consulta al backend (debounce 600 ms)
+    check('avisa que de esa vaca no hay datos',
+          /sin datos/.test(await page.$eval('[data-origen="1"]',
+            (e) => e.closest('.f').querySelector('.dato').textContent)),
+          await page.$eval('[data-origen="1"]', (e) => e.closest('.f').querySelector('.dato').textContent));
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-brixternero="1"]');
+      b.value = '29'; b.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await page.click('#btnGuardar');
     await esperar(500);
@@ -520,10 +562,24 @@ const visible = (page, sel) => page.evaluate((s) => {
           doble.terneros[0].calostro.lts_ternero === '4' &&
           doble.terneros[1].calostro.lts_ternero === '3',
           JSON.stringify(doble.terneros.map((t) => t.calostro.lts_ternero)));
-    check('cada uno con su vaca origen',
-          doble.terneros[0].calostro.id_vaca_origen === '119' &&
+    check('cada uno con su origen',
+          doble.terneros[0].calostro.origen === 'Propia madre' &&
+          doble.terneros[1].calostro.origen === 'Otra vaca',
+          JSON.stringify(doble.terneros.map((t) => t.calostro.origen)));
+    check('con la propia madre, el ID de origen es la vaca que parió',
+          doble.terneros[0].calostro.id_vaca_origen === '5514',
+          doble.terneros[0].calostro.id_vaca_origen);
+    check('con otra vaca, el que se cargó',
           doble.terneros[1].calostro.id_vaca_origen === '226');
-    check('los litros de la madre van al parto, no a la cria',
+    check('y los Brix que tomó cada una',
+          doble.terneros[0].calostro.calidad_ternero === '26' &&
+          doble.terneros[1].calostro.calidad_ternero === '29',
+          JSON.stringify(doble.terneros.map((t) => t.calostro.calidad_ternero)));
+    check('el calostro de la MADRE va al parto, no a la cria',
+          doble.calostro && doble.calostro.calidad_sin_mejorar !== undefined &&
+          doble.terneros[0].calostro.calidad_sin_mejorar === undefined,
+          JSON.stringify(doble.calostro));
+    check('los litros de la madre tambien',
           doble.lts_madre !== undefined && doble.terneros[0].calostro.lts_madre === undefined);
     await esperarSync(page, 12);
     check('el servidor escribio 2 filas', filas.filter((f) => f.vaca === '5514').length === 2);
@@ -594,6 +650,55 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('y 1 de calostro', await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
     check('no pregunta el sexo (el codigo 6 ya lo dice)',
           await page.$$eval('[data-caja^="sexoc:"]', (c) => c.length) === 0);
+
+    console.log('\n4e. Calostro de otra vaca: se consulta, no se pide de memoria');
+    /* El operario no tiene por que acordarse de los Brix de una vaca que pario
+       hace tres dias. Se carga el numero y la app lo trae de la planilla. */
+    await page.evaluate(() => { st.cal.brix = 30; pintarCalostroMadre(); });
+    await cargarParto(page, '3030', '9300');
+    await esperarSync(page, 15);
+
+    await page.evaluate(() => {
+      document.querySelector('[data-caja="origen:0"] [data-val="Otra vaca"]').click();
+    });
+    await esperar(250);
+    await page.evaluate(() => {
+      const o = document.querySelector('[data-origen="0"]');
+      o.value = '3030'; o.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esperar(1500);
+    const notaCal = () => page.$eval('[data-origen="0"]',
+      (e) => e.closest('.f').querySelector('.dato').textContent.trim());
+    check('trae los Brix de esa vaca', /30 Brix/.test(await notaCal()), await notaCal());
+    check('y los deja cargados',
+          (await page.$eval('[data-brixternero="0"]', (e) => e.value)) === '30',
+          await page.$eval('[data-brixternero="0"]', (e) => e.value));
+    // Pero el campo NUNCA se bloquea: sin señal se carga a mano y el parto entra igual.
+    check('el campo sigue siendo editable',
+          await page.$eval('[data-brixternero="0"]', (e) => !e.readOnly));
+
+    // Volver a la propia madre borra lo de la otra vaca: ese dato no era suyo.
+    await page.evaluate(() => {
+      document.querySelector('[data-caja="origen:0"] [data-val="Propia madre"]').click();
+    });
+    await esperar(250);
+    check('volver a la propia madre limpia el ID',
+          (await page.$eval('[data-origen="0"]', (e) => e.value)) !== '3030',
+          await page.$eval('[data-origen="0"]', (e) => e.value));
+
+    console.log('\n4f. Las excepciones se apagan tocandolas de nuevo');
+    /* Antes habia un chip "Valor numerico" para volver atras. Sin el, marcar
+       "mastitis" sin querer no se podria deshacer mas que recargando la app. */
+    const brixVisible = () => page.$eval('#vBrix', (e) => e.textContent.trim());
+    await page.evaluate(() => document.querySelector('#cBrixExc [data-val="mastitis"]').click());
+    await esperar(250);
+    check('marcar la excepcion la muestra', /mastitis/.test(await brixVisible()), await brixVisible());
+    await page.evaluate(() => document.querySelector('#cBrixExc [data-val="mastitis"]').click());
+    await esperar(250);
+    check('tocarla de nuevo vuelve al numero', /^\d/.test(await brixVisible()), await brixVisible());
+    check('ya no existe el chip "Valor numérico"',
+          await page.$$eval('#cBrixExc .chip',
+            (c) => !c.some((x) => /Valor num/.test(x.textContent))));
 
     console.log('\n5. Sin señal — lo que pasa en el corral');
     // Contadores relativos: las secciones anteriores ya dejaron partos cargados.

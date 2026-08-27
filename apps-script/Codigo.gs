@@ -175,6 +175,9 @@ function doPost(e) {
     if (payload.accion === 'partos') {
       return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha) });
     }
+    if (payload.accion === 'calostro') {
+      return json_(consultaCalostro_(SpreadsheetApp.openById(SS_ID), payload.vaca));
+    }
 
     // Corregir un parto ya escrito. Va por su propio camino y NO por el alta:
     // ahi el uuid es la llave de idempotencia, y una correccion que entrara por
@@ -216,6 +219,8 @@ function doPost(e) {
       hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, filas[0].length).setValues(filas);
 
       log.getRange(filaLog, 4, 1, 2).setValues([[filas.length, 'ok']]);
+      // Esta vaca acaba de parir: lo que diga el cache sobre su calostro quedo viejo.
+      try { CacheService.getScriptCache().remove('cal_' + str_(payload.id_vaca)); } catch (e) {}
 
       return json_({
         ok: true,
@@ -262,6 +267,12 @@ function doGet(e) {
       var a2 = autorizar_(p);
       if (!a2.ok) return json_({ ok: false, error: a2.error });
       return json_({ ok: true, partos: partosDelDia_(ss, p.fecha) });
+    }
+
+    if (p.action === 'calostro') {
+      var a3 = autorizar_(p);
+      if (!a3.ok) return json_({ ok: false, error: a3.error });
+      return json_(consultaCalostro_(ss, p.vaca));
     }
 
     return json_({ ok: false, error: 'action desconocida' });
@@ -797,6 +808,59 @@ function esquema_(ss) {
   });
   return { ok: !mal.length, version: VERSION, hoja: hoja.getName(),
            columnas: ENCABEZADOS.length, encabezados: real, diferencias: mal };
+}
+
+/**
+ * Con que calostro cuenta una vaca. Lo usa la tablet cuando el ternero toma
+ * calostro de OTRA madre: se carga el numero de esa vaca y la app muestra los
+ * Brix que quedaron registrados cuando ella pario, en vez de pedirselos de
+ * memoria al operario.
+ *
+ * Devuelve el ultimo parto de esa vaca con calostro medido. Las filas de cria
+ * muerta van todas en '---' y no dicen nada del calostro, asi que se saltean.
+ *
+ * Sin datos NO es un error: puede ser una vaca que pario antes de que existiera
+ * la app, o calostro del freezer. La tablet habilita el campo para cargarlo a
+ * mano y el parto se guarda igual.
+ */
+function consultaCalostro_(ss, vaca) {
+  var id = str_(vaca).trim();
+  if (!id) return { ok: false, error: 'falta el numero de vaca' };
+
+  var cache = CacheService.getScriptCache();
+  var clave = 'cal_' + id;
+  var guardado = cache.get(clave);
+  if (guardado) return JSON.parse(guardado);
+
+  var r = { ok: true, vaca: id, encontrada: false };
+  var hoja = hojaRegistros_(ss);
+
+  if (hoja && hoja.getLastRow() > 1) {
+    // TextFinder sobre una sola columna: evita traer la hoja entera por consulta.
+    var hits = hoja.getRange(2, COL.id_vaca + 1, hoja.getLastRow() - 1, 1)
+                   .createTextFinder(id).matchEntireCell(true).findAll();
+    for (var i = hits.length - 1; i >= 0; i--) {     // de la mas reciente hacia atras
+      var f = hoja.getRange(hits[i].getRow(), 1, 1, ANCHO_FILA).getValues()[0];
+      var natural = str_(f[COL.calidad_sin_mejorar]);
+      if (!natural || natural === VACIO) continue;   // cria muerta: no dice nada
+
+      var mejorado = str_(f[COL.mejorado]);
+      var mejor = str_(f[COL.calidad_mejorado]);
+      r.encontrada = true;
+      r.brix_natural = natural;
+      r.mejorado = mejorado;
+      r.brix_mejorado = mejor === VACIO ? '' : mejor;
+      // Lo que hay para dar es el mejorado si se mejoro; si no, el natural.
+      r.brix_final = (mejorado === 'Si' && mejor && mejor !== VACIO) ? mejor : natural;
+      r.fecha = f[COL.fecha] instanceof Date
+        ? Utilities.formatDate(f[COL.fecha], ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd') : '';
+      r.lts_madre = f[COL.lts_madre];
+      break;
+    }
+  }
+
+  cache.put(clave, JSON.stringify(r), 300);
+  return r;
 }
 
 /** Busca el uuid en la columna A de _log. TextFinder evita traer toda la hoja. */

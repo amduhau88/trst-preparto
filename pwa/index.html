@@ -194,6 +194,9 @@
   .pill.ok{background:var(--accent-soft);color:var(--accent)}
   .pill.wait{background:var(--warn-soft);color:var(--warn)}
   .pill.bad{background:var(--danger-soft);color:var(--danger)}
+  .leido{background:var(--soft);color:var(--ink-2);font-weight:700}
+  .dato{font-size:12px;color:var(--ink-3);margin-top:5px;min-height:16px}
+  .dato.warn{color:var(--warn)}
   .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
     background:var(--warn-soft);color:var(--warn);white-space:nowrap}
   .listbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
@@ -323,17 +326,55 @@
       <div id="terneros"></div>
     </div>
 
-    <div class="card" id="cardCalostro">
-      <h2>Calostro</h2>
-      <p class="hint">Los litros de la madre son del parto. El resto se carga por cada ternero.</p>
-      <div style="max-width:280px">
-        <div class="lab">Litros que produjo la madre</div>
-        <div class="stepper">
-          <button type="button" data-step="ltsMadre:-1">−</button>
-          <div class="val" id="vLtsMadre">—</div>
-          <button type="button" data-step="ltsMadre:1">+</button>
+    <div class="card" id="cardCalostroMadre">
+      <h2>Calostro de la vaca parida</h2>
+      <p class="hint">Lo que produjo la madre. Es del parto: se carga una sola vez,
+        aunque sean mellizos.</p>
+      <div class="grid g3">
+        <div>
+          <div class="lab">Litros que produjo</div>
+          <div class="stepper">
+            <button type="button" data-step="ltsMadre:-1">−</button>
+            <div class="val" id="vLtsMadre">—</div>
+            <button type="button" data-step="ltsMadre:1">+</button>
+          </div>
+        </div>
+        <div>
+          <div class="lab">Calidad sin mejorar</div>
+          <div class="stepper">
+            <button type="button" data-step="brix:-1">−</button>
+            <div class="val" id="vBrix">—</div>
+            <button type="button" data-step="brix:1">+</button>
+          </div>
+        </div>
+        <div>
+          <div class="lab">…o marcar excepción</div>
+          <div class="chips" id="cBrixExc"></div>
         </div>
       </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div id="cajaMejorado">
+          <div class="lab">¿Mejorado?</div>
+          <div class="chips" id="cMejorado"></div>
+        </div>
+        <div id="cajaMej">
+          <div class="lab">Calidad del calostro mejorado</div>
+          <div class="stepper">
+            <button type="button" data-step="mej:-1">−</button>
+            <div class="val" id="vMej">---</div>
+            <button type="button" data-step="mej:1">+</button>
+          </div>
+        </div>
+      </div>
+      <div id="notaSinCalostro" class="note hidden" style="margin-top:12px">
+        Calidad <b>0</b> quiere decir que no se midió o que no hubo calostro:
+        no hay nada que mejorar.
+      </div>
+    </div>
+
+    <div class="card" id="cardCalostroTernero">
+      <h2>Calostro suministrado al ternero</h2>
+      <p class="hint">Lo que tomó cada cría. Puede ser de su propia madre o de otra vaca.</p>
       <div id="calostros"></div>
     </div>
 

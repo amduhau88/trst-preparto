@@ -66,12 +66,20 @@ function crearHoja(nombre, filas) {
         createTextFinder(txt) {
           return {
             matchEntireCell() { return this; },
-            findNext() {
+            findNext() { return this.findAll()[0] || null; },
+            findAll() {
+              const out = [];
               for (let i = 0; i < nf; i++) {
                 const fila = hoja.filas[f - 1 + i] || [];
-                for (let j = 0; j < nc; j++) if (String(fila[c - 1 + j]) === String(txt)) return {};
+                for (let j = 0; j < nc; j++) {
+                  if (String(fila[c - 1 + j]) === String(txt)) {
+                    const fn = f + i;
+                    out.push({ getRow: () => fn });
+                    break;
+                  }
+                }
               }
-              return null;
+              return out;
             }
           };
         }
@@ -197,7 +205,8 @@ const sandbox = {
   CacheService: {
     getScriptCache: () => ({
       get: (k) => (cacheFalso[k] === undefined ? null : cacheFalso[k]),
-      put: (k, v) => { cacheFalso[k] = v; }
+      put: (k, v) => { cacheFalso[k] = v; },
+      remove: (k) => { delete cacheFalso[k]; }
     })
   },
   UrlFetchApp: {
@@ -715,6 +724,58 @@ check('tampoco al corregir', r.ok === false && /nada que mejorar/.test(JSON.stri
 r = post(partoBase({ uuid: 'u-brix17',
   calostro: { calidad_sin_mejorar: '17', mejorado: 'No', calidad_mejorado: '---' } }));
 check('17 no existe en la lista y se rechaza', r.ok === false, JSON.stringify(r));
+
+console.log('\n18c. Consultar el calostro de otra vaca');
+/* Cuando el ternero toma calostro de otra madre, la tablet pregunta con cuanto
+   cuenta esa vaca en vez de pedirle el numero de memoria al operario. */
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-cal-1', id_vaca: '700',
+  calostro: { calidad_sin_mejorar: '24', mejorado: 'No', calidad_mejorado: '---' } }));
+post(partoBase({ uuid: 'u-cal-2', id_vaca: '701',
+  calostro: { calidad_sin_mejorar: '22', mejorado: 'Si', calidad_mejorado: '31' } }));
+post(partoBase({ uuid: 'u-cal-3', id_vaca: '702', sexo: '7 Macho Muerto', terneros: [] }));
+
+r = get({ action: 'calostro', token: TOKEN, vaca: '700' });
+check('encuentra la vaca', r.ok === true && r.encontrada === true, JSON.stringify(r));
+check('sin mejorar, el final es el natural', r.brix_final === '24', JSON.stringify(r));
+r = get({ action: 'calostro', token: TOKEN, vaca: '701' });
+check('si se mejoro, el final es el mejorado', r.brix_final === '31', JSON.stringify(r));
+check('pero informa los dos', r.brix_natural === '22' && r.brix_mejorado === '31',
+      JSON.stringify(r));
+r = get({ action: 'calostro', token: TOKEN, vaca: '702' });
+// Una fila de cria muerta va toda en '---' y no dice nada del calostro.
+check('una cria muerta no cuenta como dato', r.ok === true && r.encontrada === false,
+      JSON.stringify(r));
+r = get({ action: 'calostro', token: TOKEN, vaca: '999' });
+check('una vaca sin partos NO es un error', r.ok === true && r.encontrada === false,
+      JSON.stringify(r));
+check('sin credencial no contesta', get({ action: 'calostro', vaca: '700' }).ok === false);
+check('sin vaca tampoco', get({ action: 'calostro', token: TOKEN }).ok === false);
+
+// La vaca vuelve a parir: lo cacheado quedo viejo y hay que tirarlo.
+post(partoBase({ uuid: 'u-cal-4', id_vaca: '700', fecha_parto: '2026-08-13',
+  calostro: { calidad_sin_mejorar: '29', mejorado: 'No', calidad_mejorado: '---' } }));
+r = get({ action: 'calostro', token: TOKEN, vaca: '700' });
+check('un parto nuevo invalida el cache', r.brix_final === '29', JSON.stringify(r));
+
+// Y un parto con calostro de otra vaca entra y queda rastreable.
+r = post(partoBase({ uuid: 'u-cal-otra', id_vaca: '800',
+  terneros: [{ id_ternero: '9500', raza: 'Holando', peso: 40, vive: true,
+               calostro: { origen: 'Otra vaca', id_vaca_origen: '701',
+                           calidad_ternero: '31', lts_ternero: '4' } }] }));
+check('entra el calostro de otra vaca', r.ok === true, JSON.stringify(r));
+r = post(partoBase({ uuid: 'u-cal-sin-id', id_vaca: '801',
+  terneros: [{ id_ternero: '9501', raza: 'Holando', peso: 40, vive: true,
+               calostro: { origen: 'Otra vaca', calidad_ternero: '31', lts_ternero: '4' } }] }));
+check('pero sin decir de cual, no',
+      r.ok === false && /ID de la vaca que dio el calostro/.test((r.detalles || []).join()),
+      JSON.stringify(r));
+r = post(partoBase({ uuid: 'u-cal-origen-malo', id_vaca: '802',
+  terneros: [{ id_ternero: '9502', raza: 'Holando', peso: 40, vive: true,
+               calostro: { origen: 'Del freezer', lts_ternero: '4' } }] }));
+check('un origen inventado se rechaza',
+      r.ok === false && /origen de calostro invalido/.test((r.detalles || []).join()),
+      JSON.stringify(r));
 
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();

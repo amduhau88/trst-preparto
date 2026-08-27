@@ -10,6 +10,10 @@ const $ = (id) => document.getElementById(id);
 const VACIO = '---';
 const SEXO_MUERTO = ['4', '7'];
 const SEXO_MELLIZO = ['2', '8'];
+const ORIGEN_PROPIA = 'Propia madre';
+const ORIGEN_OTRA = 'Otra vaca';
+// 0 Brix = no se midio / no hubo calostro. No es un numero mas.
+const SIN_CALOSTRO = 0;
 
 /* ------------------------------------------------------------------ */
 /* Configuracion                                                       */
@@ -242,9 +246,24 @@ const todosLocal = () => tx('readonly', (s) => s.getAll());
    Los litros que produjo la madre son del parto, no de la cria. */
 const st = {
   fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: [],
+  // Lo que produjo la madre es del PARTO: una vaca produjo un calostro, no uno
+  // por cria. Cargarlo por cria dejaba escribir dos calidades distintas para la
+  // misma madre en un mellizo.
+  cal: null,
   // uuid del parto que se esta corrigiendo, o null si se esta cargando uno nuevo.
   editando: null
 };
+
+function nuevoCalostroMadre() {
+  return { brix: medio('calidad_sin_mejorar'), brixExc: '', mejorado: 'No', mej: VACIO };
+}
+
+/** Los Brix con los que quedo el calostro de la madre: el mejorado, si se mejoro. */
+const brixMadre = () => (st.cal.mejorado === 'Si' && st.cal.mej !== VACIO)
+  ? String(st.cal.mej) : String(st.cal.brixExc || st.cal.brix);
+
+/** Sin calostro no hay nada que mejorar. */
+const sinCalostro = () => !st.cal.brixExc && Number(st.cal.brix) === SIN_CALOSTRO;
 
 /* El peso arranca en null, no en el medio de la lista: el ternero se pesa mas
    tarde, y un numero puesto por la app es indistinguible de uno medido. Null se
@@ -254,9 +273,11 @@ function nuevoTernero() {
     id_ternero: '', raza: (listas.raza || [''])[0], peso: null,
     sexo: '', vive: true,
     cal: {
-      brix: medio('calidad_sin_mejorar'), brixExc: '',
-      mejorado: 'No', mej: VACIO, consumido: 'Si',
-      lts_ternero: String(medio('lts_ternero')), id_origen: ''
+      // De quien tomo el calostro ESTE ternero. Por defecto, su propia madre.
+      origen: ORIGEN_PROPIA, id_origen: '',
+      // Solo se usa con 'Otra vaca': con la propia madre sale de la caja de arriba.
+      brix: '', consulta: '',
+      lts_ternero: String(medio('lts_ternero'))
     }
   };
 }
@@ -358,6 +379,27 @@ function pintarFormulario() {
 
 function pintarSteppers() {
   $('vLtsMadre').innerHTML = st.lts_madre === null ? '—' : `${st.lts_madre}<span>L</span>`;
+  $('vBrix').innerHTML = st.cal.brixExc
+    ? `<span style="font-size:15px;color:var(--warn)">${st.cal.brixExc}</span>`
+    : `${st.cal.brix}<span>Brix</span>`;
+  $('vMej').innerHTML = st.cal.mej === VACIO ? VACIO : `${st.cal.mej}<span>Brix</span>`;
+}
+
+/** La caja A: lo que produjo la madre. Una por parto, no una por cria. */
+function pintarCalostroMadre() {
+  const c = st.cal;
+  pintarSteppers();
+
+  // Sin el chip "Valor numerico", tocar de nuevo la excepcion activa es la
+  // unica forma de volver a un numero desde el teclado; el stepper ya lo hace.
+  chips($('cBrixExc'), 'brixExc', noNumeros('calidad_sin_mejorar'), c.brixExc,
+        { ancho: true, claseDe: () => 'warn' });
+  chips($('cMejorado'), 'mejorado', listas.mejorado, c.mejorado, { ancho: true });
+
+  const sin = sinCalostro();
+  $('cajaMejorado').classList.toggle('off', sin);
+  $('cajaMej').classList.toggle('off', sin || c.mejorado !== 'Si');
+  $('notaSinCalostro').classList.toggle('hidden', !sin);
 }
 
 /** "—" mientras no se pesó. Un numero puesto de oficio no se distingue de uno medido. */
@@ -416,79 +458,93 @@ function pintarTerneros() {
   });
 
   $('cardTernero').classList.toggle('off', esMuerto());
-  $('cardCalostro').classList.toggle('off', esMuerto());
+  $('cardCalostroMadre').classList.toggle('off', esMuerto());
+  $('cardCalostroTernero').classList.toggle('off', esMuerto());
   $('notaMuerto').classList.toggle('hidden', !esMuerto());
   $('notaMellizo').classList.toggle('hidden', !esMellizo());
+  pintarCalostroMadre();
   pintarCalostros();
 }
 
-/** Un bloque de calostro por cría viva, rotulado con cuál es. */
+/** La caja B: lo que tomo cada cria. Una ficha por cria viva. */
 function pintarCalostros() {
   const vivas = st.terneros.map((t, i) => ({ t, i })).filter((x) => x.t.vive);
 
   $('calostros').innerHTML = vivas.map(({ t, i }) => {
     const c = t.cal;
+    const otra = c.origen === ORIGEN_OTRA;
     return `
     <div class="subcard">
-      <h3><span class="dot"></span>${st.terneros.length > 1 ? 'Calostro del ternero ' + (i + 1) : 'Calostro'}
+      <h3><span class="dot"></span>${st.terneros.length > 1 ? 'Ternero ' + (i + 1) : 'Calostro que tomó'}
         <span class="quien ${t.id_ternero ? '' : 'sin'}">${etiquetaCria(t, i)}</span></h3>
-      <div class="grid g23">
-        <div>
-          <div class="lab">Calidad sin mejorar</div>
-          <div class="stepper">
-            <button type="button" data-step="brix${i}:-1">−</button>
-            <div class="val">${c.brixExc
-              ? `<span style="font-size:15px;color:var(--warn)">${c.brixExc}</span>`
-              : `${c.brix}<span>Brix</span>`}</div>
-            <button type="button" data-step="brix${i}:1">+</button>
-          </div>
-        </div>
-        <div>
-          <div class="lab">…o marcar excepción</div>
-          <div class="chips" data-caja="brixExc:${i}"></div>
-        </div>
-      </div>
-      <div class="grid g2" style="margin-top:14px">
-        <div>
-          <div class="lab">¿Mejorado?</div>
-          <div class="chips" data-caja="mejorado:${i}"></div>
-        </div>
-        <div class="${c.mejorado === 'Si' ? '' : 'off'}">
-          <div class="lab">Calidad del calostro mejorado</div>
-          <div class="stepper">
-            <button type="button" data-step="mej${i}:-1">−</button>
-            <div class="val">${c.mej === VACIO ? VACIO : `${c.mej}<span>Brix</span>`}</div>
-            <button type="button" data-step="mej${i}:1">+</button>
-          </div>
-        </div>
-      </div>
+      <div class="lab">¿De quién tomó el calostro? <span class="req">*</span></div>
+      <div class="chips" data-caja="origen:${i}"></div>
       <div class="grid g3" style="margin-top:14px">
-        <div>
-          <div class="lab">¿Consumido al momento?</div>
-          <div class="chips" data-caja="consumido:${i}"></div>
-        </div>
+        <label class="f">
+          <div class="lab">ID vaca que dio el calostro</div>
+          <input type="text" inputmode="numeric" placeholder="${otra ? 'Nº de vaca' : ''}"
+                 class="${otra ? '' : 'leido'}" ${otra ? '' : 'readonly'}
+                 value="${otra ? c.id_origen : ($('fVaca') ? $('fVaca').value : '')}"
+                 data-origen="${i}">
+          <div class="dato ${/sin datos|sin señal/.test(c.consulta) ? 'warn' : ''}">${
+            otra ? c.consulta : 'Es la vaca que parió'}</div>
+        </label>
+        <label class="f">
+          <div class="lab">Calidad del calostro que tomó <span class="req">*</span></div>
+          <input type="text" inputmode="numeric" placeholder="Brix"
+                 class="${otra ? '' : 'leido'}" ${otra ? '' : 'readonly'}
+                 value="${otra ? c.brix : brixMadre()}" data-brixternero="${i}">
+          <div class="dato">${otra ? 'Se completa solo con señal' : 'Sale de lo que produjo la madre'}</div>
+        </label>
         <div>
           <div class="lab">Litros para el ternero</div>
           <div class="chips" data-caja="ltsTernero:${i}"></div>
         </div>
-        <label class="f">
-          <div class="lab">ID vaca origen del calostro</div>
-          <input type="text" inputmode="numeric" placeholder="Nº de vaca"
-                 value="${c.id_origen}" data-origen="${i}">
-        </label>
       </div>
     </div>`;
   }).join('') || '<p class="hint" style="margin:14px 0 0">Sin crías vivas: no se carga calostro.</p>';
 
   vivas.forEach(({ t, i }) => {
-    const c = t.cal;
-    caja('brixExc:' + i, ['Valor numérico'].concat(noNumeros('calidad_sin_mejorar')),
-         c.brixExc || 'Valor numérico',
-         { ancho: true, claseDe: (v) => (v === 'Valor numérico' ? '' : 'warn') });
-    caja('mejorado:' + i, listas.mejorado, c.mejorado, { ancho: true });
-    caja('consumido:' + i, listas.consumido, c.consumido, { ancho: true });
-    caja('ltsTernero:' + i, listas.lts_ternero, c.lts_ternero, { chico: true });
+    caja('origen:' + i, [ORIGEN_PROPIA, ORIGEN_OTRA], t.cal.origen, { ancho: true });
+    caja('ltsTernero:' + i, listas.lts_ternero, t.cal.lts_ternero, { chico: true });
   });
+}
+
+/* Con "Otra vaca" se consulta la planilla en vez de pedirle los Brix de memoria
+   al operario. Nunca bloquea: sin señal el campo queda editable y el parto se
+   guarda igual — un parto no puede depender de una consulta. */
+const relojConsulta = {};
+function consultarCalostro(i) {
+  const c = st.terneros[i] && st.terneros[i].cal;
+  if (!c) return;
+  clearTimeout(relojConsulta[i]);
+  const vaca = String(c.id_origen).trim();
+  if (!vaca) { c.consulta = ''; return pintarCalostros(); }
+
+  c.consulta = 'Buscando…';
+  pintarCalostros();
+  relojConsulta[i] = setTimeout(async () => {
+    if (String(c.id_origen).trim() !== vaca) return;      // siguió tipeando
+    if (!navigator.onLine || !sesion) {
+      c.consulta = 'sin señal — cargá los Brix a mano';
+      return pintarCalostros();
+    }
+    let r;
+    try { r = await enviar({ accion: 'calostro', vaca }); }
+    catch (e) { r = null; }
+    if (String(c.id_origen).trim() !== vaca) return;
+
+    if (r && r.ok && r.encontrada) {
+      c.brix = String(r.brix_final);
+      c.consulta = `${r.brix_final} Brix` + (r.fecha ? ` · parió el ${aDDMMAAAA(r.fecha)}` : '') +
+                   (String(r.mejorado) === 'Si' ? ' · mejorado' : '');
+    } else if (r && r.ok) {
+      c.consulta = 'sin datos de esa vaca — cargá los Brix a mano';
+    } else {
+      c.consulta = 'sin señal — cargá los Brix a mano';
+    }
+    pintarCalostros();
+  }, 600);
 }
 
 /** Pinta un grupo de chips dentro de su contenedor por clave. */
@@ -541,21 +597,36 @@ function elegirChip(chip) {
     if (campo === 'raza') { t.raza = val; return pintarCalostros(); }
     if (campo === 'sexoc') { t.sexo = val; return pintarTerneros(); }
     if (campo === 'vive') { t.vive = val === 'Vivo'; return pintarTerneros(); }
-    if (campo === 'brixExc') {
-      c.brixExc = val === 'Valor numérico' ? '' : val;
+    if (campo === 'origen') {
+      c.origen = val;
+      // Volver a la propia madre borra lo consultado: ese dato era de otra vaca.
+      if (val === ORIGEN_PROPIA) { c.id_origen = ''; c.brix = ''; c.consulta = ''; }
       return pintarCalostros();
     }
-    if (campo === 'mejorado') {
-      c.mejorado = val;
-      c.mej = val === 'Si' ? (c.mej === VACIO ? medio('calidad_mejorado') : c.mej) : VACIO;
-      return pintarCalostros();
-    }
-    if (campo === 'consumido') { c.consumido = val; return; }
     if (campo === 'ltsTernero') { c.lts_ternero = val; return; }
     return;
   }
 
   if (clave === 'listaFecha') { listaFecha = val; return refrescar(); }
+
+  // Calostro de la madre: es del parto, no de ninguna cria.
+  if (clave === 'brixExc') {
+    // Sin el chip "Valor numerico", tocar la excepcion activa la apaga. Si no,
+    // marcar "mastitis" sin querer no se podria deshacer mas que recargando.
+    st.cal.brixExc = st.cal.brixExc === val ? '' : val;
+    return pintarCalostroMadre();
+  }
+  if (clave === 'mejorado') {
+    if (sinCalostro()) {
+      pintarCalostroMadre();
+      return avisar('Con calidad 0 no hay calostro que mejorar', true);
+    }
+    st.cal.mejorado = val;
+    st.cal.mej = val === 'Si'
+      ? (st.cal.mej === VACIO ? medio('calidad_mejorado') : st.cal.mej) : VACIO;
+    pintarCalostroMadre();
+    return pintarCalostros();               // cambia el Brix que toma la cria
+  }
 
   st[clave] = val;
   if (clave === 'sexo') pintarTerneros();
@@ -583,21 +654,30 @@ function mover(spec, boton) {
     t.peso = t.peso === null ? medio('peso') : siguienteEnLista(t.peso, paso, numeros('peso'));
     return celda ? escribir(pesoTxt(t.peso)) : pintarTerneros();
   }
-  if (campo.startsWith('brix')) {
-    const c = st.terneros[+campo.slice(4)].cal;
-    const teniaExcepcion = !!c.brixExc;
+  if (campo === 'brix') {
+    const c = st.cal;
+    const antesExc = !!c.brixExc;
+    const antesSin = sinCalostro();
     c.brixExc = '';                              // tocar el numero descarta la excepcion
     c.brix = siguienteEnLista(c.brix, paso, numeros('calidad_sin_mejorar'));
-    // Solo hace falta repintar la primera vez, para apagar el chip de excepcion.
-    if (teniaExcepcion || !celda) return pintarCalostros();
-    return escribir(`${c.brix}<span>Brix</span>`);
+    // Sin calostro no hay nada que mejorar: se apaga solo.
+    if (sinCalostro()) { c.mejorado = 'No'; c.mej = VACIO; }
+    // Repintar solo cuando algo mas cambio de estado; si no, se destruiria el
+    // boton que el operario esta manteniendo apretado.
+    if (antesExc || antesSin !== sinCalostro() || !celda) {
+      pintarCalostroMadre();
+      return pintarCalostros();
+    }
+    escribir(`${c.brix}<span>Brix</span>`);
+    return pintarCalostros();                    // el Brix del ternero lo sigue
   }
-  if (campo.startsWith('mej')) {
-    const c = st.terneros[+campo.slice(3)].cal;
+  if (campo === 'mej') {
+    const c = st.cal;
     if (c.mejorado !== 'Si') return;
     c.mej = c.mej === VACIO ? medio('calidad_mejorado')
                             : siguienteEnLista(c.mej, paso, numeros('calidad_mejorado'));
-    return celda ? escribir(`${c.mej}<span>Brix</span>`) : pintarCalostros();
+    if (celda) escribir(`${c.mej}<span>Brix</span>`); else pintarCalostroMadre();
+    return pintarCalostros();
   }
   if (campo === 'ltsMadre') {
     st.lts_madre = st.lts_madre === null ? medio('lts_madre')
@@ -681,7 +761,13 @@ document.addEventListener('input', (e) => {
     return;
   }
   const o = e.target.closest('[data-origen]');
-  if (o) st.terneros[+o.dataset.origen].cal.id_origen = o.value;
+  if (o) {
+    const i = +o.dataset.origen;
+    st.terneros[i].cal.id_origen = o.value;
+    return consultarCalostro(i);
+  }
+  const b = e.target.closest('[data-brixternero]');
+  if (b) st.terneros[+b.dataset.brixternero].cal.brix = b.value.trim();
 });
 
 /* ------------------------------------------------------------------ */
@@ -707,6 +793,12 @@ function armarPayload() {
 
   if (!esMuerto()) {
     p.lts_madre = String(st.lts_madre);           // del parto, no de la cria
+    // Lo que produjo la madre: una vaca, un calostro.
+    p.calostro = {
+      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
+      mejorado: st.cal.mejorado,
+      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
+    };
     p.terneros = st.terneros.map((t) => {
       const cria = {
         id_ternero: String(t.id_ternero).trim(),
@@ -717,20 +809,24 @@ function armarPayload() {
       // Sin pesar: el peso no viaja y la columna I queda vacia. Mandar '' o 0
       // seria inventar un dato que nadie midio.
       if (t.peso !== null) cria.peso = t.peso;
-      if (t.vive) {
-        cria.calostro = {
-          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
-          mejorado: t.cal.mejorado,
-          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
-          consumido: t.cal.consumido,
-          lts_ternero: t.cal.lts_ternero,
-          id_vaca_origen: String(t.cal.id_origen).trim()
-        };
-      }
+      if (t.vive) cria.calostro = calostroDeLaCria(t.cal);
       return cria;
     });
   }
   return p;
+}
+
+/* Con 'Propia madre' ni el ID ni los Brix se le piden al operario: salen del
+   parto. Dejarlos escribibles abriria la puerta a marcar como propio un
+   calostro que en la planilla figura de otra vaca. */
+function calostroDeLaCria(c) {
+  const otra = c.origen === ORIGEN_OTRA;
+  return {
+    origen: c.origen,
+    id_vaca_origen: otra ? String(c.id_origen).trim() : $('fVaca').value.trim(),
+    calidad_ternero: otra ? String(c.brix).trim() : brixMadre(),
+    lts_ternero: c.lts_ternero
+  };
 }
 
 function faltantes(p) {
@@ -742,6 +838,10 @@ function faltantes(p) {
   if (!p.sexo) f.push('sexo');
   if (!esMuerto()) {
     if (st.lts_madre === null) f.push('litros de la madre');
+    if (st.cal.brix === null && !st.cal.brixExc) f.push('calidad del calostro de la madre');
+    if (st.cal.mejorado === 'Si' && (st.cal.mej === VACIO || !st.cal.mej)) {
+      f.push('calidad del calostro mejorado');
+    }
     const varias = st.terneros.length > 1;
     st.terneros.forEach((t, i) => {
       const cual = varias ? ` (ternero ${i + 1})` : '';
@@ -749,7 +849,12 @@ function faltantes(p) {
       if (!String(t.id_ternero).trim()) f.push('ID de ternero' + cual);
       if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
       if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
-      if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
+      if (t.cal.origen === ORIGEN_OTRA) {
+        if (!String(t.cal.id_origen).trim()) f.push('de qué vaca salió el calostro' + cual);
+        // Sin señal la consulta no completa nada, pero el dato sigue haciendo
+        // falta: se carga a mano y el parto entra igual.
+        if (!String(t.cal.brix).trim()) f.push('los Brix del calostro que tomó' + cual);
+      }
     });
     if (st.terneros.length && st.terneros.every((t) => !t.vive)) {
       f.push('al menos una cría viva, o cambiá el código del parto');
@@ -819,11 +924,29 @@ function aEstado(p) {
   st.tambo = p.tambo || '';
   st.lts_madre = p.lts_madre === undefined || p.lts_madre === '' ? null : +p.lts_madre;
 
+  /* El calostro de la madre viaja arriba desde r6. En un parto guardado antes
+     del deploy viene adentro de la primera cria: la tablet puede tener partos
+     viejos en IndexedDB cuando se publica el service worker nuevo, y abrirlos
+     con el formulario nuevo no puede perder lo que ya se habia cargado. */
+  const m = (p.calostro && p.calostro.calidad_sin_mejorar !== undefined) ? p.calostro
+    : (((p.terneros || []).find((t) => t.vive !== false) || {}).calostro || {});
+  // calidad_sin_mejorar guarda un numero de Brix o una excepcion ('mastitis',
+  // 'sangre', 'campo'). Se separan de nuevo por la forma del valor.
+  const esNumero = /^\d+$/.test(String(m.calidad_sin_mejorar || ''));
+  st.cal = {
+    brix: esNumero ? +m.calidad_sin_mejorar : medio('calidad_sin_mejorar'),
+    brixExc: esNumero ? '' : (m.calidad_sin_mejorar || ''),
+    mejorado: m.mejorado || 'No',
+    mej: !m.calidad_mejorado || m.calidad_mejorado === VACIO ? VACIO : +m.calidad_mejorado
+  };
+
   st.terneros = (p.terneros || []).map((t) => {
     const c = t.calostro || {};
-    // calidad_sin_mejorar guarda un numero de Brix o una excepcion ('mastitis',
-    // 'sangre', 'campo'). Se separan de nuevo por la forma del valor.
-    const brixEsNumero = /^\d+$/.test(String(c.calidad_sin_mejorar || ''));
+    // Formato viejo: solo estaba el ID de la vaca origen. Si no es la que pario,
+    // el calostro era de otra.
+    const origen = c.origen ||
+      (c.id_vaca_origen && String(c.id_vaca_origen) !== String(p.id_vaca)
+        ? ORIGEN_OTRA : ORIGEN_PROPIA);
     return {
       id_ternero: t.id_ternero || '',
       raza: t.raza || (listas.raza || [''])[0],
@@ -831,13 +954,11 @@ function aEstado(p) {
       sexo: t.sexo || '',
       vive: t.vive !== false,
       cal: {
-        brix: brixEsNumero ? +c.calidad_sin_mejorar : medio('calidad_sin_mejorar'),
-        brixExc: brixEsNumero ? '' : (c.calidad_sin_mejorar || ''),
-        mejorado: c.mejorado || 'No',
-        mej: !c.calidad_mejorado || c.calidad_mejorado === VACIO ? VACIO : +c.calidad_mejorado,
-        consumido: c.consumido || 'Si',
-        lts_ternero: String(c.lts_ternero === undefined ? medio('lts_ternero') : c.lts_ternero),
-        id_origen: c.id_vaca_origen || ''
+        origen: origen,
+        id_origen: origen === ORIGEN_OTRA ? (c.id_vaca_origen || '') : '',
+        brix: origen === ORIGEN_OTRA ? String(c.calidad_ternero || '') : '',
+        consulta: '',
+        lts_ternero: String(c.lts_ternero === undefined ? medio('lts_ternero') : c.lts_ternero)
       }
     };
   });
@@ -902,18 +1023,16 @@ function armarEdicion() {
     operario: $('fOperario').value,
     tambo: st.tambo,
     lts_madre: st.lts_madre === null ? undefined : String(st.lts_madre),
+    id_vaca: $('fVaca').value.trim(),
+    // El calostro de la madre es del parto: va una vez, no una por cria.
+    calostro: {
+      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
+      mejorado: st.cal.mejorado,
+      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
+    },
     terneros: st.terneros.map((t) => {
       if (!t.vive) return {};                      // cria muerta: no lleva nada
-      const cria = {
-        calostro: {
-          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
-          mejorado: t.cal.mejorado,
-          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
-          consumido: t.cal.consumido,
-          lts_ternero: t.cal.lts_ternero,
-          id_vaca_origen: String(t.cal.id_origen).trim()
-        }
-      };
+      const cria = { calostro: calostroDeLaCria(t.cal) };
       if (t.peso !== null) cria.peso = t.peso;
       return cria;
     })
@@ -939,12 +1058,18 @@ function faltantesEdicion(reg) {
       f.push(`el peso lo carga ${autor}, que fue quien cargó el parto`);
     }
     if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
-    if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
-    if (t.cal.mejorado === 'Si' && (t.cal.mej === VACIO || !t.cal.mej)) {
-      f.push('calidad del calostro mejorado' + cual);
+    if (t.cal.origen === ORIGEN_OTRA) {
+      if (!String(t.cal.id_origen).trim()) f.push('de qué vaca salió el calostro' + cual);
+      if (!String(t.cal.brix).trim()) f.push('los Brix del calostro que tomó' + cual);
     }
   });
-  if (st.lts_madre === null && st.terneros.some((t) => t.vive)) f.push('litros de la madre');
+  if (st.terneros.some((t) => t.vive)) {
+    if (st.lts_madre === null) f.push('litros de la madre');
+    if (st.cal.brix === null && !st.cal.brixExc) f.push('calidad del calostro de la madre');
+    if (st.cal.mejorado === 'Si' && (st.cal.mej === VACIO || !st.cal.mej)) {
+      f.push('calidad del calostro mejorado');
+    }
+  }
   if (!st.tambo) f.push('tambo');
   return f;
 }
@@ -985,6 +1110,7 @@ async function guardarEdicion() {
 function aplicarEnPayload(p, ed) {
   if (ed.tambo !== undefined) p.tambo = ed.tambo;
   if (ed.lts_madre !== undefined) p.lts_madre = ed.lts_madre;
+  if (ed.calostro) p.calostro = Object.assign({}, p.calostro, ed.calostro);
   (ed.terneros || []).forEach((t, i) => {
     const destino = p.terneros[i];
     if (!destino || !t.calostro) return;
@@ -1050,6 +1176,7 @@ function limpiar() {
   st.editando = null;
   $('fVaca').value = '';
   $('fNotas').value = '';
+  st.cal = nuevoCalostroMadre();
   st.terneros = st.terneros.map(() => nuevoTernero());
   pintarFormulario();
   $('body').scrollTop = 0;
@@ -1550,6 +1677,7 @@ setInterval(() => {
   st.sexo = (listas.sexo || [''])[0];
   st.tambo = (listas.tambo || [''])[0];
   st.lts_madre = medio('lts_madre');
+  st.cal = nuevoCalostroMadre();
 
   pintarFormulario();
   await refrescar();
