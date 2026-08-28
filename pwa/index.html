@@ -52,6 +52,25 @@
   .badge.pend{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
   .badge.pend .dot{background:var(--warn)}
 
+  /* ---------- menu de cuenta ---------- */
+  .cuenta{position:relative;flex:none}
+  .cuenta .chip-cuenta{display:inline-flex;align-items:center;gap:8px;font-family:inherit;
+    font-size:12.5px;font-weight:700;color:var(--ink-2);background:#fff;cursor:pointer;
+    border:1px solid var(--line);border-radius:999px;padding:5px 12px 5px 5px;min-height:38px}
+  .cuenta .ini{width:28px;height:28px;border-radius:50%;background:var(--accent-soft);
+    color:var(--accent);display:grid;place-items:center;font-size:13px;font-weight:800;flex:none}
+  .cuenta .quien{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:700px){.cuenta .quien{display:none}}
+  .menu{position:absolute;right:0;top:calc(100% + 8px);background:#fff;border:1px solid var(--line);
+    border-radius:12px;box-shadow:0 14px 34px rgba(20,35,30,.18);padding:6px;min-width:230px;z-index:60}
+  .menu .mail{font-size:12px;color:var(--ink-3);padding:9px 12px 10px;border-bottom:1px solid var(--line);
+    margin-bottom:6px;word-break:break-all}
+  .menu button{display:block;width:100%;text-align:left;font-family:inherit;font-size:14px;
+    font-weight:600;color:var(--ink-2);background:none;border:0;border-radius:9px;
+    padding:12px;min-height:46px;cursor:pointer}
+  .menu button:hover{background:var(--soft)}
+  .menu button.peligro{color:var(--danger)}
+
   /* ---------- pestañas ---------- */
   .tabs{display:flex;gap:6px;padding:10px 18px 0;background:#fff;border-bottom:1px solid var(--line);flex:none}
   .tab{border:1px solid transparent;border-bottom:none;background:transparent;padding:10px 16px;
@@ -163,10 +182,17 @@
   .kpi .n{font-size:26px;font-weight:800;letter-spacing:-.02em}
   .kpi .l{font-size:11.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.07em;
     font-weight:700;margin-top:2px}
+  .listrow,.listhead{display:grid;
+    grid-template-columns:74px 1fr 66px 92px 92px 84px 116px 108px;gap:12px;align-items:center}
   .listrow{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px;
-    margin-bottom:9px;font-size:14px;display:grid;
-    grid-template-columns:74px 1fr 70px 120px 116px 106px;gap:12px;align-items:center}
-  @media (max-width:820px){.listrow{grid-template-columns:70px 1fr 106px}.listrow .ocultar{display:none}}
+    margin-bottom:9px;font-size:14px}
+  /* Sin rotulos, la fila era una hilera de valores sueltos que habia que adivinar. */
+  .listhead{padding:0 15px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    font-weight:700;color:var(--ink-3)}
+  @media (max-width:820px){
+    .listrow,.listhead{grid-template-columns:70px 1fr 116px 108px}
+    .listrow .ocultar,.listhead .ocultar{display:none}
+  }
   .listrow .id{font-weight:800;font-size:17px}
   .listrow .meta{color:var(--ink-3);font-size:12px;margin-top:2px}
   /* El boton de la fila: chico, pero con el alto minimo que se toca con guante. */
@@ -175,6 +201,13 @@
   .pill.ok{background:var(--accent-soft);color:var(--accent)}
   .pill.wait{background:var(--warn-soft);color:var(--warn)}
   .pill.bad{background:var(--danger-soft);color:var(--danger)}
+  .leido{background:var(--soft);color:var(--ink-2);font-weight:700}
+  .dato{font-size:12px;color:var(--ink-3);margin-top:5px;min-height:16px}
+  .dato.warn{color:var(--warn)}
+  .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
+    background:var(--warn-soft);color:var(--warn);white-space:nowrap}
+  .listbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+  .listbar .lab{margin:0}
   .vacio{text-align:center;color:var(--ink-3);font-size:14px;padding:40px 20px}
 
   /* ---------- cartel de confirmacion ---------- */
@@ -220,6 +253,12 @@
   <div class="spacer"></div>
   <div class="estado">
     <button class="badge" id="badgeSync" type="button"><span class="dot"></span><span id="badgeTxt">—</span></button>
+  </div>
+  <div class="cuenta hidden" id="cuenta">
+    <button class="chip-cuenta" id="btnCuenta" type="button" aria-haspopup="menu" aria-expanded="false">
+      <span class="ini" id="cuentaIni">—</span><span class="quien" id="cuentaQuien">—</span>
+    </button>
+    <div class="menu hidden" id="menuCuenta" role="menu"></div>
   </div>
   <img class="marca" src="img/aed.png" srcset="img/aed.png 1x, img/aed@2x.png 2x"
        alt="AED — Grupo Duhau" width="60" height="44">
@@ -294,17 +333,55 @@
       <div id="terneros"></div>
     </div>
 
-    <div class="card" id="cardCalostro">
-      <h2>Calostro</h2>
-      <p class="hint">Los litros de la madre son del parto. El resto se carga por cada ternero.</p>
-      <div style="max-width:280px">
-        <div class="lab">Litros que produjo la madre</div>
-        <div class="stepper">
-          <button type="button" data-step="ltsMadre:-1">−</button>
-          <div class="val" id="vLtsMadre">—</div>
-          <button type="button" data-step="ltsMadre:1">+</button>
+    <div class="card" id="cardCalostroMadre">
+      <h2>Calostro de la vaca parida</h2>
+      <p class="hint">Lo que produjo la madre. Es del parto: se carga una sola vez,
+        aunque sean mellizos.</p>
+      <div class="grid g3">
+        <div>
+          <div class="lab">Litros que produjo</div>
+          <div class="stepper">
+            <button type="button" data-step="ltsMadre:-1">−</button>
+            <div class="val" id="vLtsMadre">—</div>
+            <button type="button" data-step="ltsMadre:1">+</button>
+          </div>
+        </div>
+        <div>
+          <div class="lab">Calidad sin mejorar</div>
+          <div class="stepper">
+            <button type="button" data-step="brix:-1">−</button>
+            <div class="val" id="vBrix">—</div>
+            <button type="button" data-step="brix:1">+</button>
+          </div>
+        </div>
+        <div>
+          <div class="lab">…o marcar excepción</div>
+          <div class="chips" id="cBrixExc"></div>
         </div>
       </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div id="cajaMejorado">
+          <div class="lab">¿Mejorado?</div>
+          <div class="chips" id="cMejorado"></div>
+        </div>
+        <div id="cajaMej">
+          <div class="lab">Calidad del calostro mejorado</div>
+          <div class="stepper">
+            <button type="button" data-step="mej:-1">−</button>
+            <div class="val" id="vMej">---</div>
+            <button type="button" data-step="mej:1">+</button>
+          </div>
+        </div>
+      </div>
+      <div id="notaSinCalostro" class="note hidden" style="margin-top:12px">
+        Calidad <b>0</b> quiere decir que no se midió o que no hubo calostro:
+        no hay nada que mejorar.
+      </div>
+    </div>
+
+    <div class="card" id="cardCalostroTernero">
+      <h2>Calostro suministrado al ternero</h2>
+      <p class="hint">Lo que tomó cada cría. Puede ser de su propia madre o de otra vaca.</p>
       <div id="calostros"></div>
     </div>
 
@@ -326,12 +403,31 @@
 
   <!-- ========== LISTA ========== -->
   <section class="view hidden" id="v-list">
+    <div class="listbar">
+      <div class="lab">Día</div>
+      <div class="chips" id="cListaFecha"></div>
+    </div>
+    <div id="avisoFuera" class="note hidden" style="margin-bottom:14px"></div>
     <div class="kpis">
       <div class="kpi"><div class="n" id="kTot">0</div><div class="l">Partos hoy</div></div>
       <div class="kpi"><div class="n" id="kHM">0 / 0</div><div class="l">Hembras / machos</div></div>
       <div class="kpi"><div class="n" id="kPesar" style="color:var(--warn)">0</div><div class="l">Falta pesar</div></div>
       <div class="kpi"><div class="n" id="kPend" style="color:var(--warn)">0</div><div class="l">Sin sincronizar</div></div>
       <div class="kpi"><div class="n" id="kMuertos" style="color:var(--danger)">0</div><div class="l">Cría muerta</div></div>
+    </div>
+    <div id="avisoRemotos" class="note hidden" style="margin-bottom:14px">
+      Sin señal: se ve sólo lo cargado en <b>esta tablet</b>. Al volver la conexión
+      aparecen también los partos de las demás.
+    </div>
+    <div class="listhead hidden" id="cabecera">
+      <div>ID Vaca<br><span style="text-transform:none;letter-spacing:0">(la que parió)</span></div>
+      <div>Crías</div>
+      <div>Hora nac.</div>
+      <div class="ocultar">Cargado</div>
+      <div class="ocultar">Tipo</div>
+      <div class="ocultar">Operario</div>
+      <div>Estado</div>
+      <div></div>
     </div>
     <div id="filas"></div>
   </section>
@@ -373,6 +469,18 @@
     <p class="detalle" id="okDetalle"></p>
     <div><span class="estado" id="okEstado"></span></div>
     <button class="btn primary" type="button" id="btnOtroParto">Cargar otro parto</button>
+  </div>
+</div>
+
+<div class="modal hidden" id="modalConf" role="dialog" aria-modal="true" aria-labelledby="confTitulo">
+  <div class="modal-caja">
+    <div class="tilde" style="background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)">!</div>
+    <h2 id="confTitulo">¿Seguro?</h2>
+    <p class="detalle" id="confDetalle"></p>
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn" type="button" id="btnConfNo" style="flex:1">Cancelar</button>
+      <button class="btn primary" type="button" id="btnConfSi" style="flex:1">Sí</button>
+    </div>
   </div>
 </div>
 

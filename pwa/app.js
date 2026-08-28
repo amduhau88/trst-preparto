@@ -10,6 +10,10 @@ const $ = (id) => document.getElementById(id);
 const VACIO = '---';
 const SEXO_MUERTO = ['4', '7'];
 const SEXO_MELLIZO = ['2', '8'];
+const ORIGEN_PROPIA = 'Propia madre';
+const ORIGEN_OTRA = 'Otra vaca';
+// 0 Brix = no se midio / no hubo calostro. No es un numero mas.
+const SIN_CALOSTRO = 0;
 
 /* ------------------------------------------------------------------ */
 /* Configuracion                                                       */
@@ -42,6 +46,16 @@ const cfg = {
 let sesion = null;                    // { email, admin, hasta }
 let idToken = { valor: '', exp: 0 };
 let sesionVencida = false;
+
+/* No poder renovar el token AHORA no es una sesion caida. En la tablet, One Tap
+   se apaga solo (cooldown despues de un descarte, bloqueo de cookies de
+   terceros en Safari) y el token de Google dura una hora: si cada fallo pintara
+   "Sesion vencida", el cartel estaria en rojo casi todo el dia mintiendo.
+   Se avisa recien al tercer fallo seguido, o cuando lo dice el backend. */
+let fallosToken = 0;
+let renovando = null;                 // promesa unica: dos llamadas no abren dos prompts
+const MARGEN_TOKEN = 10 * 60000;      // se renueva 10 min antes de vencer
+const FALLOS_PARA_AVISAR = 3;
 
 (function cargarSesion() {
   try {
@@ -99,27 +113,45 @@ async function abrirSesion(jwt) {
              hasta: Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
   localStorage.setItem('sesion', JSON.stringify(sesion));
   sesionVencida = false;
+  fallosToken = 0;
   return { ok: true };
 }
 
 function cerrarSesion() {
   sesion = null;
   idToken = { valor: '', exp: 0 };
+  sesionVencida = false;
+  fallosToken = 0;
+  renovando = null;
   localStorage.removeItem('sesion');
   localStorage.removeItem('idToken');
   try { google.accounts.id.disableAutoSelect(); } catch (e) { /* sin red */ }
+  pintarCuenta();
   ver('login');
   pintarLogin();
 }
 
+const tokenSirve = (margen) => !!idToken.valor && idToken.exp - margen > Date.now();
+
 /**
  * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
  * Solo se usa al sincronizar: guardar un parto nunca depende de esto.
+ *
+ * Se renueva con 10 minutos de margen para que la renovacion no caiga justo
+ * cuando hay partos esperando. Si el prompt no responde pero el token viejo
+ * todavia sirve, se usa ese: un token de 59 minutos es perfectamente valido.
  */
 async function tokenVigente() {
-  if (idToken.valor && idToken.exp - 60000 > Date.now()) return idToken.valor;
-  if (!navigator.onLine) return '';
+  if (tokenSirve(MARGEN_TOKEN)) return idToken.valor;
+  if (!navigator.onLine) return tokenSirve(60000) ? idToken.valor : '';
 
+  if (!renovando) renovando = renovarToken().then((j) => { renovando = null; return j; });
+  const jwt = await renovando;
+  if (jwt) return jwt;
+  return tokenSirve(60000) ? idToken.valor : '';
+}
+
+async function renovarToken() {
   try {
     await prepararGoogle();
     const jwt = await new Promise((ok) => {
@@ -154,13 +186,14 @@ const LISTAS_BASE = {
   raza: ['Holando', 'Angus'],
   peso: rango(25, 60),
   hora_nacimiento: horas(),
-  calidad_sin_mejorar: rango(18, 35).concat(['mastitis', 'sangre', 'campo']),
+  // El 0 significa "no se midio / no hubo calostro". La lista salta de 0 a 18
+  // a proposito: entre medio no hay valores validos.
+  calidad_sin_mejorar: ['0'].concat(rango(18, 35)).concat(['mastitis', 'sangre', 'campo']),
   mejorado: ['Si', 'No'],
   calidad_mejorado: [VACIO].concat(rango(26, 35)),
-  consumido: ['Si', 'No'],
   lts_madre: rango(0, 20),
   lts_ternero: rango(2, 6),
-  tambo: ['1', '2', '3'],
+  tambo: ['1', '2', '3', '4'],
   rodeo: []
 };
 
@@ -213,9 +246,24 @@ const todosLocal = () => tx('readonly', (s) => s.getAll());
    Los litros que produjo la madre son del parto, no de la cria. */
 const st = {
   fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: [],
+  // Lo que produjo la madre es del PARTO: una vaca produjo un calostro, no uno
+  // por cria. Cargarlo por cria dejaba escribir dos calidades distintas para la
+  // misma madre en un mellizo.
+  cal: null,
   // uuid del parto que se esta corrigiendo, o null si se esta cargando uno nuevo.
   editando: null
 };
+
+function nuevoCalostroMadre() {
+  return { brix: medio('calidad_sin_mejorar'), brixExc: '', mejorado: 'No', mej: VACIO };
+}
+
+/** Los Brix con los que quedo el calostro de la madre: el mejorado, si se mejoro. */
+const brixMadre = () => (st.cal.mejorado === 'Si' && st.cal.mej !== VACIO)
+  ? String(st.cal.mej) : String(st.cal.brixExc || st.cal.brix);
+
+/** Sin calostro no hay nada que mejorar. */
+const sinCalostro = () => !st.cal.brixExc && Number(st.cal.brix) === SIN_CALOSTRO;
 
 /* El peso arranca en null, no en el medio de la lista: el ternero se pesa mas
    tarde, y un numero puesto por la app es indistinguible de uno medido. Null se
@@ -225,9 +273,11 @@ function nuevoTernero() {
     id_ternero: '', raza: (listas.raza || [''])[0], peso: null,
     sexo: '', vive: true,
     cal: {
-      brix: medio('calidad_sin_mejorar'), brixExc: '',
-      mejorado: 'No', mej: VACIO, consumido: 'Si',
-      lts_ternero: String(medio('lts_ternero')), id_origen: ''
+      // De quien tomo el calostro ESTE ternero. Por defecto, su propia madre.
+      origen: ORIGEN_PROPIA, id_origen: '',
+      // Solo se usa con 'Otra vaca': con la propia madre sale de la caja de arriba.
+      brix: '', consulta: '',
+      lts_ternero: String(medio('lts_ternero'))
     }
   };
 }
@@ -262,6 +312,12 @@ function fechasPosibles() {
  * Cada chip muestra la fecha concreta: el operario ve con que dia va a quedar
  * registrado el parto en vez de tener que deducirlo.
  */
+/* La lista del dia tiene su PROPIA fecha. Cuando compartia st.fecha con el chip
+   del formulario, cargar un parto tardio como "Ayer" dejaba la lista clavada en
+   ayer: el operario veia los partos del dia anterior con el cartel en verde y lo
+   leia como que la app perdio los de hoy. */
+let listaFecha = '';
+
 function pintarFechas() {
   const opciones = fechasPosibles();
   // Si la app quedo abierta toda la noche y cruzo la medianoche, la seleccion
@@ -271,6 +327,14 @@ function pintarFechas() {
   $('cFecha').innerHTML = opciones.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
              data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
+  ).join('');
+
+  const cont = $('cListaFecha');
+  if (!cont) return;
+  if (!opciones.some((o) => o.iso === listaFecha)) listaFecha = opciones[0].iso;
+  cont.innerHTML = opciones.map((o) =>
+    `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
+             data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
   ).join('');
 }
 
@@ -315,6 +379,27 @@ function pintarFormulario() {
 
 function pintarSteppers() {
   $('vLtsMadre').innerHTML = st.lts_madre === null ? '—' : `${st.lts_madre}<span>L</span>`;
+  $('vBrix').innerHTML = st.cal.brixExc
+    ? `<span style="font-size:15px;color:var(--warn)">${st.cal.brixExc}</span>`
+    : `${st.cal.brix}<span>Brix</span>`;
+  $('vMej').innerHTML = st.cal.mej === VACIO ? VACIO : `${st.cal.mej}<span>Brix</span>`;
+}
+
+/** La caja A: lo que produjo la madre. Una por parto, no una por cria. */
+function pintarCalostroMadre() {
+  const c = st.cal;
+  pintarSteppers();
+
+  // Sin el chip "Valor numerico", tocar de nuevo la excepcion activa es la
+  // unica forma de volver a un numero desde el teclado; el stepper ya lo hace.
+  chips($('cBrixExc'), 'brixExc', noNumeros('calidad_sin_mejorar'), c.brixExc,
+        { ancho: true, claseDe: () => 'warn' });
+  chips($('cMejorado'), 'mejorado', listas.mejorado, c.mejorado, { ancho: true });
+
+  const sin = sinCalostro();
+  $('cajaMejorado').classList.toggle('off', sin);
+  $('cajaMej').classList.toggle('off', sin || c.mejorado !== 'Si');
+  $('notaSinCalostro').classList.toggle('hidden', !sin);
 }
 
 /** "—" mientras no se pesó. Un numero puesto de oficio no se distingue de uno medido. */
@@ -373,79 +458,93 @@ function pintarTerneros() {
   });
 
   $('cardTernero').classList.toggle('off', esMuerto());
-  $('cardCalostro').classList.toggle('off', esMuerto());
+  $('cardCalostroMadre').classList.toggle('off', esMuerto());
+  $('cardCalostroTernero').classList.toggle('off', esMuerto());
   $('notaMuerto').classList.toggle('hidden', !esMuerto());
   $('notaMellizo').classList.toggle('hidden', !esMellizo());
+  pintarCalostroMadre();
   pintarCalostros();
 }
 
-/** Un bloque de calostro por cría viva, rotulado con cuál es. */
+/** La caja B: lo que tomo cada cria. Una ficha por cria viva. */
 function pintarCalostros() {
   const vivas = st.terneros.map((t, i) => ({ t, i })).filter((x) => x.t.vive);
 
   $('calostros').innerHTML = vivas.map(({ t, i }) => {
     const c = t.cal;
+    const otra = c.origen === ORIGEN_OTRA;
     return `
     <div class="subcard">
-      <h3><span class="dot"></span>${st.terneros.length > 1 ? 'Calostro del ternero ' + (i + 1) : 'Calostro'}
+      <h3><span class="dot"></span>${st.terneros.length > 1 ? 'Ternero ' + (i + 1) : 'Calostro que tomó'}
         <span class="quien ${t.id_ternero ? '' : 'sin'}">${etiquetaCria(t, i)}</span></h3>
-      <div class="grid g23">
-        <div>
-          <div class="lab">Calidad sin mejorar</div>
-          <div class="stepper">
-            <button type="button" data-step="brix${i}:-1">−</button>
-            <div class="val">${c.brixExc
-              ? `<span style="font-size:15px;color:var(--warn)">${c.brixExc}</span>`
-              : `${c.brix}<span>Brix</span>`}</div>
-            <button type="button" data-step="brix${i}:1">+</button>
-          </div>
-        </div>
-        <div>
-          <div class="lab">…o marcar excepción</div>
-          <div class="chips" data-caja="brixExc:${i}"></div>
-        </div>
-      </div>
-      <div class="grid g2" style="margin-top:14px">
-        <div>
-          <div class="lab">¿Mejorado?</div>
-          <div class="chips" data-caja="mejorado:${i}"></div>
-        </div>
-        <div class="${c.mejorado === 'Si' ? '' : 'off'}">
-          <div class="lab">Calidad del calostro mejorado</div>
-          <div class="stepper">
-            <button type="button" data-step="mej${i}:-1">−</button>
-            <div class="val">${c.mej === VACIO ? VACIO : `${c.mej}<span>Brix</span>`}</div>
-            <button type="button" data-step="mej${i}:1">+</button>
-          </div>
-        </div>
-      </div>
+      <div class="lab">¿De quién tomó el calostro? <span class="req">*</span></div>
+      <div class="chips" data-caja="origen:${i}"></div>
       <div class="grid g3" style="margin-top:14px">
-        <div>
-          <div class="lab">¿Consumido al momento?</div>
-          <div class="chips" data-caja="consumido:${i}"></div>
-        </div>
+        <label class="f">
+          <div class="lab">ID vaca que dio el calostro</div>
+          <input type="text" inputmode="numeric" placeholder="${otra ? 'Nº de vaca' : ''}"
+                 class="${otra ? '' : 'leido'}" ${otra ? '' : 'readonly'}
+                 value="${otra ? c.id_origen : ($('fVaca') ? $('fVaca').value : '')}"
+                 data-origen="${i}">
+          <div class="dato ${/sin datos|sin señal/.test(c.consulta) ? 'warn' : ''}">${
+            otra ? c.consulta : 'Es la vaca que parió'}</div>
+        </label>
+        <label class="f">
+          <div class="lab">Calidad del calostro que tomó <span class="req">*</span></div>
+          <input type="text" inputmode="numeric" placeholder="Brix"
+                 class="${otra ? '' : 'leido'}" ${otra ? '' : 'readonly'}
+                 value="${otra ? c.brix : brixMadre()}" data-brixternero="${i}">
+          <div class="dato">${otra ? 'Se completa solo con señal' : 'Sale de lo que produjo la madre'}</div>
+        </label>
         <div>
           <div class="lab">Litros para el ternero</div>
           <div class="chips" data-caja="ltsTernero:${i}"></div>
         </div>
-        <label class="f">
-          <div class="lab">ID vaca origen del calostro</div>
-          <input type="text" inputmode="numeric" placeholder="Nº de vaca"
-                 value="${c.id_origen}" data-origen="${i}">
-        </label>
       </div>
     </div>`;
   }).join('') || '<p class="hint" style="margin:14px 0 0">Sin crías vivas: no se carga calostro.</p>';
 
   vivas.forEach(({ t, i }) => {
-    const c = t.cal;
-    caja('brixExc:' + i, ['Valor numérico'].concat(noNumeros('calidad_sin_mejorar')),
-         c.brixExc || 'Valor numérico',
-         { ancho: true, claseDe: (v) => (v === 'Valor numérico' ? '' : 'warn') });
-    caja('mejorado:' + i, listas.mejorado, c.mejorado, { ancho: true });
-    caja('consumido:' + i, listas.consumido, c.consumido, { ancho: true });
-    caja('ltsTernero:' + i, listas.lts_ternero, c.lts_ternero, { chico: true });
+    caja('origen:' + i, [ORIGEN_PROPIA, ORIGEN_OTRA], t.cal.origen, { ancho: true });
+    caja('ltsTernero:' + i, listas.lts_ternero, t.cal.lts_ternero, { chico: true });
   });
+}
+
+/* Con "Otra vaca" se consulta la planilla en vez de pedirle los Brix de memoria
+   al operario. Nunca bloquea: sin señal el campo queda editable y el parto se
+   guarda igual — un parto no puede depender de una consulta. */
+const relojConsulta = {};
+function consultarCalostro(i) {
+  const c = st.terneros[i] && st.terneros[i].cal;
+  if (!c) return;
+  clearTimeout(relojConsulta[i]);
+  const vaca = String(c.id_origen).trim();
+  if (!vaca) { c.consulta = ''; return pintarCalostros(); }
+
+  c.consulta = 'Buscando…';
+  pintarCalostros();
+  relojConsulta[i] = setTimeout(async () => {
+    if (String(c.id_origen).trim() !== vaca) return;      // siguió tipeando
+    if (!navigator.onLine || !sesion) {
+      c.consulta = 'sin señal — cargá los Brix a mano';
+      return pintarCalostros();
+    }
+    let r;
+    try { r = await enviar({ accion: 'calostro', vaca }); }
+    catch (e) { r = null; }
+    if (String(c.id_origen).trim() !== vaca) return;
+
+    if (r && r.ok && r.encontrada) {
+      c.brix = String(r.brix_final);
+      c.consulta = `${r.brix_final} Brix` + (r.fecha ? ` · parió el ${aDDMMAAAA(r.fecha)}` : '') +
+                   (String(r.mejorado) === 'Si' ? ' · mejorado' : '');
+    } else if (r && r.ok) {
+      c.consulta = 'sin datos de esa vaca — cargá los Brix a mano';
+    } else {
+      c.consulta = 'sin señal — cargá los Brix a mano';
+    }
+    pintarCalostros();
+  }, 600);
 }
 
 /** Pinta un grupo de chips dentro de su contenedor por clave. */
@@ -459,6 +558,14 @@ function caja(clave, valores, sel, opciones) {
 /* ------------------------------------------------------------------ */
 
 document.addEventListener('click', (e) => {
+  const cu = e.target.closest('[data-cuenta]');
+  if (cu) return accionCuenta(cu.dataset.cuenta);
+  if (e.target.closest('#btnCuenta')) {
+    return menuAbierto ? cerrarMenuCuenta() : abrirMenuCuenta();
+  }
+  // Tocar fuera lo cierra, pero sin cortar el resto de la interaccion.
+  if (menuAbierto) cerrarMenuCuenta();
+
   const ed = e.target.closest('[data-editar]');
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
   const chip = e.target.closest('[data-chip]');
@@ -490,23 +597,43 @@ function elegirChip(chip) {
     if (campo === 'raza') { t.raza = val; return pintarCalostros(); }
     if (campo === 'sexoc') { t.sexo = val; return pintarTerneros(); }
     if (campo === 'vive') { t.vive = val === 'Vivo'; return pintarTerneros(); }
-    if (campo === 'brixExc') {
-      c.brixExc = val === 'Valor numérico' ? '' : val;
+    if (campo === 'origen') {
+      c.origen = val;
+      // Volver a la propia madre borra lo consultado: ese dato era de otra vaca.
+      if (val === ORIGEN_PROPIA) { c.id_origen = ''; c.brix = ''; c.consulta = ''; }
       return pintarCalostros();
     }
-    if (campo === 'mejorado') {
-      c.mejorado = val;
-      c.mej = val === 'Si' ? (c.mej === VACIO ? medio('calidad_mejorado') : c.mej) : VACIO;
-      return pintarCalostros();
-    }
-    if (campo === 'consumido') { c.consumido = val; return; }
     if (campo === 'ltsTernero') { c.lts_ternero = val; return; }
     return;
   }
 
+  if (clave === 'listaFecha') {
+    listaFecha = val;
+    refrescar();
+    return bajarPartosDelDia(val);
+  }
+
+  // Calostro de la madre: es del parto, no de ninguna cria.
+  if (clave === 'brixExc') {
+    // Sin el chip "Valor numerico", tocar la excepcion activa la apaga. Si no,
+    // marcar "mastitis" sin querer no se podria deshacer mas que recargando.
+    st.cal.brixExc = st.cal.brixExc === val ? '' : val;
+    return pintarCalostroMadre();
+  }
+  if (clave === 'mejorado') {
+    if (sinCalostro()) {
+      pintarCalostroMadre();
+      return avisar('Con calidad 0 no hay calostro que mejorar', true);
+    }
+    st.cal.mejorado = val;
+    st.cal.mej = val === 'Si'
+      ? (st.cal.mej === VACIO ? medio('calidad_mejorado') : st.cal.mej) : VACIO;
+    pintarCalostroMadre();
+    return pintarCalostros();               // cambia el Brix que toma la cria
+  }
+
   st[clave] = val;
-  if (clave === 'fecha') refrescar();          // la lista del dia depende de la fecha
-  if (clave === 'sexo') pintarTerneros();
+  if (clave === 'sexo') { pintarTerneros(); if (st.editando) pintarModoEdicion(); }
 }
 
 /**
@@ -528,28 +655,37 @@ function mover(spec, boton) {
     // No se repinta la tarjeta: destruiria el boton que el operario esta
     // manteniendo apretado, y la repeticion rapida seguiria escribiendo en un
     // elemento que ya no esta en pantalla.
-    t.peso = acotar(t.peso === null ? medio('peso') : t.peso + paso, numeros('peso'));
+    t.peso = t.peso === null ? medio('peso') : siguienteEnLista(t.peso, paso, numeros('peso'));
     return celda ? escribir(pesoTxt(t.peso)) : pintarTerneros();
   }
-  if (campo.startsWith('brix')) {
-    const c = st.terneros[+campo.slice(4)].cal;
-    const teniaExcepcion = !!c.brixExc;
+  if (campo === 'brix') {
+    const c = st.cal;
+    const antesExc = !!c.brixExc;
+    const antesSin = sinCalostro();
     c.brixExc = '';                              // tocar el numero descarta la excepcion
-    c.brix = acotar(c.brix + paso, numeros('calidad_sin_mejorar'));
-    // Solo hace falta repintar la primera vez, para apagar el chip de excepcion.
-    if (teniaExcepcion || !celda) return pintarCalostros();
-    return escribir(`${c.brix}<span>Brix</span>`);
+    c.brix = siguienteEnLista(c.brix, paso, numeros('calidad_sin_mejorar'));
+    // Sin calostro no hay nada que mejorar: se apaga solo.
+    if (sinCalostro()) { c.mejorado = 'No'; c.mej = VACIO; }
+    // Repintar solo cuando algo mas cambio de estado; si no, se destruiria el
+    // boton que el operario esta manteniendo apretado.
+    if (antesExc || antesSin !== sinCalostro() || !celda) {
+      pintarCalostroMadre();
+      return pintarCalostros();
+    }
+    escribir(`${c.brix}<span>Brix</span>`);
+    return pintarCalostros();                    // el Brix del ternero lo sigue
   }
-  if (campo.startsWith('mej')) {
-    const c = st.terneros[+campo.slice(3)].cal;
+  if (campo === 'mej') {
+    const c = st.cal;
     if (c.mejorado !== 'Si') return;
-    c.mej = acotar((c.mej === VACIO ? medio('calidad_mejorado') : c.mej + paso),
-                   numeros('calidad_mejorado'));
-    return celda ? escribir(`${c.mej}<span>Brix</span>`) : pintarCalostros();
+    c.mej = c.mej === VACIO ? medio('calidad_mejorado')
+                            : siguienteEnLista(c.mej, paso, numeros('calidad_mejorado'));
+    if (celda) escribir(`${c.mej}<span>Brix</span>`); else pintarCalostroMadre();
+    return pintarCalostros();
   }
   if (campo === 'ltsMadre') {
-    st.lts_madre = acotar((st.lts_madre === null ? medio('lts_madre') : st.lts_madre + paso),
-                          numeros('lts_madre'));
+    st.lts_madre = st.lts_madre === null ? medio('lts_madre')
+                                         : siguienteEnLista(st.lts_madre, paso, numeros('lts_madre'));
   }
   pintarSteppers();
 }
@@ -594,8 +730,31 @@ document.addEventListener('pointerdown', (e) => {
   addEventListener(ev, frenarRepeticion));
 addEventListener('visibilitychange', frenarRepeticion);
 
-const acotar = (v, lista) => !lista.length ? v
-  : Math.min(Math.max(v, Math.min(...lista)), Math.max(...lista));
+/**
+ * Mueve un stepper UN LUGAR sobre la lista de Maestro, en vez de sumar 1 y
+ * recortar contra el minimo y el maximo.
+ *
+ * Con una lista no contigua —0 y despues 18 a 35— la aritmetica producia 17,
+ * 16, 15... valores que no estan en Maestro y que el backend rechaza: el
+ * operario cargaba un parto que despues aparecia en "Revisar" sin que nada en
+ * la tablet le hubiera avisado. Por indice, cualquier lista con huecos que
+ * Nahuel escriba a futuro funciona sola.
+ */
+function siguienteEnLista(actual, paso, lista) {
+  if (!lista.length) return actual;
+  const orden = lista.slice().sort((a, b) => a - b);
+  const n = Number(actual);
+  let i = orden.indexOf(n);
+  if (i === -1) {
+    // El valor no esta en la lista: viene de un parto viejo, o de Maestro
+    // editado. Se arranca del mas cercano.
+    i = orden.reduce((mejor, v, j) =>
+      Math.abs(v - n) < Math.abs(orden[mejor] - n) ? j : mejor, 0);
+    // Si el mas cercano ya esta del lado hacia el que se iba, ese es el paso.
+    if ((paso > 0 && orden[i] > n) || (paso < 0 && orden[i] < n)) return orden[i];
+  }
+  return orden[Math.min(Math.max(i + paso, 0), orden.length - 1)];
+}
 
 document.addEventListener('input', (e) => {
   const t = e.target.closest('[data-ternero]');
@@ -606,17 +765,25 @@ document.addEventListener('input', (e) => {
     return;
   }
   const o = e.target.closest('[data-origen]');
-  if (o) st.terneros[+o.dataset.origen].cal.id_origen = o.value;
+  if (o) {
+    const i = +o.dataset.origen;
+    st.terneros[i].cal.id_origen = o.value;
+    return consultarCalostro(i);
+  }
+  const b = e.target.closest('[data-brixternero]');
+  if (b) st.terneros[+b.dataset.brixternero].cal.brix = b.value.trim();
 });
 
 /* ------------------------------------------------------------------ */
 /* Guardar                                                             */
 /* ------------------------------------------------------------------ */
 
+const nuevoUuid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : Date.now() + '-' + Math.random().toString(16).slice(2));
+
 function armarPayload() {
   const p = {
-    uuid: (crypto.randomUUID ? crypto.randomUUID()
-           : Date.now() + '-' + Math.random().toString(16).slice(2)),
+    uuid: nuevoUuid(),
     dispositivo: cfg.dispositivo,
     cargado_en: new Date().toISOString(),
     operario: $('fOperario').value,
@@ -632,6 +799,12 @@ function armarPayload() {
 
   if (!esMuerto()) {
     p.lts_madre = String(st.lts_madre);           // del parto, no de la cria
+    // Lo que produjo la madre: una vaca, un calostro.
+    p.calostro = {
+      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
+      mejorado: st.cal.mejorado,
+      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
+    };
     p.terneros = st.terneros.map((t) => {
       const cria = {
         id_ternero: String(t.id_ternero).trim(),
@@ -642,20 +815,24 @@ function armarPayload() {
       // Sin pesar: el peso no viaja y la columna I queda vacia. Mandar '' o 0
       // seria inventar un dato que nadie midio.
       if (t.peso !== null) cria.peso = t.peso;
-      if (t.vive) {
-        cria.calostro = {
-          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
-          mejorado: t.cal.mejorado,
-          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
-          consumido: t.cal.consumido,
-          lts_ternero: t.cal.lts_ternero,
-          id_vaca_origen: String(t.cal.id_origen).trim()
-        };
-      }
+      if (t.vive) cria.calostro = calostroDeLaCria(t.cal);
       return cria;
     });
   }
   return p;
+}
+
+/* Con 'Propia madre' ni el ID ni los Brix se le piden al operario: salen del
+   parto. Dejarlos escribibles abriria la puerta a marcar como propio un
+   calostro que en la planilla figura de otra vaca. */
+function calostroDeLaCria(c) {
+  const otra = c.origen === ORIGEN_OTRA;
+  return {
+    origen: c.origen,
+    id_vaca_origen: otra ? String(c.id_origen).trim() : $('fVaca').value.trim(),
+    calidad_ternero: otra ? String(c.brix).trim() : brixMadre(),
+    lts_ternero: c.lts_ternero
+  };
 }
 
 function faltantes(p) {
@@ -667,6 +844,10 @@ function faltantes(p) {
   if (!p.sexo) f.push('sexo');
   if (!esMuerto()) {
     if (st.lts_madre === null) f.push('litros de la madre');
+    if (st.cal.brix === null && !st.cal.brixExc) f.push('calidad del calostro de la madre');
+    if (st.cal.mejorado === 'Si' && (st.cal.mej === VACIO || !st.cal.mej)) {
+      f.push('calidad del calostro mejorado');
+    }
     const varias = st.terneros.length > 1;
     st.terneros.forEach((t, i) => {
       const cual = varias ? ` (ternero ${i + 1})` : '';
@@ -674,7 +855,12 @@ function faltantes(p) {
       if (!String(t.id_ternero).trim()) f.push('ID de ternero' + cual);
       if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
       if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
-      if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
+      if (t.cal.origen === ORIGEN_OTRA) {
+        if (!String(t.cal.id_origen).trim()) f.push('de qué vaca salió el calostro' + cual);
+        // Sin señal la consulta no completa nada, pero el dato sigue haciendo
+        // falta: se carga a mano y el parto entra igual.
+        if (!String(t.cal.brix).trim()) f.push('los Brix del calostro que tomó' + cual);
+      }
     });
     if (st.terneros.length && st.terneros.every((t) => !t.vive)) {
       f.push('al menos una cría viva, o cambiá el código del parto');
@@ -728,12 +914,19 @@ async function guardarParto() {
    Lo que no se corrige queda a la vista pero bloqueado, para que se pueda
    confirmar que es el parto buscado sin poder cambiarle la identidad.
 
-   Que NO se corrige: el codigo de sexo manda cuantas crias hay, y cambiarlo
-   obligaria a agregar o borrar renglones en el bloque que leen Nahuel y
-   DairyComp. ID de ternero, raza, hora y tipo de parto van por el mismo
-   criterio: los corrige Nahuel en la planilla. */
+   El codigo de sexo SI se corrige, desde r6: es el error tipico (macho por
+   hembra, un mellizo que no se vio) y mandarlo a la planilla significaba que
+   nadie lo arreglara. Pero dice cuantas crias tiene el parto, asi que va por
+   su propia accion en el backend y puede agregar o anular un renglon.
 
-const BLOQUEADO_AL_EDITAR = ['cFecha', 'cTipo', 'cSexo', 'fVaca', 'fHora', 'fNotas'];
+   ID de ternero y raza se desbloquean SOLO cuando el sexo cambio: no se puede
+   agregar una cria sin darle una caravana. Hora y tipo de parto siguen
+   afuera: los corrige Nahuel en la planilla. */
+
+const BLOQUEADO_AL_EDITAR = ['cFecha', 'cTipo', 'fVaca', 'fHora', 'fNotas'];
+
+/** El codigo de sexo cambio respecto de como estaba guardado el parto. */
+const sexoCambio = () => !!st.editando && st.sexo !== st.sexoOriginal;
 
 /** Pasa un parto guardado al estado del formulario. Es el inverso de armarPayload. */
 function aEstado(p) {
@@ -741,14 +934,33 @@ function aEstado(p) {
   st.fecha = p.fecha_parto;
   st.tipo_parto = p.tipo_parto;
   st.sexo = p.sexo;
+  st.sexoOriginal = p.sexo;
   st.tambo = p.tambo || '';
   st.lts_madre = p.lts_madre === undefined || p.lts_madre === '' ? null : +p.lts_madre;
 
+  /* El calostro de la madre viaja arriba desde r6. En un parto guardado antes
+     del deploy viene adentro de la primera cria: la tablet puede tener partos
+     viejos en IndexedDB cuando se publica el service worker nuevo, y abrirlos
+     con el formulario nuevo no puede perder lo que ya se habia cargado. */
+  const m = (p.calostro && p.calostro.calidad_sin_mejorar !== undefined) ? p.calostro
+    : (((p.terneros || []).find((t) => t.vive !== false) || {}).calostro || {});
+  // calidad_sin_mejorar guarda un numero de Brix o una excepcion ('mastitis',
+  // 'sangre', 'campo'). Se separan de nuevo por la forma del valor.
+  const esNumero = /^\d+$/.test(String(m.calidad_sin_mejorar || ''));
+  st.cal = {
+    brix: esNumero ? +m.calidad_sin_mejorar : medio('calidad_sin_mejorar'),
+    brixExc: esNumero ? '' : (m.calidad_sin_mejorar || ''),
+    mejorado: m.mejorado || 'No',
+    mej: !m.calidad_mejorado || m.calidad_mejorado === VACIO ? VACIO : +m.calidad_mejorado
+  };
+
   st.terneros = (p.terneros || []).map((t) => {
     const c = t.calostro || {};
-    // calidad_sin_mejorar guarda un numero de Brix o una excepcion ('mastitis',
-    // 'sangre', 'campo'). Se separan de nuevo por la forma del valor.
-    const brixEsNumero = /^\d+$/.test(String(c.calidad_sin_mejorar || ''));
+    // Formato viejo: solo estaba el ID de la vaca origen. Si no es la que pario,
+    // el calostro era de otra.
+    const origen = c.origen ||
+      (c.id_vaca_origen && String(c.id_vaca_origen) !== String(p.id_vaca)
+        ? ORIGEN_OTRA : ORIGEN_PROPIA);
     return {
       id_ternero: t.id_ternero || '',
       raza: t.raza || (listas.raza || [''])[0],
@@ -756,13 +968,11 @@ function aEstado(p) {
       sexo: t.sexo || '',
       vive: t.vive !== false,
       cal: {
-        brix: brixEsNumero ? +c.calidad_sin_mejorar : medio('calidad_sin_mejorar'),
-        brixExc: brixEsNumero ? '' : (c.calidad_sin_mejorar || ''),
-        mejorado: c.mejorado || 'No',
-        mej: !c.calidad_mejorado || c.calidad_mejorado === VACIO ? VACIO : +c.calidad_mejorado,
-        consumido: c.consumido || 'Si',
-        lts_ternero: String(c.lts_ternero === undefined ? medio('lts_ternero') : c.lts_ternero),
-        id_origen: c.id_vaca_origen || ''
+        origen: origen,
+        id_origen: origen === ORIGEN_OTRA ? (c.id_vaca_origen || '') : '',
+        brix: origen === ORIGEN_OTRA ? String(c.calidad_ternero || '') : '',
+        consulta: '',
+        lts_ternero: String(c.lts_ternero === undefined ? medio('lts_ternero') : c.lts_ternero)
       }
     };
   });
@@ -805,17 +1015,22 @@ function pintarModoEdicion() {
     const el = $(id);
     if (el) el.classList.toggle('bloqueado', editando);
   });
-  // El ID y la raza de cada cria tampoco: identifican al animal.
+  // ID y raza identifican al animal, asi que normalmente no se tocan. Pero si
+  // el sexo cambio puede haber una cria nueva, y una cria sin caravana no sirve.
   document.querySelectorAll('#terneros [data-ternero], #terneros [data-caja^="raza:"]')
-    .forEach((el) => el.classList.toggle('bloqueado', editando));
+    .forEach((el) => el.classList.toggle('bloqueado', editando && !sexoCambio()));
 
   aviso.classList.toggle('hidden', !editando);
   if (!editando) return;
 
   aviso.innerHTML =
-    `Corrigiendo el parto de la vaca <b>${$('fVaca').value}</b> · ${aDDMMAAAA(st.fecha)}.
-     Se pueden cambiar <b>peso, calostro y tambo</b>; el resto lo corrige Nahuel en la planilla.
-     <button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
+    `Corrigiendo el parto de la vaca <b>${$('fVaca').value}</b> · ${aDDMMAAAA(st.fecha)}.` +
+    (sexoCambio()
+      ? ` Cambiaste el <b>código de sexo</b>: se va a reescribir el parto entero,
+         así que revisá los datos de cada cría.`
+      : ` Se pueden cambiar <b>sexo, peso, calostro y tambo</b>;
+         el resto lo corrige Nahuel en la planilla.`) +
+    `<button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
   $('btnCancelarEd').onclick = cancelarEdicion;
 }
 
@@ -827,18 +1042,16 @@ function armarEdicion() {
     operario: $('fOperario').value,
     tambo: st.tambo,
     lts_madre: st.lts_madre === null ? undefined : String(st.lts_madre),
+    id_vaca: $('fVaca').value.trim(),
+    // El calostro de la madre es del parto: va una vez, no una por cria.
+    calostro: {
+      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
+      mejorado: st.cal.mejorado,
+      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
+    },
     terneros: st.terneros.map((t) => {
       if (!t.vive) return {};                      // cria muerta: no lleva nada
-      const cria = {
-        calostro: {
-          calidad_sin_mejorar: t.cal.brixExc || String(t.cal.brix),
-          mejorado: t.cal.mejorado,
-          calidad_mejorado: t.cal.mejorado === 'Si' ? String(t.cal.mej) : VACIO,
-          consumido: t.cal.consumido,
-          lts_ternero: t.cal.lts_ternero,
-          id_vaca_origen: String(t.cal.id_origen).trim()
-        }
-      };
+      const cria = { calostro: calostroDeLaCria(t.cal) };
       if (t.peso !== null) cria.peso = t.peso;
       return cria;
     })
@@ -864,19 +1077,89 @@ function faltantesEdicion(reg) {
       f.push(`el peso lo carga ${autor}, que fue quien cargó el parto`);
     }
     if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
-    if (t.cal.brix === null && !t.cal.brixExc) f.push('calidad de calostro' + cual);
-    if (t.cal.mejorado === 'Si' && (t.cal.mej === VACIO || !t.cal.mej)) {
-      f.push('calidad del calostro mejorado' + cual);
+    if (t.cal.origen === ORIGEN_OTRA) {
+      if (!String(t.cal.id_origen).trim()) f.push('de qué vaca salió el calostro' + cual);
+      if (!String(t.cal.brix).trim()) f.push('los Brix del calostro que tomó' + cual);
     }
   });
-  if (st.lts_madre === null && st.terneros.some((t) => t.vive)) f.push('litros de la madre');
+  if (st.terneros.some((t) => t.vive)) {
+    if (st.lts_madre === null) f.push('litros de la madre');
+    if (st.cal.brix === null && !st.cal.brixExc) f.push('calidad del calostro de la madre');
+    if (st.cal.mejorado === 'Si' && (st.cal.mej === VACIO || !st.cal.mej)) {
+      f.push('calidad del calostro mejorado');
+    }
+  }
   if (!st.tambo) f.push('tambo');
   return f;
+}
+
+/* Cambiar el sexo reescribe el parto entero, asi que se valida con las reglas
+   del ALTA, no con las de la correccion: puede haber una cria nueva que todavia
+   no tiene ni caravana. */
+async function guardarCambioSexo(reg) {
+  const p = armarPayload();
+  const faltan = faltantes(p);
+  if (faltan.length) return avisar('Falta: ' + faltan.join(', '), true);
+  const incoherencia = coherenciaSexo();
+  if (incoherencia) return avisar(incoherencia, true);
+
+  const antes = (reg.payload.terneros || []).length;
+  const ahora = (p.terneros || []).length;
+  if (ahora < antes) {
+    // Se anula, no se borra. Pero se dice cual, con la caravana: esto se hace
+    // con el animal delante y equivocarse de cria no se ve hasta mucho despues.
+    const sobran = (reg.payload.terneros || []).slice(ahora)
+      .map((t) => t.id_ternero || 'sin ID').join(', ');
+    const ok = await confirmar('Se va a anular una cría',
+      `El parto pasa de <b>${antes}</b> a <b>${ahora}</b> cría${ahora > 1 ? 's' : ''}.
+       El renglón de <b>${sobran}</b> queda anulado en la planilla; no se borra,
+       pero deja de contar y de ir a DairyComp.`, 'Sí, anular');
+    if (!ok) return;
+  }
+
+  // El parto local queda como va a quedar la planilla.
+  p.uuid = reg.uuid;
+  p.cargado_en = reg.payload.cargado_en;
+  p.dispositivo = reg.payload.dispositivo;
+
+  if (reg.estado === 'pendiente' || reg.estado === 'error') {
+    // Todavia no entro a la planilla: no hay nada que reestructurar del otro
+    // lado, sube ya corregido.
+    reg.payload = p;
+    reg.estado = 'pendiente';
+    reg.cambioSexo = null;
+  } else {
+    reg.payload = p;
+    reg.cambioSexo = {
+      accion: 'cambiar_sexo',
+      uuid: reg.uuid,
+      op_uuid: nuevoUuid(),          // idempotencia de ESTA operacion
+      operario: p.operario,
+      sexo: p.sexo,
+      lts_madre: p.lts_madre,
+      calostro: p.calostro,
+      tambo: p.tambo,
+      terneros: p.terneros
+    };
+    reg.edicion = null;              // el cambio de sexo la subsume
+  }
+  reg.error = '';
+  reg.revisarEdicion = false;
+
+  await guardarLocal(reg);
+  st.editando = null;
+  limpiar();
+  ver('list');
+  await refrescar();
+  sincronizar();
+  avisar('Parto corregido');
 }
 
 async function guardarEdicion() {
   const reg = (await todosLocal()).find((r) => r.uuid === st.editando);
   if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+
+  if (sexoCambio()) return guardarCambioSexo(reg);
 
   const faltan = faltantesEdicion(reg);
   if (faltan.length) return avisar('Falta: ' + faltan.join(', '), true);
@@ -910,6 +1193,7 @@ async function guardarEdicion() {
 function aplicarEnPayload(p, ed) {
   if (ed.tambo !== undefined) p.tambo = ed.tambo;
   if (ed.lts_madre !== undefined) p.lts_madre = ed.lts_madre;
+  if (ed.calostro) p.calostro = Object.assign({}, p.calostro, ed.calostro);
   (ed.terneros || []).forEach((t, i) => {
     const destino = p.terneros[i];
     if (!destino || !t.calostro) return;
@@ -945,15 +1229,33 @@ function mostrarExito(p) {
     (crias.length ? '<br>' + crias.map((c) => `<b>${c}</b>`).join('<br>')
                   : '<br><b>Sin cría viva</b>');
 
+  // Nunca dice "sincronizado": este cartel se muestra ANTES de que el parto
+  // salga a la red, asi que no puede saberlo. El estado real lo dicen el badge
+  // y la lista del dia, que si lo saben.
   const enEspera = !navigator.onLine || sesionVencida;
   const est = $('okEstado');
   est.className = 'estado' + (enEspera ? ' espera' : '');
   est.textContent = enEspera
     ? 'Guardado en la tablet — se sincroniza al volver la señal'
-    : 'Guardado y sincronizado';
+    : 'Guardado en la tablet — sincronizando';
 
   $('modalOk').classList.remove('hidden');
   $('btnOtroParto').focus();
+}
+
+/* Un paso irreversible con la tablet en la mano necesita un freno explicito.
+   Nada de confirm(): un dialogo nativo bloquea la app entera. */
+function confirmar(titulo, detalle, textoSi) {
+  return new Promise((ok) => {
+    $('confTitulo').textContent = titulo;
+    $('confDetalle').innerHTML = detalle;
+    $('btnConfSi').textContent = textoSi || 'Sí';
+    $('modalConf').classList.remove('hidden');
+    const cerrar = (v) => { $('modalConf').classList.add('hidden'); ok(v); };
+    $('btnConfSi').onclick = () => cerrar(true);
+    $('btnConfNo').onclick = () => cerrar(false);
+    $('btnConfNo').focus();
+  });
 }
 
 function cerrarExito() {
@@ -972,6 +1274,7 @@ function limpiar() {
   st.editando = null;
   $('fVaca').value = '';
   $('fNotas').value = '';
+  st.cal = nuevoCalostroMadre();
   st.terneros = st.terneros.map(() => nuevoTernero());
   pintarFormulario();
   $('body').scrollTop = 0;
@@ -983,26 +1286,52 @@ function limpiar() {
 /* ------------------------------------------------------------------ */
 
 let sincronizando = false;
+let relojSync = null;
+
+/* El WiFi del campo puede estar "presente pero muerto" (AP sin salida, portal
+   cautivo): ahi fetch no falla, se cuelga. Sin corte, el badge se queda en
+   "Sincronizando..." para siempre y el reloj de 30 s no vuelve a entrar. */
+const ESPERA_RED = 20000;
+const ESPERA_TANDA = 60000;
 
 /**
  * El ID token se adjunta en el momento de enviar, no al guardar: un parto que
  * estuvo dos dias en la cola no puede llevar una credencial vencida.
  */
 async function enviar(payload) {
-  // text/plain = "simple request": no dispara el preflight OPTIONS,
-  // que Apps Script no sabe responder.
-  const r = await fetch(cfg.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
-    redirect: 'follow'
-  });
-  return r.json();
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), ESPERA_RED);
+  try {
+    // text/plain = "simple request": no dispara el preflight OPTIONS,
+    // que Apps Script no sabe responder.
+    const r = await fetch(cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
+      redirect: 'follow',
+      signal: corte.signal
+    });
+    return r.json();
+  } finally {
+    clearTimeout(reloj);
+  }
 }
+
+/* Un parto rechazado por validacion no se arregla reintentando solo... salvo
+   que si: casi siempre es un valor que falta en Maestro, y en cuanto Nahuel lo
+   agrega el mismo parto entra. Se reintenta espaciado y con tope, en vez de
+   dejarlo muerto para siempre. */
+const REINTENTO_ERROR = 10 * 60000;
+const MAX_REINTENTOS_ERROR = 5;
+const reintentable = (reg) =>
+  (reg.reintentos || 0) < MAX_REINTENTOS_ERROR &&
+  Date.now() - (reg.ultimoIntento || 0) > REINTENTO_ERROR;
 
 async function sincronizar() {
   if (sincronizando || !cfg.url || !sesion || !navigator.onLine) return;
   sincronizando = true;
+  clearTimeout(relojSync);
+  relojSync = setTimeout(() => { sincronizando = false; pintarBadge(); }, ESPERA_TANDA);
   pintarBadge();
   try {
     // Un parto puede deber dos cosas: entrar a la planilla, o una correccion
@@ -1011,19 +1340,28 @@ async function sincronizar() {
     const tareas = [];
     (await todosLocal()).sort((a, b) => a.creado - b.creado).forEach((reg) => {
       if (reg.estado === 'pendiente') tareas.push({ reg, tipo: 'alta' });
+      else if (reg.estado === 'error' && reintentable(reg)) tareas.push({ reg, tipo: 'alta' });
+      // El cambio de sexo va antes que la correccion: reestructura el parto.
+      else if (reg.estado === 'ok' && reg.cambioSexo) tareas.push({ reg, tipo: 'sexo' });
       else if (reg.estado === 'ok' && reg.edicion) tareas.push({ reg, tipo: 'editar' });
     });
-    if (!tareas.length) { sesionVencida = false; return; }
+    if (!tareas.length) { sesionVencida = false; fallosToken = 0; return; }
 
     // Sin credencial vigente no se intenta: los partos quedan en la cola,
-    // intactos, y el badge avisa que hay que iniciar sesion.
-    if (!(await tokenVigente())) { sesionVencida = true; return; }
+    // intactos. Pero un fallo suelto del prompt de Google no es una sesion
+    // caida — se avisa recien al tercero seguido.
+    if (!(await tokenVigente())) {
+      if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
+      return;
+    }
+    fallosToken = 0;
     sesionVencida = false;
 
     for (const { reg, tipo } of tareas) {
       let res;
       try {
-        res = await enviar(tipo === 'alta' ? reg.payload : reg.edicion);
+        res = await enviar(tipo === 'alta' ? reg.payload
+                         : tipo === 'sexo' ? reg.cambioSexo : reg.edicion);
       } catch (e) {
         // Sin red: no se toca el registro, se reintenta despues. Cortar la tanda.
         reg.intentos++;
@@ -1035,24 +1373,36 @@ async function sincronizar() {
           // duplicado:true tambien es exito: el parto ya estaba en la planilla.
           reg.estado = 'ok';
           reg.id_parto = res.id_parto || reg.id_parto || '';
+          reg.reintentos = 0;
+        } else if (tipo === 'sexo') {
+          reg.cambioSexo = null;
         } else {
           reg.edicion = null;
         }
         reg.error = '';
+        reg.revisarEdicion = false;
       } else if (res && res.error === 'validacion') {
         // Dato malo: reintentar no lo arregla. Se marca para revisar.
         if (tipo === 'alta') {
           reg.estado = 'error';
           reg.error = (res.detalles || []).join(' · ');
+          reg.reintentos = (reg.reintentos || 0) + 1;
+          reg.ultimoIntento = Date.now();
         } else {
           // La fila de la planilla quedo como estaba y la tablet muestra lo
           // corregido: se avisa cual es, en vez de reintentar para siempre.
+          // La fila no puede seguir en verde: dice una cosa y la planilla otra.
           reg.edicion = null;
-          reg.error = 'corrección rechazada: ' + (res.detalles || []).join(' · ');
+          reg.cambioSexo = null;
+          reg.revisarEdicion = true;
+          reg.error = (tipo === 'sexo' ? 'cambio de sexo rechazado: ' : 'corrección rechazada: ') +
+                      (res.detalles || []).join(' · ');
         }
       } else {
         // Sesion caida o error del servidor: cortar, no quemar la cola entera.
-        if (res && res.sesion === false) sesionVencida = true;
+        // Esta es la unica senal autoritativa de sesion caida: la da el backend,
+        // que es el que verifica el token contra Google.
+        if (res && res.sesion === false) { sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR; }
         reg.intentos++;
         reg.error = (res && res.error) || 'error del servidor';
         await guardarLocal(reg);
@@ -1061,8 +1411,11 @@ async function sincronizar() {
       await guardarLocal(reg);
     }
   } finally {
+    clearTimeout(relojSync);
     sincronizando = false;
     await refrescar();
+    // Si la lista esta a la vista, tambien pudo cambiar en otra tablet.
+    if (vistaActual() === 'list') bajarPartosDelDia(listaFecha);
   }
 }
 
@@ -1070,66 +1423,257 @@ async function sincronizar() {
 /* Listas y KPIs                                                       */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Partos del dia: los de esta tablet y los de las demas               */
+/* ------------------------------------------------------------------ */
+
+/* La lista leia solo IndexedDB, asi que cada tablet veia unicamente lo suyo:
+   con tres turnos y varios dispositivos, nadie tenia el dia completo delante.
+   Ahora se lee tambien de la planilla y se juntan.
+
+   Lo remoto NO entra a IndexedDB: contaminaria la cola de sincronizacion con
+   filas que ya estan escritas. Vive aparte, con una copia en localStorage para
+   que al reabrir sin señal siga estando lo ultimo que se supo. */
+let remotos = [];
+let remotosFecha = '';
+let remotosViejo = false;
+
+try {
+  const guardado = JSON.parse(localStorage.getItem('remotos') || 'null');
+  if (guardado) { remotos = guardado.partos || []; remotosFecha = guardado.fecha || ''; }
+} catch (e) { /* copia corrupta: se baja de nuevo */ }
+
+async function bajarPartosDelDia(fecha) {
+  if (!cfg.url || !sesion || !navigator.onLine) { remotosViejo = true; return; }
+  /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
+     falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
+     local y listo. */
+  if (!tokenSirve(60000)) { remotosViejo = true; return; }
+
+  try {
+    const j = await enviar({ accion: 'partos', fecha });
+    if (!j || !j.ok) { remotosViejo = true; return; }
+    remotos = j.partos || [];
+    remotosFecha = fecha;
+    remotosViejo = false;
+    localStorage.setItem('remotos', JSON.stringify({ fecha, partos: remotos }));
+  } catch (e) {
+    remotosViejo = true;                    // se sigue mostrando la copia guardada
+  }
+  await refrescar();
+}
+
+/** Las filas remotas vienen por CRIA; la lista muestra PARTOS. */
+function partosRemotos(fecha) {
+  if (remotosFecha !== fecha) return [];
+  const porUuid = new Map();
+  remotos.forEach((f) => {
+    if (f.fecha !== fecha) return;
+    if (!porUuid.has(f.uuid)) porUuid.set(f.uuid, []);
+    porUuid.get(f.uuid).push(f);
+  });
+  return [...porUuid.values()];
+}
+
+const dosDig = (n) => String(n).padStart(2, '0');
+const cuandoSeCargo = (ms) => {
+  const d = new Date(ms);
+  return `${dosDig(d.getDate())}/${dosDig(d.getMonth() + 1)} ${dosDig(d.getHours())}:${dosDig(d.getMinutes())}`;
+};
+
+/** Un parto local, en la forma que pinta la lista. */
+function vistaLocal(r) {
+  const p = r.payload;
+  const pesar = faltaPesar(p);
+  const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
+  return {
+    uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento,
+    tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
+    cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
+    crias: muerto ? [] : (p.terneros || []).map((t) => ({
+      id: t.id_ternero || 's/id', vive: t.vive !== false,
+      peso: t.peso === undefined ? null : t.peso
+    })),
+    estado: (r.estado === 'error' || r.revisarEdicion) ? ['bad', 'Revisar']
+          : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
+          : ['ok', 'Sincronizado']
+  };
+}
+
+/** Un parto de otra tablet, leido de la planilla. */
+function vistaRemota(filas) {
+  const f = filas[0];
+  const vivas = filas.filter((x) => String(x.estado_cria) !== 'Muerto');
+  return {
+    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora,
+    tipo: f.tipo_parto, sexo: f.sexo, operario: f.operario,
+    cargado: String(f.cargado_en || '').slice(5).replace('-', '/'),
+    muerto: !vivas.length,
+    pesar: vivas.some((x) => x.peso === '' || x.peso === null || x.peso === undefined),
+    error: '',
+    crias: vivas.map((x) => ({
+      id: x.id_ternero || 's/id', vive: true,
+      peso: x.peso === '' || x.peso === null || x.peso === undefined ? null : x.peso
+    })),
+    estado: ['ok', 'Sincronizado']
+  };
+}
+
+/* Los contadores viven a nivel modulo porque el badge se repinta desde lugares
+   que no los tienen a mano (el evento online, el cierre de sesion, el arranque
+   de una tanda). Cuando pintarBadge() los recibia por parametro, esas llamadas
+   pasaban undefined y el badge escribia "Sincronizado" con la cola llena. */
+let ultimoPend = 0;
+let ultimoErr = 0;
+
 async function refrescar() {
   const todos = await todosLocal();
-  const delDia = todos.filter((r) => r.payload.fecha_parto === st.fecha)
-                      .sort((a, b) => b.creado - a.creado);
-  const pendientes = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
-  const errores = todos.filter((r) => r.estado === 'error').length;
-  const porPesar = delDia.filter((r) => faltaPesar(r.payload)).length;
+  const mios = todos.filter((r) => r.payload.fecha_parto === listaFecha)
+                    .sort((a, b) => b.creado - a.creado);
+  ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
+  ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
+
+  // Lo que esta trabado de OTRO dia no se ve en ninguna pantalla, pero si suma
+  // al badge: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista.
+  const fuera = todos.filter((r) => r.payload.fecha_parto !== listaFecha &&
+    (r.estado === 'pendiente' || r.estado === 'error' || r.edicion || r.revisarEdicion));
+
+  // El uuid es la llave: un parto que esta en las dos partes gana el local, que
+  // es el unico que sabe si tiene una correccion sin subir.
+  const mismos = new Set(mios.map((r) => r.uuid));
+  const delDia = mios.map(vistaLocal).concat(
+    partosRemotos(listaFecha).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
 
   let h = 0, m = 0, muertos = 0;
-  delDia.forEach((r) => {
-    const s = String(r.payload.sexo);
-    if (/Hembra/i.test(s)) h += (s.charAt(0) === '2' ? 2 : 1);
-    if (/Macho/i.test(s)) m += 1;
-    if (SEXO_MUERTO.includes(s.charAt(0))) muertos++;
+  delDia.forEach((v) => {
+    const sx = String(v.sexo);
+    if (/Hembra/i.test(sx)) h += (sx.charAt(0) === '2' ? 2 : 1);
+    if (/Macho/i.test(sx)) m += 1;
+    if (v.muerto) muertos++;
   });
 
   $('kTot').textContent = delDia.length;
   $('kHM').textContent = h + ' / ' + m;
-  $('kPesar').textContent = porPesar;
-  $('kPend').textContent = pendientes;
+  $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
+  $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
   $('kMuertos').textContent = muertos;
 
-  $('filas').innerHTML = delDia.length ? delDia.map((r) => {
-    const p = r.payload;
-    const pesar = faltaPesar(p);
-    // "Falta pesar" gana sobre "Sincronizado": la fila esta en la planilla,
-    // pero incompleta, y es lo que hay que hacer antes de cerrar el dia.
-    const est = r.estado === 'error' ? ['bad', 'Revisar']
-              : pesar ? ['wait', 'Falta pesar']
-              : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
-              : ['ok', 'Sincronizado'];
-    const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
-    const cria = muerto ? p.sexo
-      : `${p.sexo} · ${p.terneros.map((t) => (t.id_ternero || 's/id') +
-          (t.vive === false ? ' (muerta)' : ' (' + (t.peso === undefined ? 'sin pesar' : t.peso + ' kg') + ')')
-        ).join(' + ')}`;
-    return `<div class="listrow">
-      <div class="id">${p.id_vaca}</div>
-      <div>${cria}<div class="meta">Tambo ${p.tambo}${r.error ? ' · <span style="color:var(--danger)">' + r.error + '</span>' : ''}</div></div>
-      <div>${p.hora_nacimiento}</div>
-      <div class="ocultar">${p.tipo_parto}</div>
-      <div><span class="pill ${est[0]}">${est[1]}</span></div>
-      <div>${muerto ? '' : `<button class="btn ${pesar ? 'primary' : ''}" type="button"
-        data-editar="${r.uuid}" data-pesar="${pesar ? 1 : 0}">${pesar ? 'Pesar' : 'Corregir'}</button>`}</div>
-    </div>`;
-  }).join('') : '<div class="vacio">Todavía no hay partos cargados hoy.</div>';
+  const avisoFuera = $('avisoFuera');
+  avisoFuera.classList.toggle('hidden', !fuera.length);
+  if (fuera.length) {
+    const dias = [...new Set(fuera.map((r) => aDDMMAAAA(r.payload.fecha_parto)))].join(', ');
+    avisoFuera.innerHTML = `Hay <b>${fuera.length}</b> parto${fuera.length > 1 ? 's' : ''}
+      sin sincronizar de otro día (${dias}). Cambiá la fecha de arriba para verlos.`;
+  }
 
-  pintarBadge(pendientes, errores);
+  $('avisoRemotos').classList.toggle('hidden', !remotosViejo);
+
+  $('cabecera').classList.toggle('hidden', !delDia.length);
+  $('filas').innerHTML = delDia.length ? delDia.map((v) => {
+    const cria = v.muerto ? v.sexo
+      : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`)).join(' + ');
+    return `<div class="listrow">
+      <div class="id">${v.id_vaca}</div>
+      <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
+        ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}</div>` : ''}</div>
+      <div>${v.hora}</div>
+      <div class="ocultar">${v.cargado}</div>
+      <div class="ocultar">${v.tipo}</div>
+      <div class="ocultar">${v.operario}</div>
+      <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
+      <div>${v.muerto ? '' : v.mia
+        ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
+             data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>`
+        // Un parto de otra tablet se ve, pero no se corrige desde aca: la
+        // correccion viaja con el registro local, que en esta tablet no existe.
+        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>'}</div>
+    </div>`;
+  }).join('') : '<div class="vacio">Todavía no hay partos cargados este día.</div>';
+
+  pintarBadge();
   pintarPie();
 }
 
-function pintarBadge(pend, err) {
-  const b = $('badgeSync');
-  const p = pend === undefined ? null : pend;
+/* Sin parametros a proposito: lee el estado del modulo. Cualquiera puede
+   repintarlo sin tener los contadores a mano y sin riesgo de mentir. */
+function pintarBadge() {
+  const p = ultimoPend;
+  const err = ultimoErr;
   const mal = sesionVencida || !navigator.onLine;
-  b.className = 'badge ' + (mal ? 'off-line' : p ? 'pend' : 'on-line');
+  const b = $('badgeSync');
+  b.className = 'badge ' + (mal || err ? 'off-line' : p ? 'pend' : 'on-line');
   $('badgeTxt').textContent = sincronizando ? 'Sincronizando…'
     : sesionVencida ? (p ? `Sesión vencida · ${p} en espera` : 'Sesión vencida')
     : !navigator.onLine ? (p ? `Sin señal · ${p} en espera` : 'Sin señal')
-    : p ? `${p} en espera` : (err ? `${err} para revisar` : 'Sincronizado');
+    : err && p ? `${p} en espera · ${err} para revisar`
+    : err ? `${err} para revisar`
+    : p ? `${p} en espera` : 'Sincronizado';
+}
+
+/* ------------------------------------------------------------------ */
+/* Menu de cuenta                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Es para TODOS. Antes "Cerrar sesion" vivia en Ajustes —que solo ve el
+   admin— y en un long-press escondido sobre el logo: un operario que entraba
+   con la cuenta equivocada no tenia como salir. */
+
+let menuAbierto = false;
+
+function pintarCuenta() {
+  const caja = $('cuenta');
+  cerrarMenuCuenta();
+  caja.classList.toggle('hidden', !sesion);
+  if (!sesion) return;
+  const mail = sesion.email || '';
+  $('cuentaIni').textContent = (mail.charAt(0) || '?').toUpperCase();
+  $('cuentaQuien').textContent = mail.split('@')[0];
+  $('btnCuenta').title = mail;
+}
+
+function cerrarMenuCuenta() {
+  menuAbierto = false;
+  $('menuCuenta').classList.add('hidden');
+  $('btnCuenta').setAttribute('aria-expanded', 'false');
+}
+
+function abrirMenuCuenta() {
+  if (!sesion) return;
+  $('menuCuenta').innerHTML = `
+    <div class="mail">${sesion.email}${sesion.admin ? ' · admin' : ''}</div>
+    ${sesion.admin ? '<button type="button" data-cuenta="config">Ajustes de la tablet</button>' : ''}
+    <button type="button" data-cuenta="cambiar">Cambiar de usuario</button>
+    <button type="button" class="peligro" data-cuenta="salir">Cerrar sesión</button>`;
+  $('menuCuenta').classList.remove('hidden');
+  $('btnCuenta').setAttribute('aria-expanded', 'true');
+  menuAbierto = true;
+}
+
+/* Con la tablet en la mano, un toque de mas no puede dejar a nadie afuera en
+   medio de un parto: se confirma, y se dice que la cola no se pierde. */
+function confirmarSalida() {
+  const p = ultimoPend;
+  $('menuCuenta').innerHTML = `
+    <div class="mail">${p
+      ? `Hay <b>${p}</b> parto${p > 1 ? 's' : ''} sin sincronizar. No se pierden:
+         quedan en la tablet y suben cuando alguien vuelva a entrar.`
+      : 'Los partos cargados quedan guardados en la tablet.'}</div>
+    <button type="button" class="peligro" data-cuenta="salir-ok">Sí, cerrar sesión</button>
+    <button type="button" data-cuenta="cancelar">Cancelar</button>`;
+}
+
+function accionCuenta(que) {
+  if (que === 'config') { cerrarMenuCuenta(); return ver('config'); }
+  if (que === 'cambiar') {
+    // La cola es de la TABLET, no de la cuenta: los partos siguen ahi y en la
+    // columna Operario sigue figurando quien los cargo.
+    cerrarMenuCuenta();
+    cerrarSesion();
+    return avisar('Elegí la cuenta con la que vas a entrar');
+  }
+  if (que === 'salir') return confirmarSalida();
+  if (que === 'cancelar') return abrirMenuCuenta();
+  if (que === 'salir-ok') { cerrarMenuCuenta(); return cerrarSesion(); }
 }
 
 /** La pestaña Ajustes solo se le muestra a los administradores. */
@@ -1156,6 +1700,8 @@ function ver(v) {
 
   // Sin sesion no hay pestañas ni botones: solo la pantalla de acceso.
   const enLogin = v === 'login';
+  cerrarMenuCuenta();
+  $('cuenta').classList.toggle('hidden', enLogin || !sesion);
   document.querySelector('.tabs').classList.toggle('hidden', enLogin);
   $('foot').classList.toggle('hidden', enLogin);
   $('badgeSync').classList.toggle('hidden', enLogin);
@@ -1163,6 +1709,7 @@ function ver(v) {
 
   pintarPie(v);
   if (v === 'config') pintarDiagnostico();
+  if (v === 'list') bajarPartosDelDia(listaFecha);
 }
 
 const vistaActual = () => (document.querySelector('.tab.on') || { dataset: {} }).dataset.v;
@@ -1187,7 +1734,11 @@ function pintarPie(v) {
     pie.innerHTML = `<div class="msg"></div>
       <button class="btn" type="button" id="btnSync">Sincronizar ahora</button>
       <button class="btn primary" type="button" data-ir="form">Nuevo parto</button>`;
-    $('btnSync').onclick = () => { sincronizar(); avisar('Sincronizando…'); };
+    $('btnSync').onclick = () => {
+      sincronizar();
+      bajarPartosDelDia(listaFecha);
+      avisar('Sincronizando…');
+    };
   } else {
     pie.innerHTML = `<div class="msg">Configuración de la tablet</div>
       <button class="btn primary" type="button" data-ir="form">Volver al formulario</button>`;
@@ -1211,7 +1762,7 @@ function avisar(txt, malo) {
 async function bajarMaestro() {
   if (!cfg.url || !sesion) return false;
   try {
-    if (!(await tokenVigente())) { sesionVencida = true; return false; }
+    if (!(await tokenVigente())) return false;
     const j = await enviar({ accion: 'maestro' });
     if (!j.ok) { $('estadoConfig').textContent = 'El servicio respondió: ' + j.error; return false; }
     listas = Object.assign({}, LISTAS_BASE, j.listas);
@@ -1286,15 +1837,16 @@ $('btnBajarMaestro').onclick = async () => {
 $('btnReintentar').onclick = () => { sincronizar(); avisar('Reintentando…'); };
 
 $('badgeSync').onclick = () => {
-  if (sesion && sesion.admin) return ver('config');
+  // La sesion caida manda, tambien para el admin: si no, la instruccion de
+  // "tocar el badge e iniciar sesion" no funcionaba justo para quien la lee.
   if (sesionVencida) { ver('login'); return pintarLogin(); }
+  if (sesion && sesion.admin) return ver('config');
   sincronizar();
   avisar('Sincronizando…');
 };
 
-/* Salida de emergencia: mantener apretado el logo 2 segundos cierra la sesion.
-   Sin esto, una tablet con la cuenta de dispositivo queda trabada para siempre:
-   "Cerrar sesion" vive en Ajustes, y Ajustes no se le muestra a esa cuenta. */
+/* Salida de emergencia, heredada de r5. Desde el menu de cuenta ya se puede
+   salir sin secretos, asi que esto queda solo por si el chip no aparece. */
 (function salidaPorLogo() {
   const logo = document.querySelector('.logo');
   let reloj = null;
@@ -1314,9 +1866,19 @@ addEventListener('online', () => { pintarBadge(); sincronizar(); });
 addEventListener('offline', () => pintarBadge());
 setInterval(sincronizar, 30000);
 
+/* Renovacion proactiva: se pide token nuevo mientras NO hay nada esperando, con
+   la app en primer plano. Asi el prompt de Google no cae justo cuando hay
+   partos por subir, que es cuando un fallo se nota. */
+setInterval(() => {
+  if (!sesion || !navigator.onLine || document.hidden) return;
+  if (tokenSirve(MARGEN_TOKEN)) return;
+  tokenVigente().then(pintarBadge);
+}, 120000);
+
 (async function iniciar() {
   const hoy = new Date();
   st.fecha = aISO(hoy);
+  listaFecha = st.fecha;
   $('subFecha').textContent = hoy.toLocaleDateString('es-AR',
     { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -1324,6 +1886,7 @@ setInterval(sincronizar, 30000);
   st.sexo = (listas.sexo || [''])[0];
   st.tambo = (listas.tambo || [''])[0];
   st.lts_madre = medio('lts_madre');
+  st.cal = nuevoCalostroMadre();
 
   pintarFormulario();
   await refrescar();
@@ -1334,6 +1897,9 @@ setInterval(sincronizar, 30000);
   setInterval(() => {
     const hoyAhora = fechasPosibles()[0].iso;
     if (hoyAhora === hoyConocido) return;
+    // La lista sigue al dia nuevo solo si estaba mirando "hoy": si el operario
+    // la dejo en ayer a proposito, se respeta.
+    if (listaFecha === hoyConocido) { listaFecha = hoyAhora; bajarPartosDelDia(hoyAhora); }
     hoyConocido = hoyAhora;
     pintarFechas();
     $('subFecha').textContent = new Date().toLocaleDateString('es-AR',
@@ -1352,6 +1918,8 @@ setInterval(sincronizar, 30000);
 /** Se llama al arrancar con sesion valida, o apenas se inicia sesion. */
 function arrancarApp() {
   pintarPermisos();
+  pintarCuenta();
+  bajarPartosDelDia(listaFecha);
   ver('form');
   bajarMaestro();
   sincronizar();
