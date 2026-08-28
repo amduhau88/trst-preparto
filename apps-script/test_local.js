@@ -23,6 +23,7 @@ function crearHoja(nombre, filas) {
     setName(n) { this.nombre = n; return this; },
     setFrozenRows() { return this; },
     clear() { this.filas.length = 0; return this; },
+    deleteRow(n) { this.filas.splice(n - 1, 1); return this; },
     insertRowAfter(n) {
       // Igual que Sheets: lo que estaba abajo baja un lugar, con sus valores.
       this.filas.splice(n, 0, []);
@@ -1096,6 +1097,34 @@ check('la migracion la conserva',
 check('y el encabezado dice que es',
       libro._hojas['Registros'].filas[0][COL.cargado_en] === 'Fecha y Hora de Carga',
       libro._hojas['Registros'].filas[0][COL.cargado_en]);
+
+console.log('\n18h. Borrar lo que deja verificar.sh');
+/* verificar.sh escribe partos de verdad en la planilla de produccion. Borrarlos
+   a mano invita a llevarse uno real por delante, asi que el patron de las notas
+   es exacto y hay un ensayo antes. */
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-real-1', id_vaca: '100', notas: 'vaca nerviosa' }));
+post(partoBase({ uuid: 'u-prueba-1', id_vaca: '101', notas: 'PRUEBA simple · 1787878815' }));
+post(partoBase({ uuid: 'u-prueba-2', id_vaca: '102', notas: 'PRUEBA doble · 1787878815' }));
+// Casi, pero no: un parto real cuyas notas empiezan parecido no se toca.
+post(partoBase({ uuid: 'u-real-2', id_vaca: '103', notas: 'PRUEBA de calostro que hizo el veterinario' }));
+
+check('encuentra solo las de verificar.sh', sandbox.filasDePrueba_().length === 2,
+      JSON.stringify(sandbox.filasDePrueba_().map((f) => f.datos[COL.notas])));
+const antesDeBorrar = formato().length;
+sandbox.verPruebas();
+check('el ensayo no borra nada', formato().length === antesDeBorrar);
+
+sandbox.borrarPruebas();
+check('borra las dos', formato().length === antesDeBorrar - 2,
+      antesDeBorrar + ' -> ' + formato().length);
+check('y deja intactos los partos reales',
+      formato().map((f) => f[COL.id_vaca]).join(',') === '100,103',
+      formato().map((f) => f[COL.id_vaca]).join(','));
+check('los renglones de _log NO se tocan: son la auditoria',
+      log().filter((l) => l[0] === 'u-prueba-1').length > 0);
+check('y la vista DC queda sin las filas borradas',
+      !libro._hojas['Datos Carga DC'].filas.some((f) => f[sandbox.DC.id_vaca] === '101'));
 
 console.log('\n19. Esquema: el backend escribe por posicion, asi que lo verifica');
 libro = nuevoLibro();

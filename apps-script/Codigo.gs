@@ -1518,6 +1518,53 @@ function crearRelojDC_() {
  * tocar la hoja deja una copia intacta, porque esto reescribe filas de
  * produccion que incluyen el rodeo que Nahuel cargo a mano.
  */
+/* Las filas que deja verificar.sh: notas "PRUEBA <caso> · <corrida>". Ningun
+ * parto real tiene notas asi, y el patron es exacto a proposito — esto borra
+ * renglones de la base de datos. */
+var PATRON_PRUEBA = /^PRUEBA .+ · \d+$/;
+
+/** Ensayo: lista las filas de prueba sin borrar nada. */
+function verPruebas() {
+  var filas = filasDePrueba_();
+  if (!filas.length) { Logger.log('No hay filas de prueba en la planilla.'); return; }
+  Logger.log(filas.length + ' fila(s) de prueba:');
+  filas.forEach(function (f) {
+    Logger.log('  renglon ' + f.fila + ' · vaca ' + str_(f.datos[COL.id_vaca]) +
+               ' · ' + str_(f.datos[COL.notas]));
+  });
+  Logger.log('Para borrarlas: correr borrarPruebas().');
+}
+
+/**
+ * Borra las filas que dejo verificar.sh. Los renglones de _log NO se tocan:
+ * esa hoja es append-only y es lo que deja reconstruir que paso.
+ */
+function borrarPruebas() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var hoja = hojaRegistros_(ss);
+  var filas = filasDePrueba_();
+  if (!filas.length) { Logger.log('No hay filas de prueba que borrar.'); return; }
+
+  // De abajo hacia arriba: borrar de arriba correria los numeros de las de abajo.
+  filas.sort(function (a, b) { return b.fila - a.fila; })
+       .forEach(function (f) { hoja.deleteRow(f.fila); });
+
+  Logger.log('Borradas ' + filas.length + ' fila(s) de prueba.');
+  actualizarDC_(ss);
+  Logger.log('Vista Datos Carga DC reconstruida.');
+}
+
+function filasDePrueba_() {
+  var hoja = hojaRegistros_(SpreadsheetApp.openById(SS_ID));
+  if (!hoja || hoja.getLastRow() < 2) return [];
+  var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
+  var out = [];
+  datos.forEach(function (d, i) {
+    if (PATRON_PRUEBA.test(str_(d[COL.notas]).trim())) out.push({ fila: i + 2, datos: d });
+  });
+  return out;
+}
+
 /**
  * Muestra QUE hay realmente en la hoja: el encabezado columna por columna y las
  * primeras filas. Solo lee. Es lo primero que hay que mirar cuando la revision
