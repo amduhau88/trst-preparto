@@ -1465,21 +1465,44 @@ function configurarDC() {
     Logger.log('No se pudo proteger la hoja: ' + err);
   }
 
-  // Un reloj cada 10 minutos, por si alguna reconstruccion fallo.
-  var yaEsta = ScriptApp.getProjectTriggers().some(function (t) {
-    return t.getHandlerFunction() === 'reconstruirDCporReloj';
-  });
-  if (!yaEsta) {
-    ScriptApp.newTrigger('reconstruirDCporReloj').timeBased().everyMinutes(10).create();
-    Logger.log('Trigger de reconstruccion creado (cada 10 min).');
-  }
-
+  /* La vista se llena ANTES de tocar los triggers. Crear el reloj necesita el
+     permiso script.scriptapp, que este proyecto no tiene: agregarlo obliga a
+     reautorizar, y con el web app ya publicado eso puede cortarle la
+     sincronizacion a las tablets. No vale la pena por un reloj que es solo una
+     red de seguridad — la vista se rehace igual con cada parto que entra. */
   var n = reconstruirDC_(ss);
   if (n < 0) {
-    Logger.log('Pestaña y trigger listos. La vista se va a llenar sola en cuanto');
-    Logger.log('corras migrarR6(): antes de eso, las columnas todavia estan corridas.');
+    Logger.log('Pestaña lista. La vista se va a llenar sola en cuanto corras');
+    Logger.log('migrarR6(): antes de eso, las columnas todavia estan corridas.');
   } else {
     Logger.log('Filas escritas en la vista: ' + n);
+  }
+
+  crearRelojDC_();
+}
+
+/**
+ * El reloj de reconstruccion. Es opcional: la vista se rehace con cada parto
+ * que entra y con cada correccion, asi que esto solo cubre el caso de que
+ * alguna de esas pasadas haya fallado.
+ */
+function crearRelojDC_() {
+  try {
+    var yaEsta = ScriptApp.getProjectTriggers().some(function (t) {
+      return t.getHandlerFunction() === 'reconstruirDCporReloj';
+    });
+    if (yaEsta) { Logger.log('El reloj de reconstruccion ya estaba creado.'); return; }
+    ScriptApp.newTrigger('reconstruirDCporReloj').timeBased().everyMinutes(10).create();
+    Logger.log('Reloj de reconstruccion creado (cada 10 min).');
+  } catch (err) {
+    Logger.log('');
+    Logger.log('No se pudo crear el reloj automatico, y no es grave: la vista se');
+    Logger.log('rehace igual con cada parto y con cada correccion.');
+    Logger.log('Para crearlo a mano, sin tocar permisos ni volver a publicar:');
+    Logger.log('  Editor -> icono del reloj (Activadores) -> Añadir activador');
+    Logger.log('  Funcion: reconstruirDCporReloj');
+    Logger.log('  Origen: Basado en el tiempo · Temporizador por minutos · Cada 10 minutos');
+    Logger.log('(' + err + ')');
   }
 }
 

@@ -201,8 +201,14 @@ Orden:
    carguen quedan en la cola de las tablets. No se pierde ninguno.
 3. **`migrarR6()`** — deja el respaldo en `Registros_backup_r5` y reescribe. Minutos.
    Al terminar, las colas se drenan solas.
-4. **`configurarDC()`** — crea la vista y el reloj. Se puede correr antes del paso 3:
-   queda vacía hasta que la planilla esté migrada.
+4. **`configurarDC()`** — crea la vista. Se puede correr antes del paso 3: queda vacía
+   hasta que la planilla esté migrada.
+   El reloj de reconstrucción cada 10 min necesita el permiso `script.scriptapp`, que
+   este proyecto no tiene. Si falla, el log dice cómo crearlo a mano desde el ícono del
+   reloj — y no es grave: la vista se rehace con cada parto y con cada corrección, el
+   reloj sólo cubre el caso de que alguna de esas pasadas falle. Agregar el permiso
+   obliga a reautorizar el script, y con el web app publicado eso puede cortarle la
+   sincronización a las tablets: no vale la pena por una red de seguridad.
 5. `./scripts/verificar.sh "$URL"` y, recién ahí, pushear la PWA a `main`.
 
 Antes de tocar producción:
