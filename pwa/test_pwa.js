@@ -1280,6 +1280,11 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1500);
     check('el admin entra', await visible(page, '#v-form'));
     check('AJUSTES VISIBLE para el admin', await visible(page, '.tab[data-v="config"]'));
+    // Un parto que no puede subir, para probar el respaldo de la cola mas abajo.
+    caidoHasta = Date.now() + 60000;
+    await cargarParto(page, '6161', '8161');
+    await esperar(1200);
+    check('hay un parto en cola para el respaldo', (await contarLocal(page)).pendientes === 1);
     await page.click('#btnCuenta');
     await esperar(250);
     menu = await page.$eval('#menuCuenta', (e) => e.textContent);
@@ -1292,6 +1297,35 @@ const visible = (page, sel) => page.evaluate((s) => {
           /andresduhau@admin\.com\.ar/.test(await page.$eval('#diag', (e) => e.textContent)));
     check('ya no pide URL ni token',
           await page.evaluate(() => !document.getElementById('fUrl') && !document.getElementById('fToken')));
+
+    console.log('\n14b. Copiar pendientes: la cola se puede sacar como texto');
+    check('el texto arranca escondido', !(await visible(page, '#pendientesTxt')));
+    await page.click('#btnCopiarPendientes');
+    await esperar(400);
+    check('aparece el texto', await visible(page, '#pendientesTxt'));
+    const volcado = await page.$eval('#pendientesTxt', (e) => e.value);
+    let pendJson = null;
+    try { pendJson = JSON.parse(volcado); } catch (e) { /* se reporta abajo */ }
+    check('es JSON valido', Array.isArray(pendJson), volcado.slice(0, 80));
+    check('trae exactamente el parto en cola',
+          pendJson && pendJson.length === 1 && pendJson[0].estado === 'pendiente' &&
+          pendJson[0].payload && pendJson[0].payload.id_vaca === '6161',
+          JSON.stringify(pendJson && pendJson[0] && { estado: pendJson[0].estado, vaca: pendJson[0].payload && pendJson[0].payload.id_vaca }));
+    check('con su uuid', pendJson && /^[0-9a-f-]{36}$/.test(pendJson[0].uuid), pendJson && pendJson[0].uuid);
+    check('sin credenciales adentro', !/id_token/.test(volcado));
+    check('avisa cuantos son',
+          /1 sin sincronizar/.test(await page.$eval('#estadoPendientes', (e) => e.textContent)));
+    // El servidor vuelve; Reintentar sincronizacion (lo que tocaria una persona)
+    // drena la cola, y el boton lo refleja.
+    caidoHasta = 0;
+    await page.click('#btnReintentar');
+    c = await esperarSync(page, 20);
+    check('el parto del respaldo entra igual', c.pendientes === 0, JSON.stringify(c));
+    await page.click('#btnCopiarPendientes');
+    await esperar(300);
+    check('sin cola, lo dice y esconde el texto',
+          !(await visible(page, '#pendientesTxt')) &&
+          /No hay partos/.test(await page.$eval('#estadoPendientes', (e) => e.textContent)));
 
     console.log('\n15. Cerrar sesion desde Ajustes');
     await page.click('#btnSalir');

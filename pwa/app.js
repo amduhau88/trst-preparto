@@ -1836,6 +1836,41 @@ $('btnBajarMaestro').onclick = async () => {
 };
 $('btnReintentar').onclick = () => { sincronizar(); avisar('Reintentando…'); };
 
+/* Respaldo de la cola. Los partos que no subieron viven SOLO en IndexedDB de
+   esta tablet: borrar los datos del sitio, desinstalar o borrar el icono los
+   pierde, y hasta ahora no habia forma de sacarlos. Esto los vuelca como texto
+   para mandarlos por WhatsApp o recargarlos a mano antes de tocar nada.
+   Va a un textarea a la vista y no solo al portapapeles: en las tablets el
+   portapapeles falla en silencio. El payload no lleva el id_token (se agrega
+   recien en enviar()), asi que el texto no contiene credenciales. */
+$('btnCopiarPendientes').onclick = async () => {
+  const caja = $('pendientesTxt');
+  const est = $('estadoPendientes');
+  const pend = (await todosLocal())
+    .filter((r) => r.estado !== 'ok' || r.edicion || r.cambioSexo)
+    .sort((a, b) => a.creado - b.creado)
+    .map((r) => ({
+      uuid: r.uuid, estado: r.estado, intentos: r.intentos || 0, error: r.error || '',
+      creado: new Date(r.creado).toISOString(),
+      edicion: r.edicion || null, cambioSexo: r.cambioSexo || null,
+      payload: r.payload
+    }));
+  if (!pend.length) {
+    caja.classList.add('hidden');
+    est.textContent = 'No hay partos sin sincronizar.';
+    return;
+  }
+  caja.value = JSON.stringify(pend, null, 1);
+  caja.classList.remove('hidden');
+  est.textContent = `${pend.length} sin sincronizar. Mantené apretado el texto para seleccionarlo y copiarlo.`;
+  caja.focus();
+  caja.select();
+  try {
+    await navigator.clipboard.writeText(caja.value);
+    est.textContent = `${pend.length} sin sincronizar, copiados al portapapeles. El texto queda abajo por si hace falta.`;
+  } catch (e) { /* sin portapapeles: el texto queda a la vista igual */ }
+};
+
 $('badgeSync').onclick = () => {
   // La sesion caida manda, tambien para el admin: si no, la instruccion de
   // "tocar el badge e iniciar sesion" no funcionaba justo para quien la lee.
