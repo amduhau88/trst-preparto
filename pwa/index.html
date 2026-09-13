@@ -453,6 +453,7 @@
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
         <button class="btn" id="btnReintentar" type="button">Reintentar sincronización</button>
         <button class="btn" id="btnSalir" type="button">Cerrar sesión</button>
+        <button class="btn" id="btnCopiarPendientes" type="button">Copiar pendientes</button>
       </div>
     </div>
   </section>
@@ -469,6 +470,21 @@
     <p class="detalle" id="okDetalle"></p>
     <div><span class="estado" id="okEstado"></span></div>
     <button class="btn primary" type="button" id="btnOtroParto">Cargar otro parto</button>
+  </div>
+</div>
+
+<!-- Respaldo de la cola. Se abre desde el menu de cuenta (todos los usuarios) y
+     desde Ajustes (admin). Los partos sin sincronizar viven solo en esta tablet. -->
+<div class="modal hidden" id="modalPendientes" role="dialog" aria-modal="true" aria-labelledby="pendientesTitulo">
+  <div class="modal-caja">
+    <h2 id="pendientesTitulo">Partos sin sincronizar</h2>
+    <p class="detalle" id="pendientesEstado"></p>
+    <textarea id="pendientesTxt" class="hidden" readonly spellcheck="false" aria-label="Partos sin sincronizar"
+              style="margin-top:8px;min-height:200px;max-height:45vh;font-family:ui-monospace,Menlo,monospace;font-size:12px"></textarea>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px">
+      <button class="btn primary" type="button" id="btnCopiarPendientesTxt">Copiar</button>
+      <button class="btn" type="button" id="btnCerrarPendientes">Cerrar</button>
+    </div>
   </div>
 </div>
 

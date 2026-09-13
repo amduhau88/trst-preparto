@@ -143,6 +143,20 @@ Si devuelve `{"ok":true,...}` el backend está vivo.
 La hoja **`_log`** registra todo lo que llegó, incluidos los rechazos con su motivo
 y **quién** lo cargó. Es el primer lugar donde mirar si un parto "no aparece".
 
+## Antes de borrar datos, desinstalar o reinstalar la app
+
+Los partos sin sincronizar viven **sólo en el almacenamiento local de esa tablet**. Borrar los
+datos del sitio, desinstalar la app o borrar el ícono (en iPad la app instalada tiene su propio
+almacenamiento) los pierde. Antes de cualquiera de esas cosas: tocar el **chip de cuenta** (arriba
+a la derecha) → **Copiar partos sin sincronizar**, y mandar ese texto por WhatsApp o guardarlo.
+Lo ve cualquier usuario, no hace falta ser admin (el admin también lo tiene en Ajustes). Trae cada
+parto en cola con su uuid, estado, el último error y el payload completo, sin credenciales. Con eso
+se pueden recargar a mano los que falten.
+
+La cola se traba de a uno: se sube en orden de carga y, ante el primer error que no sea de
+validación, la app corta y reintenta **ese mismo parto** cada 30 s. El texto del error queda en
+rojo debajo de ese parto en la lista del día. Ese texto es lo primero que hay que leer.
+
 ## Un parto no llegó a la planilla
 
 En orden:

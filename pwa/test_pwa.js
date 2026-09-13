@@ -1239,6 +1239,37 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('el parto quedo pendiente', antesDeSalir.pendientes === 1,
           JSON.stringify(antesDeSalir));
 
+    console.log('\n12d. Copiar partos sin sincronizar: la cola se saca como texto, sin ser admin');
+    check('el modal arranca escondido', !(await visible(page, '#modalPendientes')));
+    await page.click('#btnCuenta');
+    await esperar(200);
+    check('el menu de la cuenta de dispositivo ofrece el respaldo',
+          await page.$eval('#menuCuenta', (e) => /Copiar partos sin sincronizar/.test(e.textContent)));
+    await page.click('[data-cuenta="pendientes"]');
+    await esperar(400);
+    check('se abre el modal', await visible(page, '#modalPendientes'));
+    check('con el texto a la vista', await visible(page, '#pendientesTxt'));
+    const volcado = await page.$eval('#pendientesTxt', (e) => e.value);
+    let pendJson = null;
+    try { pendJson = JSON.parse(volcado); } catch (e) { /* se reporta abajo */ }
+    check('es JSON valido', Array.isArray(pendJson), volcado.slice(0, 80));
+    check('trae exactamente el parto en cola',
+          pendJson && pendJson.length === 1 && pendJson[0].estado === 'pendiente' &&
+          pendJson[0].payload && pendJson[0].payload.id_vaca === '6060',
+          JSON.stringify(pendJson && pendJson[0] && { estado: pendJson[0].estado, vaca: pendJson[0].payload && pendJson[0].payload.id_vaca }));
+    check('con su uuid', pendJson && /^[0-9a-f-]{36}$/.test(pendJson[0].uuid), pendJson && pendJson[0].uuid);
+    // Con el servidor caido la app no guarda texto de error (es el camino "sin
+    // red": solo cuenta intentos). Lo que el respaldo garantiza es la forma.
+    check('con intentos y error como campos', pendJson && 'intentos' in pendJson[0] && 'error' in pendJson[0] && 'creado' in pendJson[0],
+          JSON.stringify(pendJson && Object.keys(pendJson[0])));
+    check('sin credenciales adentro', !/id_token/.test(volcado));
+    check('avisa cuantos son',
+          /1 sin sincronizar/.test(await page.$eval('#pendientesEstado', (e) => e.textContent)));
+    await page.click('#btnCerrarPendientes');
+    await esperar(200);
+    check('Cerrar lo esconde', !(await visible(page, '#modalPendientes')));
+    check('y la cola sigue intacta', (await contarLocal(page)).pendientes === 1);
+
     await page.click('#btnCuenta');
     await esperar(200);
     await page.click('[data-cuenta="salir"]');
@@ -1292,6 +1323,16 @@ const visible = (page, sel) => page.evaluate((s) => {
           /andresduhau@admin\.com\.ar/.test(await page.$eval('#diag', (e) => e.textContent)));
     check('ya no pide URL ni token',
           await page.evaluate(() => !document.getElementById('fUrl') && !document.getElementById('fToken')));
+
+    console.log('\n14b. Ajustes tambien abre el respaldo de la cola (aca, vacia)');
+    await page.click('#btnCopiarPendientes');
+    await esperar(300);
+    check('se abre el mismo modal', await visible(page, '#modalPendientes'));
+    check('sin cola, lo dice', /No hay partos/.test(await page.$eval('#pendientesEstado', (e) => e.textContent)));
+    check('y no muestra texto vacio', !(await visible(page, '#pendientesTxt')));
+    await page.keyboard.press('Escape');
+    await esperar(200);
+    check('Escape lo cierra', !(await visible(page, '#modalPendientes')));
 
     console.log('\n15. Cerrar sesion desde Ajustes');
     await page.click('#btnSalir');
