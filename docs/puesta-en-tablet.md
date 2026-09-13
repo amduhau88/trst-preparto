@@ -88,7 +88,7 @@ vieja guardada y el cambio no llega nunca.
 |---|---|
 | No aparece "Instalar aplicación" | Se abrió por `http://`, no `https://` |
 | El badge dice **"Sesión vencida"** | Pasaron los 30 días, se revocó la cuenta, o Google no renovó el token de la hora. Tocar el badge y volver a entrar. **Los partos en cola no se pierden.** |
-| Hay que borrar datos del sitio, desinstalar o reinstalar | **Antes**, entrar con una cuenta admin → Ajustes → **Copiar pendientes** y guardar ese texto. La cola vive en el almacenamiento del navegador y se borra con él. |
+| Hay que borrar datos del sitio, desinstalar o reinstalar | **Antes**: chip de cuenta (arriba a la derecha) → **Copiar partos sin sincronizar**, y guardar ese texto. Lo ve cualquier usuario. La cola vive en el almacenamiento del navegador y se borra con él. |
 | No deja entrar con una cuenta | No es `@admin.com.ar`. Es lo esperado. |
 | Todos los partos quedan "Revisar" | Falta un valor en `Maestro` (p. ej. el operario que eligieron) |
 | No sincroniza y hay señal | La URL del `/exec` cambió: se creó una implementación nueva en vez de versionar |

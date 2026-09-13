@@ -1642,6 +1642,7 @@ function abrirMenuCuenta() {
   $('menuCuenta').innerHTML = `
     <div class="mail">${sesion.email}${sesion.admin ? ' · admin' : ''}</div>
     ${sesion.admin ? '<button type="button" data-cuenta="config">Ajustes de la tablet</button>' : ''}
+    <button type="button" data-cuenta="pendientes">Copiar partos sin sincronizar</button>
     <button type="button" data-cuenta="cambiar">Cambiar de usuario</button>
     <button type="button" class="peligro" data-cuenta="salir">Cerrar sesión</button>`;
   $('menuCuenta').classList.remove('hidden');
@@ -1664,6 +1665,7 @@ function confirmarSalida() {
 
 function accionCuenta(que) {
   if (que === 'config') { cerrarMenuCuenta(); return ver('config'); }
+  if (que === 'pendientes') { cerrarMenuCuenta(); return abrirPendientes(); }
   if (que === 'cambiar') {
     // La cola es de la TABLET, no de la cuenta: los partos siguen ahi y en la
     // columna Operario sigue figurando quien los cargo.
@@ -1840,12 +1842,14 @@ $('btnReintentar').onclick = () => { sincronizar(); avisar('Reintentando…'); }
    esta tablet: borrar los datos del sitio, desinstalar o borrar el icono los
    pierde, y hasta ahora no habia forma de sacarlos. Esto los vuelca como texto
    para mandarlos por WhatsApp o recargarlos a mano antes de tocar nada.
-   Va a un textarea a la vista y no solo al portapapeles: en las tablets el
+   Se abre desde el menu de cuenta, que ven TODOS los usuarios: la tablet entra
+   con una cuenta que no es admin y no tiene Ajustes.
+   El texto queda a la vista y no solo en el portapapeles: en las tablets el
    portapapeles falla en silencio. El payload no lleva el id_token (se agrega
    recien en enviar()), asi que el texto no contiene credenciales. */
-$('btnCopiarPendientes').onclick = async () => {
+async function abrirPendientes() {
   const caja = $('pendientesTxt');
-  const est = $('estadoPendientes');
+  const est = $('pendientesEstado');
   const pend = (await todosLocal())
     .filter((r) => r.estado !== 'ok' || r.edicion || r.cambioSexo)
     .sort((a, b) => a.creado - b.creado)
@@ -1856,19 +1860,36 @@ $('btnCopiarPendientes').onclick = async () => {
       payload: r.payload
     }));
   if (!pend.length) {
+    caja.value = '';
     caja.classList.add('hidden');
-    est.textContent = 'No hay partos sin sincronizar.';
-    return;
+    est.textContent = 'No hay partos sin sincronizar. Todo lo cargado ya está en la planilla.';
+  } else {
+    caja.value = JSON.stringify(pend, null, 1);
+    caja.classList.remove('hidden');
+    est.textContent = `${pend.length} sin sincronizar. Mantené apretado el texto para seleccionarlo, o tocá Copiar.`;
   }
-  caja.value = JSON.stringify(pend, null, 1);
-  caja.classList.remove('hidden');
-  est.textContent = `${pend.length} sin sincronizar. Mantené apretado el texto para seleccionarlo y copiarlo.`;
+  $('btnCopiarPendientesTxt').classList.toggle('hidden', !pend.length);
+  $('modalPendientes').classList.remove('hidden');
+}
+
+function cerrarPendientes() { $('modalPendientes').classList.add('hidden'); }
+
+$('btnCopiarPendientes').onclick = abrirPendientes;
+$('btnCerrarPendientes').onclick = cerrarPendientes;
+$('modalPendientes').addEventListener('click', (e) => { if (e.target === $('modalPendientes')) cerrarPendientes(); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('modalPendientes').classList.contains('hidden')) cerrarPendientes();
+});
+$('btnCopiarPendientesTxt').onclick = async () => {
+  const caja = $('pendientesTxt');
   caja.focus();
   caja.select();
   try {
     await navigator.clipboard.writeText(caja.value);
-    est.textContent = `${pend.length} sin sincronizar, copiados al portapapeles. El texto queda abajo por si hace falta.`;
-  } catch (e) { /* sin portapapeles: el texto queda a la vista igual */ }
+    avisar('Copiado. Pegalo en WhatsApp.');
+  } catch (e) {
+    avisar('El texto quedó seleccionado: mantenelo apretado y elegí Copiar.');
+  }
 };
 
 $('badgeSync').onclick = () => {
