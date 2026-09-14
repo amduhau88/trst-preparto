@@ -1047,15 +1047,18 @@ async function descartarCambio(uuid) {
   if (!reg) return avisar('Ese parto ya no está en la tablet', true);
   const vaca = reg.payload.id_vaca;
 
-  if (reg.estado === 'error') {
-    // Un alta rechazada nunca entro a la planilla: descartarla es borrarla de la tablet.
+  if (reg.estado !== 'ok') {
+    // Un alta pendiente o rechazada nunca entro a la planilla: descartarla es
+    // borrarla de la tablet. Se dice con todas las letras, porque no hay vuelta.
+    const fecha = aDDMMAAAA(reg.payload.fecha_parto || '');
     const ok = await confirmar('Descartar este parto',
-      `El parto de la vaca <b>${vaca}</b> fue rechazado por la planilla y <b>nunca entró</b>.
-       Se borra de esta tablet. Si hay que cargarlo, se carga de nuevo.`, 'Sí, descartar');
+      `El parto de la vaca <b>${vaca}</b> del ${fecha} <b>nunca entró a la planilla</b>
+       (${reg.estado === 'error' ? 'la planilla lo rechazó' : 'está esperando subir'}${reg.error ? ': ' + reg.error : ''}).
+       Se borra de esta tablet y no se recupera. Si hace falta, se carga de nuevo.`, 'Sí, descartar');
     if (!ok) return;
     await borrarLocal(uuid);
     await refrescar();
-    return avisar('Parto descartado');
+    return avisar('Parto descartado de la tablet');
   }
 
   const ok = await confirmar('Descartar la corrección',
@@ -1602,8 +1605,10 @@ function vistaLocal(r) {
     uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento, fecha: p.fecha_parto,
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
     cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
-    // Lo que ya no va a subir solo: una correccion rechazada o un alta rechazada.
-    descartable: !!r.revisarEdicion || r.estado === 'error',
+    // Todo lo que no esta en la planilla o tiene algo sin subir. Un admin puede
+    // descartarlo: es la salida cuando un registro traba la cola y no hay arreglo.
+    descartable: sinSubir(r),
+    intentos: r.intentos || 0,
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
       id: t.id_ternero || 's/id', vive: t.vive !== false,
       peso: t.peso === undefined ? null : t.peso
@@ -1700,7 +1705,7 @@ async function refrescar() {
     return `<div class="listrow">
       <div class="id">${v.id_vaca}</div>
       <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
-        ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}</div>` : ''}</div>
+        ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}${v.intentos > 1 ? ` · ${v.intentos} intentos` : ''}</div>` : ''}</div>
       <div>${conFecha ? `<span class="meta" style="display:block">${aDDMMAAAA(v.fecha || listaFecha)}</span>` : ''}${v.hora}</div>
       <div class="ocultar">${v.cargado}</div>
       <div class="ocultar">${v.tipo}</div>
