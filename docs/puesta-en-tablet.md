@@ -67,7 +67,9 @@ volver al paso 1.
   El operario nunca tiene que esperar ni reintentar.
 - El badge de arriba a la derecha dice siempre cómo está: *Sincronizado*,
   *N en espera*, *Sin señal* o *N para revisar*.
-- **Partos cargados** muestra lo cargado hoy, también sin señal.
+- **Partos cargados** muestra toda la planilla más lo de esta tablet, con buscador, rango de fechas
+  y orden por columna; sin señal, la última copia.
+- En cada ternero se carga la **caravana SENASA** (6 dígitos): sin ella el parto no se guarda.
 - Un parto marcado **"Revisar"** tiene un dato que la planilla rechazó; el motivo
   aparece debajo. Reintentar no lo arregla: hay que corregir el dato.
 

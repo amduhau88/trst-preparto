@@ -153,6 +153,7 @@ const api = http.createServer((req, res) => {
         calostro: b.madre || { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---' },
         terneros: muerto ? [] : mias.map((f) => f.estado_cria === 'Muerto' ? { id_ternero: '', raza: '', vive: false } : {
           id_ternero: f.id_ternero, raza: f.raza || 'Holando', peso: f.peso, vive: true,
+          caravana_senasa: f.caravana_senasa || '',
           calostro: f.calostro || { origen: 'Propia madre', id_vaca_origen: f.id_vaca, calidad_ternero: '26', lts_ternero: '4' }
         }),
         cargado_en: new Date(String(b.cargado_en).replace(' ', 'T') + ':00').toISOString(),
@@ -234,6 +235,11 @@ const api = http.createServer((req, res) => {
     if (!p.operario || !p.id_vaca) {
       return responder({ ok: false, error: 'validacion', detalles: ['faltan datos'] });
     }
+    // Como validar_ en Codigo.gs: con formato >= 2, cada cria viva trae 6 digitos.
+    if (Number(p.formato) >= 2) {
+      const sinCaravana = (p.terneros || []).filter((t) => t.vive !== false && !/^\d{6}$/.test(String(t.caravana_senasa || '')));
+      if (sinCaravana.length) return responder({ ok: false, error: 'validacion', detalles: ['falta la caravana SENASA (6 digitos)'] });
+    }
     uuidsVistos.add(p.uuid);
     const n = Math.max(1, (p.terneros || []).length);
     for (let i = 0; i < n; i++) {
@@ -241,6 +247,7 @@ const api = http.createServer((req, res) => {
       filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
                    operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro,
                    madre: p.calostro, lts_madre: p.lts_madre, notas: p.notas, raza: t.raza,
+                   caravana_senasa: t.caravana_senasa || '',
                    // Lo que devuelve la accion 'partos', con los nombres del backend.
                    id_vaca: p.id_vaca, fecha: p.fecha_parto, hora: p.hora_nacimiento,
                    tipo_parto: p.tipo_parto, sexo: p.sexo, id_ternero: t.id_ternero,
@@ -293,11 +300,24 @@ async function cargarParto(page, vaca, ternero) {
       inp.value = i === 0 ? t : String(Number(t) + 1);
       inp.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    // Caravana SENASA: 6 digitos por cria, obligatoria desde v15.
+    document.querySelectorAll('[data-senasa]').forEach((inp, i) => {
+      inp.value = String(100000 + (Number(t) % 900000) + i);
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    });
   }, vaca, ternero);
   await page.click('#btnGuardar');
   await new Promise((r) => setTimeout(r, 350));
   await cerrarCartel(page);
 }
+
+
+/** Caravana SENASA de 6 digitos en cada cria viva: obligatoria desde v15. */
+const llenarSenasa = (page) => page.evaluate(() => {
+  document.querySelectorAll('[data-senasa]').forEach((inp, i) => {
+    if (!/^\d{6}$/.test(inp.value)) { inp.value = String(300000 + i); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+  });
+});
 
 /** El cartel de exito tapa el formulario: hay que cerrarlo para seguir cargando. */
 const cerrarCartel = (page) => page.evaluate(() => {
@@ -618,6 +638,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       const b = document.querySelector('[data-brixternero="1"]');
       b.value = '29'; b.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('el cartel de confirmacion aparece', await visible(page, '#modalOk'));
@@ -681,6 +702,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
     });
     await esperar(300);
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('no guarda dos hembras con el codigo 8', !(await visible(page, '#modalOk')));
@@ -705,6 +727,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     check('la cria muerta pierde su ficha de calostro',
           await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('el cartel avisa la cria muerta',
@@ -786,6 +809,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       const i = document.querySelector('[data-ternero]');
       i.value = t; i.dispatchEvent(new Event('input', { bubbles: true }));
     }, '208', '9093');
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(400);
     check('sin señal el cartel avisa que queda en espera',
@@ -1001,6 +1025,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     console.log('\n11d. El peso lo carga quien cargo el parto');
     await apretar(MAS); await soltar();                       // 43 kg
     await page.select('#fOperario', 'Griselda');
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     check('Griselda no puede pesar un parto de Julio', await visible(page, '#v-form'),
@@ -1012,6 +1037,7 @@ const visible = (page, sel) => page.evaluate((s) => {
           !ediciones.some((e) => e.uuid === (filas.find((f) => f.vaca === '7001') || {}).uuid));
 
     await page.select('#fOperario', 'Julio');
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     await esperarSync(page, 15);
@@ -1032,6 +1058,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate(() => {
       [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val === '3').click();
     });
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     await esperarSync(page, 15);
@@ -1080,6 +1107,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
     });
     await esperar(300);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(500);
     check('agregar una cria NO pide confirmacion', !(await visible(page, '#modalConf')));
@@ -1098,6 +1126,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     await elegirSexo(page, 6);
     await esperar(400);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(500);
     check('anular una cria SI pide confirmacion', await visible(page, '#modalConf'));
@@ -1107,6 +1136,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     check('cancelar no manda nada',
           filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 2);
+
+    await llenarSenasa(page);
 
     await page.click('#btnGuardarEd');
     await esperar(400);
@@ -1163,7 +1194,7 @@ const visible = (page, sel) => page.evaluate((s) => {
 
     const propios = await page.$$eval('.listrow', (r) => r.length);
     // Otra tablet carga un parto: llega a la planilla sin pasar por esta.
-    const hoyISO = await page.evaluate(() => listaFecha);
+    const hoyISO = await page.evaluate(() => fechasPosibles()[0].iso);
     filas.push({ uuid: 'u-de-otra-tablet', id_vaca: '4242', vaca: '4242', fecha: hoyISO,
                  hora: '05:30', tipo_parto: '1 Normal', sexo: '1 Hembra Viva',
                  id_ternero: '9999', estado_cria: 'Vivo', peso: 41, cria: '1/1',
@@ -1210,14 +1241,12 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(200);
     await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[1].click());
     await esperar(400);
-    const fechas = await page.evaluate(() => ({ form: st.fecha, lista: listaFecha }));
-    check('el formulario se fue a ayer', fechas.form !== fechas.lista, JSON.stringify(fechas));
+    const fechas = await page.evaluate(() => ({ form: st.fecha, hoy: fechasPosibles()[0].iso }));
+    check('el formulario se fue a ayer', fechas.form !== fechas.hoy, JSON.stringify(fechas));
     await page.evaluate(() => ver('list'));
     await esperar(400);
-    check('la lista siguio en hoy',
-          await page.evaluate(() => document.querySelectorAll('#cListaFecha .chip')[0]
-            .classList.contains('on')));
-    check('y los partos de hoy siguen a la vista', !!(await filaDe('7001')));
+    check('la tabla no tiene seleccion de dia: muestra todo', !(await page.$('#cListaFecha')) &&
+          !!(await filaDe('7001')) && !!(await filaDe('4242')));
     await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[0].click());
     await esperar(300);
 
@@ -1284,6 +1313,35 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(250);
     check('tocar afuera cierra el menu', !(await visible(page, '#menuCuenta')));
 
+    console.log('\n12b2. Sin caravana SENASA el parto no se guarda');
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await elegirSexo(page, 1);
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '6055';
+      const t = document.querySelector('[data-ternero]'); t.value = '8055'; t.dispatchEvent(new Event('input', { bubbles: true }));
+      const sn = document.querySelector('[data-senasa]'); sn.value = '12345'; sn.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('con 5 digitos no guarda y dice que falta', !(await visible(page, '#modalOk')) &&
+          /caravana SENASA/.test(await page.$eval('#toast', (e) => e.textContent)), await page.$eval('#toast', (e) => e.textContent));
+    check('el parto NO quedo guardado', (await leerPayload(page, '6055')) === undefined);
+    check('el campo solo acepta digitos', await page.evaluate(() => {
+      const sn = document.querySelector('[data-senasa]'); sn.value = '12a4567'; sn.dispatchEvent(new Event('input', { bubbles: true })); return sn.value === '124567';
+    }));
+    await page.evaluate(() => { const sn = document.querySelector('[data-senasa]'); sn.value = '123456'; sn.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('con 6 digitos guarda', await visible(page, '#modalOk'));
+    await cerrarCartel(page);
+    check('y el payload la lleva con formato 2', await page.evaluate(async () => {
+      const r = (await todosLocal()).find((x) => x.payload.id_vaca === '6055');
+      return r && r.payload.formato === 2 && r.payload.terneros[0].caravana_senasa === '123456';
+    }));
+    c = await esperarSync(page, 15);
+    check('y sube', c.pendientes === 0, JSON.stringify(c));
+
     console.log('\n12c. Cerrar sesion NO se lleva los partos de la cola');
     caidoHasta = Date.now() + 60000;                   // que el parto quede esperando
     const quienCargo = await page.$eval('#fOperario', (e) => e.value);
@@ -1344,27 +1402,19 @@ const visible = (page, sel) => page.evaluate((s) => {
     }));
     await page.click('.tab[data-v="list"]');
     await esperar(500);
-    check('en Hoy no aparece', !(await page.$eval('#filas', (e) => /6060/.test(e.textContent))));
-    check('pero el aviso de arriba lo cuenta y manda al chip',
-          await visible(page, '#avisoFuera') &&
-          /15\/01\/2026/.test(await page.$eval('#avisoFuera', (e) => e.textContent)) &&
-          /Sin sincronizar/.test(await page.$eval('#avisoFuera', (e) => e.textContent)),
-          await page.$eval('#avisoFuera', (e) => e.textContent));
-    check('el chip existe y cuenta 1',
-          await visible(page, '#chipPendientes') && (await page.$eval('#chipPendN', (e) => e.textContent)) === '1');
-    await page.click('#chipPendientes');
-    await esperar(400);
-    check('el chip queda seleccionado', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
-    check('aparece el parto viejo', await page.$eval('#filas', (e) => /6060/.test(e.textContent)));
-    check('con su fecha en la fila', await page.$eval('#filas', (e) => /15\/01\/2026/.test(e.textContent)));
-    check('el KPI cambia de rotulo', (await page.$eval('#kTotL', (e) => e.textContent)) === 'Sin sincronizar' &&
-          (await page.$eval('#kTot', (e) => e.textContent)) === '1');
-    check('sin aviso de "otro dia" ni de remotos',
-          !(await visible(page, '#avisoFuera')) && !(await visible(page, '#avisoRemotos')));
+    check('aparece en la tabla con su fecha, aunque sea de hace meses',
+          await page.$eval('#filas', (e) => /6060/.test(e.textContent) && /15\/01\/2026/.test(e.textContent)));
+    check('con la pastilla Sin sincronizar y contado en el KPI',
+          (await filaDe('6060')).pill === 'Sin sincronizar' && Number(await page.$eval('#kPend', (e) => e.textContent)) >= 1);
+    // El servidor esta caido en este tramo: la tabla avisa que muestra la ultima copia.
+    check('con el servidor caido avisa que es la ultima copia', await visible(page, '#avisoRemotos'));
 
     // Corregirlo desde aca NO le cambia la fecha: antes el formulario, que solo
     // ofrece Hoy y Ayer, lo movia a hoy en silencio.
-    await page.click('#filas [data-editar]');
+    await page.evaluate(async () => {
+      const u = (await todosLocal()).find((x) => x.payload.id_vaca === '6060').uuid;
+      document.querySelector(`[data-editar="${u}"]`).click();
+    });
     await esperar(400);
     check('abre el formulario', await visible(page, '#v-form'));
     check('la fecha del parto se respeta', (await page.evaluate(() => st.fecha)) === '2026-01-15',
@@ -1374,7 +1424,6 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.click('#btnCancelarEd');
     await esperar(400);
     check('cancelar vuelve a la lista', await visible(page, '#v-list'));
-    check('y sigue en "Sin sincronizar"', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
     const fechaTrasCancelar = await page.evaluate(() => new Promise((ok) => {
       const req = indexedDB.open('preparto', 1);
       req.onsuccess = () => {
@@ -1383,10 +1432,6 @@ const visible = (page, sel) => page.evaluate((s) => {
       };
     }));
     check('el registro guardado conserva su fecha', fechaTrasCancelar === '2026-01-15', fechaTrasCancelar);
-    // Volver a Hoy para que el resto de la corrida vea la lista de siempre.
-    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
-    await esperar(300);
-    check('Hoy vuelve a quedar seleccionado', !(await page.$eval('#chipPendientes', (e) => e.classList.contains('on'))));
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
@@ -1413,12 +1458,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await esperarSync(page, 20);
     check('y el parto de la cola entra igual', c.pendientes === 0, JSON.stringify(c));
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(300);
-    check('con la cola vacia, "Sin sincronizar" lo dice',
-          /No hay partos sin sincronizar/.test(await page.$eval('#filas', (e) => e.textContent)) &&
-          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+    await esperar(500);
+    check('con la cola vacia, el KPI Sin sincronizar da 0', (await page.$eval('#kPend', (e) => e.textContent)) === '0');
     await page.click('.tab[data-v="form"]');
     await esperar(200);
     check('con el operario que lo cargo, no con el que lo subio',
@@ -1444,8 +1485,6 @@ const visible = (page, sel) => page.evaluate((s) => {
     caidoHasta = Date.now() + 60000;
     await page.click('.tab[data-v="list"]');
     await esperar(200);
-    // El escenario anterior deja la lista en "Sin sincronizar": volver a Hoy.
-    await page.evaluate(() => document.querySelector(`[data-chip="listaFecha"][data-val="${fechasPosibles()[0].iso}"]`).click());
     let hayBoton = false;
     for (let i = 0; i < 12 && !hayBoton; i++) {       // la lista se pinta cuando vuelve el fetch
       await esperar(250);
@@ -1458,6 +1497,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate((t) => {
       [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val !== t).click();
     }, tamboAhora);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(800);
     check('la correccion quedo en cola', await page.evaluate(async (u) =>
@@ -1483,11 +1523,9 @@ const visible = (page, sel) => page.evaluate((s) => {
           fantasma.revisar === true && fantasma.edicion === null && /ya no está en la planilla/.test(fantasma.error),
           JSON.stringify(fantasma));
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(400);
-    check('se ve en "Sin sincronizar" con la pastilla Revisar',
-          await page.$eval('#filas', (e) => /6070/.test(e.textContent) && /Revisar/.test(e.textContent)));
+    await esperar(500);
+    check('se ve en la tabla con la pastilla Revisar y el motivo',
+          (await filaDe('6070')).pill === 'Revisar' && /ya no está en la planilla/.test((await filaDe('6070')).txt));
     check('el operario NO ve Descartar', !(await page.$('[data-descartar]')));
 
     console.log('\n12g. Tres errores de servidor seguidos si cortan la tanda');
@@ -1510,30 +1548,37 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await esperarSync(page, 20);
     check('con el servidor sano entran los 4', c.pendientes === 0, JSON.stringify(c));
 
-    console.log('\n12h. "Otro dia" muestra cualquier fecha');
+    console.log('\n12h. Rango de fechas y buscador sobre la tabla');
     filas.push({ uuid: 'u-hace-un-mes', id_vaca: '3131', vaca: '3131', fecha: '2026-01-20',
                  hora: '04:10', tipo_parto: '1 Normal', sexo: '6 Macho Vivo', id_ternero: '7777',
+                 caravana_senasa: '777777',
                  estado_cria: 'Vivo', peso: 44, cria: '1/1', operario: 'Julio', tambo: '2',
                  cargado_en: '2026-01-20 04:30', dispositivo: 'tablet-2' });
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    check('el chip Otro dia existe', await visible(page, '#chipOtroDia'));
-    await page.evaluate(() => {
-      const i = document.getElementById('fOtroDia');
-      i.value = '2026-01-20';
-      i.dispatchEvent(new Event('change', { bubbles: true }));
-    });
     await esperar(900);
-    check('el chip queda seleccionado con la fecha',
-          await page.$eval('#chipOtroDia', (e) => e.classList.contains('on') && /20\/01\/2026/.test(e.textContent)));
-    check('trae el parto de esa fecha desde la planilla',
-          await page.$eval('#filas', (e) => /3131/.test(e.textContent)));
+    check('el parto de hace meses aparece sin elegir nada', !!(await filaDe('3131')));
     check('el operario NO puede corregir un parto de la planilla', !(await page.$('[data-editar-remoto]')) &&
-          await page.$eval('#filas', (e) => /otra tablet/.test(e.textContent)));
-    check('el KPI dice de que dia es', /20\/01\/2026/.test(await page.$eval('#kTotL', (e) => e.textContent)));
-    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
+          /otra tablet/.test((await filaDe('3131')).txt));
+    const nAntes = await page.$$eval('.listrow', (r) => r.length);
+    await page.evaluate(() => {
+      document.getElementById('fDesde').value = '2026-01-20';
+      document.getElementById('fHasta').value = '2026-01-20';
+      document.getElementById('fHasta').dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await esperar(400);
+    check('el rango deja solo ese dia', (await page.$$eval('.listrow', (r) => r.length)) === 1 && !!(await filaDe('3131')),
+          String(await page.$$eval('.listrow', (r) => r.length)));
+    check('el KPI dice cuantos de cuantos', /de \d+/.test(await page.$eval('#kTotL', (e) => e.textContent)));
+    check('aparece Limpiar', await visible(page, '#btnLimpiarFiltros'));
+    await page.click('#btnLimpiarFiltros');
+    await esperar(400);
+    check('Limpiar vuelve a mostrar todo', (await page.$$eval('.listrow', (r) => r.length)) === nAntes);
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '777777'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por caravana SENASA encuentra el parto', (await page.$$eval('.listrow', (r) => r.length)) === 1 && !!(await filaDe('3131')));
+    check('y la caravana se ve en la fila', /S\s*777777/.test((await filaDe('3131')).txt), (await filaDe('3131')).txt);
+    await page.click('#btnLimpiarFiltros');
     await esperar(300);
-    check('Hoy vuelve', !(await page.$eval('#chipOtroDia', (e) => e.classList.contains('on'))));
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
@@ -1567,9 +1612,7 @@ const visible = (page, sel) => page.evaluate((s) => {
 
     console.log('\n14a. El admin descarta la correccion fantasma');
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(400);
+    await esperar(500);
     check('el fantasma sigue ahi', await page.$eval('#filas', (e) => /6070/.test(e.textContent)));
     check('el admin SI ve Descartar', !!(await page.$('[data-descartar]')));
     await page.click('[data-descartar]');
@@ -1579,7 +1622,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1200);
     check('como la planilla ya no lo tiene, se va de la tablet',
           !(await page.$eval('#filas', (e) => /6070/.test(e.textContent))) &&
-          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+          (await page.$eval('#kPend', (e) => e.textContent)) === '0');
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 
@@ -1607,23 +1650,31 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1500);
     check('y el servidor nunca lo recibe', !filas.some((f) => f.vaca === '6090') && !recibidos.includes(uuid6090));
 
-    console.log('\n14c. "Todos": la planilla completa, agrupada por fecha y con buscador');
+    console.log('\n14c. La tabla ordena por columna');
     filas.push({ uuid: 'u-viejo-2', id_vaca: '2020', vaca: '2020', fecha: '2026-02-02', hora: '06:00',
                  tipo_parto: '1 Normal', sexo: '1 Hembra Viva', id_ternero: '8888', estado_cria: 'Vivo',
                  peso: 38, cria: '1/1', operario: 'Trini', tambo: '1', cargado_en: '2026-02-02 06:30',
                  dispositivo: 'tablet-2' });
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipTodos');
     await esperar(1000);
+    const primera = () => page.$eval('.listrow', (e) => e.textContent.replace(/\s+/g, ' '));
     check('trae partos de varias fechas, locales y de la planilla',
           await page.$eval('#filas', (e) => /3131/.test(e.textContent) && /2020/.test(e.textContent) && /6071/.test(e.textContent)));
-    check('con separadores por fecha', (await page.$$eval('.sepfecha', (s) => s.length)) >= 3,
-          String(await page.$$eval('.sepfecha', (s) => s.length)));
-    check('del mas nuevo al mas viejo', await page.$eval('#filas', (e) => {
-      const t = e.textContent; return t.indexOf('6071') < t.indexOf('2020') && t.indexOf('2020') < t.indexOf('3131');
-    }));
-    check('el buscador aparece', await visible(page, '#fBuscar'));
+    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082/.test(await primera()), await primera());
+    await page.click('#cabecera [data-orden="fecha"]');
+    await esperar(400);
+    check('tocar Fecha invierte: el mas viejo primero', /15\/01\/2026/.test(await primera()), await primera());
+    const vacas = () => page.$$eval('.listrow .id', (e) => e.map((n) => Number(n.textContent.trim())));
+    const ordenada = (a, dir) => a.every((v, i) => i === 0 || (dir > 0 ? v >= a[i - 1] : v <= a[i - 1]));
+    await page.click('#cabecera [data-orden="id_vaca"]');
+    await esperar(400);
+    check('tocar ID Vaca ordena por vaca ascendente', ordenada(await vacas(), 1), JSON.stringify(await vacas()));
+    await page.click('#cabecera [data-orden="id_vaca"]');
+    await esperar(400);
+    check('y otra vez, descendente', ordenada(await vacas(), -1), JSON.stringify(await vacas()));
+    check('la flecha marca la columna', await page.$eval('#cabecera [data-orden="id_vaca"]', (e) => e.classList.contains('on') && /▼/.test(e.textContent)));
+    await page.click('#cabecera [data-orden="fecha"]');
+    await esperar(300);
     await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '3131'; i.dispatchEvent(new Event('input', { bubbles: true })); });
     await esperar(400);
     check('buscar por vaca deja solo esa', await page.$eval('#filas', (e) => /3131/.test(e.textContent) && !/2020/.test(e.textContent)));
@@ -1650,6 +1701,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(300);
     check('la fecha elegida queda en el estado', (await page.evaluate(() => st.fecha)) === '2026-01-21');
     const edAntes = ediciones.length;
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     for (let i = 0; i < 40 && ediciones.length === edAntes; i++) await esperar(250);
     const ed = ediciones[ediciones.length - 1] || {};

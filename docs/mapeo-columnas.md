@@ -54,25 +54,26 @@ registrados cuando esa vaca parió — el mejorado si se mejoró, si no el natur
 **El campo nunca se bloquea**: sin señal, o si esa vaca no está en la planilla, se
 carga a mano y el parto entra igual. Un parto no puede depender de una consulta.
 
-### Destino y notas (R–T)
+### Destino, caravana SENASA y notas (R–U)
 
 | Col | Encabezado | Nota |
 |---|---|---|
 | R | Tambo Vaca | 1 · 2 · 3 · 4 — `Maestro!Q` |
 | S | Asignacion Rodeo Vaca | **No se carga en la tablet.** Nahuel lo escribe en `Datos Carga DC` y se replica acá |
-| T | Notas | Texto libre |
+| T | Caravana SENASA | **6 dígitos exactos**, por cría. Obligatoria para toda cría viva cargada desde la app v15 (`formato: 2`); `---` en cría muerta; **vacía en el histórico** anterior al 14/09/2026. Texto (conserva el 0 inicial) |
+| U | Notas | Texto libre |
 
-### Por cría (U–V)
+### Por cría (V–W)
 
 Nacen de un hueco real del formato: con el código `8 Otros Gemelos (M+M o M+H)`
 no había forma de saber qué fue cada cría, ni de anotar que una nació muerta.
 
 | Col | Encabezado | Valores |
 |---|---|---|
-| U | Sexo Cria | `Macho` · `Hembra`. Se deduce del código del parto salvo en el 8, donde se pregunta |
-| V | Estado Cria | `Vivo` · `Muerto` |
+| V | Sexo Cria | `Macho` · `Hembra`. Se deduce del código del parto salvo en el 8, donde se pregunta |
+| W | Estado Cria | `Vivo` · `Muerto` |
 
-### Control y técnicas (W–AC)
+### Control y técnicas (X–AD)
 
 **`Fecha y Hora de Carga` (Z) es la hora del corral**, no la de la sincronización: un
 parto cargado sin señal a las 3 de la mañana puede llegar a la planilla a las 9, y en Z
@@ -85,13 +86,17 @@ sexo hereda la marca del parto, no la del momento en que se agregó.
 
 | Col | Encabezado | Para qué |
 |---|---|---|
-| W | ID Parto | `yyyyMMdd-idvaca-xxxx`. Agrupa las filas de un parto doble. |
-| X | Cria | `1/1`, o `1/2` y `2/2` en mellizos |
-| Y | UUID | Clave anti-duplicados generada en la tablet |
-| Z | **Fecha y Hora de Carga** | Cuándo el operario apretó **Guardar** en la tablet |
-| AA | Dispositivo | Qué tablet lo cargó |
-| AB | Anulada | `Si` cuando una cría se anuló al corregir el sexo del parto |
-| AC | Cargado a DC | Lo tilda Nahuel desde `Datos Carga DC` |
+| X | ID Parto | `yyyyMMdd-idvaca-xxxx`. Agrupa las filas de un parto doble. Un admin que cambie fecha o vaca lo recalcula. |
+| Y | Cria | `1/1`, o `1/2` y `2/2` en mellizos |
+| Z | UUID | Clave anti-duplicados generada en la tablet |
+| AA | **Fecha y Hora de Carga** | Cuándo el operario apretó **Guardar** en la tablet |
+| AB | Dispositivo | Qué tablet lo cargó |
+| AC | Anulada | `Si` cuando una cría se anuló al corregir el sexo del parto |
+| AD | Cargado a DC | Lo tilda Nahuel desde `Datos Carga DC` |
+
+Layout **r7** (desde el 14/09/2026): la columna T se insertó con `migrarR7()`; el respaldo previo quedó
+en `Registros_backup_r6`. En `Datos Carga DC` la caravana SENASA va en la columna **I**, a la derecha
+de ID Ternero, y corren un lugar las que le siguen (Rodeo pasa a P, Cargado a DC a Q).
 
 ## Reglas
 
