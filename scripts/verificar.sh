@@ -130,6 +130,9 @@ printf '  ok    version publicada: %s\n' "$VERSION_ESPERADA"
 check "token invalido rechazado" \
       "$(post "$(TOK=token-que-no-es parto "tok-$RUN" 4115 '6 Macho Vivo' '[]' x)")" \
       'token invalido'
+check "credencial de sesion falsa rechazada" \
+      "$(post '{"accion":"sesion","sesion_token":"abc.def"}')" \
+      'sesion invalida'
 
 echo
 echo "2. Parto simple"

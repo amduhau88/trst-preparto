@@ -16,7 +16,17 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r6-calostro-2026-08-26';
+var VERSION = 'r7-sesion-2026-09-14';
+
+/* Credencial propia de la tablet. El id_token de Google dura una hora y su
+   renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
+   "Sesion vencida" cada hora. Al entrar, el backend entrega una credencial
+   firmada por el (HMAC con un secreto en Script Properties) que vale 30 dias,
+   y la tablet manda esa en vez del token de Google. Se renueva sola cuando le
+   queda poco, asi una tablet que se usa no vuelve a pedir login nunca. */
+var SESION_DIAS = 30;
+var SESION_RENOVAR_DIAS = 7;
+var RENOVAR_SESION_ = '';   // mail al que hay que renovarle la credencial en esta ejecucion
 
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
 var HOJA_FORMATO = 'Registros';
@@ -219,11 +229,22 @@ function doPost(e) {
 
     var auth = autorizar_(payload);
     if (!auth.ok) return json_({ ok: false, error: auth.error, sesion: false });
+    // Renovacion silenciosa: si entro con la credencial propia y le queda poco,
+    // json_() le agrega una nueva a la respuesta, sea cual sea la accion.
+    RENOVAR_SESION_ = (auth.via === 'sesion' &&
+                       auth.hasta - Date.now() < SESION_RENOVAR_DIAS * 86400000) ? auth.email : '';
 
     // Consultas de solo lectura. Van por POST para que el ID token no viaje
     // en la URL, donde quedaria escrito en los logs de Google.
     if (payload.accion === 'sesion') {
-      return json_({ ok: true, email: auth.email, admin: auth.admin });
+      var resp = { ok: true, email: auth.email, admin: auth.admin };
+      // El camino de scripts no recibe credencial: ya tiene la suya.
+      if (auth.via !== 'token') {
+        var ses = emitirSesion_(auth.email);
+        resp.sesion_token = ses.token;
+        resp.sesion_hasta = ses.hasta;
+      }
+      return json_(resp);
     }
     if (payload.accion === 'maestro') {
       return json_({ ok: true, listas: leerMaestro_(SpreadsheetApp.openById(SS_ID)) });
@@ -1273,6 +1294,11 @@ function buscarUuid_(log, uuid) {
 /* ------------------------------------------------------------------ */
 
 function json_(obj) {
+  if (RENOVAR_SESION_ && obj && obj.ok && !obj.sesion_token) {
+    var ses = emitirSesion_(RENOVAR_SESION_);
+    obj.sesion_token = ses.token;
+    obj.sesion_hasta = ses.hasta;
+  }
   return ContentService.createTextOutput(JSON.stringify(obj))
                        .setMimeType(ContentService.MimeType.JSON);
 }
@@ -1280,6 +1306,67 @@ function json_(obj) {
 function tokenValido_(token) {
   var esperado = PropertiesService.getScriptProperties().getProperty('TOKEN');
   return !!esperado && token === esperado;
+}
+
+/* ------------------------------------------------------------------ */
+/* Credencial propia (30 dias)                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Secreto con el que se firman las credenciales. Vive en Script Properties,
+ * nunca en el repo. Se crea solo la primera vez que hace falta; rotarlo
+ * (rotarSecretoSesion) invalida todas las credenciales emitidas: todas las
+ * tablets vuelven a pedir login una vez.
+ */
+function secretoSesion_() {
+  var props = PropertiesService.getScriptProperties();
+  var s = props.getProperty('SESION_SECRETO');
+  if (s) return s;
+  var lock = LockService.getScriptLock();
+  lock.tryLock(LOCK_MS);
+  try {
+    s = props.getProperty('SESION_SECRETO');
+    if (!s) {
+      s = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      props.setProperty('SESION_SECRETO', s);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return s;
+}
+
+/** cuerpo.firma — cuerpo = base64({e: mail, x: vencimiento ms}), firma = HMAC-SHA256(cuerpo, secreto). */
+function emitirSesion_(email) {
+  var x = Date.now() + SESION_DIAS * 86400000;
+  var cuerpo = Utilities.base64EncodeWebSafe(JSON.stringify({ e: String(email).toLowerCase(), x: x }));
+  var firma = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(cuerpo, secretoSesion_()));
+  return { token: cuerpo + '.' + firma, hasta: new Date(x).toISOString() };
+}
+
+function verificarSesion_(token) {
+  var partes = String(token || '').split('.');
+  if (partes.length !== 2 || !partes[0] || !partes[1]) return { ok: false, error: 'sesion invalida' };
+  var firma = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(partes[0], secretoSesion_()));
+  if (firma !== partes[1]) return { ok: false, error: 'sesion invalida' };
+  var d;
+  try { d = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(partes[0])).getDataAsString()); }
+  catch (err) { return { ok: false, error: 'sesion invalida' }; }
+  if (!(Number(d.x) > Date.now())) return { ok: false, error: 'sesion vencida' };
+  var email = String(d.e || '').toLowerCase();
+  if (email.split('@')[1] !== DOMINIO) return { ok: false, error: 'la cuenta no es de ' + DOMINIO };
+  return { ok: true, email: email, hasta: Number(d.x) };
+}
+
+/**
+ * Invalida TODAS las credenciales emitidas (p. ej. si una tablet se perdio).
+ * Correrla desde el editor. Cada tablet vuelve a pedir login una sola vez;
+ * los partos en cola no se pierden.
+ */
+function rotarSecretoSesion() {
+  var s = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('SESION_SECRETO', s);
+  Logger.log('Secreto de sesion rotado: todas las tablets tienen que volver a entrar.');
 }
 
 /* ------------------------------------------------------------------ */
@@ -1298,8 +1385,17 @@ function autorizar_(datos) {
   if (datos.token && tokenValido_(datos.token)) {
     return { ok: true, email: 'script', admin: true, via: 'token' };
   }
+
+  // Credencial propia de 30 dias. Si no sirve (vencida, secreto rotado) y vino
+  // ademas un id_token de Google vigente, se entra por ese: la tablet manda
+  // los dos y el login normal vuelve a dar una credencial nueva.
+  var ses = datos.sesion_token ? verificarSesion_(datos.sesion_token) : { ok: false };
+  if (ses.ok) {
+    return { ok: true, email: ses.email, admin: esAdmin_(ses.email), via: 'sesion', hasta: ses.hasta };
+  }
   if (!datos.id_token) {
-    return { ok: false, error: datos.token ? 'token invalido' : 'falta sesion' };
+    return { ok: false, error: datos.token ? 'token invalido'
+                              : datos.sesion_token ? (ses.error || 'sesion invalida') : 'falta sesion' };
   }
 
   var info = verificarIdToken_(datos.id_token);
@@ -1413,6 +1509,7 @@ function diagnostico() {
   var props = PropertiesService.getScriptProperties();
   Logger.log('TOKEN configurado : ' + (props.getProperty('TOKEN') ? 'si' : 'NO'));
   Logger.log('ADMINS            : ' + (props.getProperty('ADMINS') || '(vacio)'));
+  Logger.log('SESION_SECRETO    : ' + (props.getProperty('SESION_SECRETO') ? 'si' : 'NO (se crea solo en el primer login)'));
   Logger.log('CLIENT_ID         : ' + CLIENT_ID);
 
   try {

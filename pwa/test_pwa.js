@@ -80,6 +80,7 @@ const opsVistas = new Set();          // idempotencia de las operaciones de camb
 const sinSesion = [];          // requests que llegaron sin credencial valida
 let caidoHasta = 0;
 let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token parezca vivo
+const sesiones = new Map();    // credencial propia de 30 dias -> { email, exp (segundos) }, como el backend r7
 let colgadoHasta = 0;          // acepta la conexion y NO contesta: el WiFi "presente pero muerto"
 let fallarAltas = false;       // el backend contesta un error de servidor (no de validacion) a cada alta
 
@@ -116,7 +117,9 @@ const api = http.createServer((req, res) => {
     let p;
     try { p = JSON.parse(cuerpo); } catch (e) { return responder({ ok: false, error: 'json' }); }
 
-    const datos = leerJwt(p.id_token);
+    // Igual que autorizar_(): primero la credencial propia, despues el id_token.
+    let datos = (p.sesion_token && sesiones.get(p.sesion_token)) || null;
+    if (!datos || datos.exp * 1000 <= Date.now()) datos = leerJwt(p.id_token);
     const vigente = datos && datos.exp * 1000 > Date.now() && !rechazarSesion;
     if (!vigente) {
       sinSesion.push(p.uuid || p.accion || '?');
@@ -124,7 +127,11 @@ const api = http.createServer((req, res) => {
     }
 
     if (p.accion === 'sesion') {
-      return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN });
+      const t = 'ses-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const exp = Math.floor(Date.now() / 1000) + 30 * 86400;
+      sesiones.set(t, { email: datos.email, exp });
+      return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN,
+                         sesion_token: t, sesion_hasta: new Date(exp * 1000).toISOString() });
     }
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
@@ -404,6 +411,10 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('aparecen las pestañas', await visible(page, '.tabs'));
     check('guarda la sesion',
           await page.evaluate(() => (JSON.parse(localStorage.getItem('sesion') || '{}')).email) === DISPOSITIVO);
+    check('con la credencial propia de 30 dias', await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('sesion') || '{}');
+      return /^ses-/.test(s.token || '') && Math.round((s.hasta - Date.now()) / 86400000) === 30;
+    }));
     check('AJUSTES OCULTO para la cuenta de dispositivo',
           !(await visible(page, '.tab[data-v="config"]')));
     check('bajo las listas del Maestro',
@@ -796,31 +807,47 @@ const visible = (page, sel) => page.evaluate((s) => {
           new Set(recibidos).size === uuidsVistos.size,
           `recibidos unicos ${new Set(recibidos).size} vs escritos ${uuidsVistos.size}`);
 
-    console.log('\n8. No poder renovar el token NO es una sesion caida');
-    /* En la tablet, One Tap se apaga solo (cooldown, cookies de terceros): si
-       cada timeout pintara "Sesion vencida", el cartel estaria en rojo casi todo
-       el dia mintiendo. La cola tiene que aguantar sin gritar. */
-    await page.evaluate(() => {                       // credencial vencida y sin renovacion
-      idToken = { valor: 'viejo', exp: Date.now() - 1000 };   // la que usa la app, en memoria
+    console.log('\n8. Con la credencial de 30 dias, el token de Google vencido no frena nada');
+    /* Antes cada parto dependia de renovar el id_token de Google (dura 1 h) con
+       One Tap, que en la tablet falla seguido: la cola quedaba "Sesion vencida"
+       cada hora. Ahora el login deja una credencial propia del backend y la cola
+       sube con esa, aunque Google no conteste. */
+    await page.evaluate(() => {                       // Google vencido y sin renovacion
+      idToken = { valor: 'viejo', exp: Date.now() - 1000 };
       localStorage.setItem('idToken', JSON.stringify(idToken));
       fallosToken = 0; sesionVencida = false;
       window.__auto = false;
     });
     await cargarParto(page, '999', '9099');
+    c = await esperarSync(page, 15);
+    check('el parto sube igual', c.pendientes === 0, JSON.stringify(c));
+    check('la fila llego', filas.length === filasAntes + 4, 'filas=' + filas.length);
+    let badge = await badgeQuieto(page);
+    check('y el cartel queda en verde', /Sincronizado/.test(badge), badge);
+
+    console.log('\n8b. Sin credencial propia (sesion anterior a r7), no poder renovar NO es una sesion caida');
+    await page.evaluate(() => {
+      sesion.token = ''; localStorage.setItem('sesion', JSON.stringify(sesion));
+      idToken = { valor: 'viejo', exp: Date.now() - 1000 };
+      localStorage.setItem('idToken', JSON.stringify(idToken));
+      fallosToken = 0; sesionVencida = false;
+      window.__auto = false;
+    });
+    await cargarParto(page, '998', '9098');
     await esperar(1200);
     c = await contarLocal(page);
     check('el parto queda pendiente', c.pendientes === 1, JSON.stringify(c));
     await esperar(9000);                              // que venza el intento de renovar
     c = await contarLocal(page);
     check('sigue guardado, no se perdio', c.pendientes === 1, JSON.stringify(c));
-    let badge = await badgeQuieto(page);
+    badge = await badgeQuieto(page);
     check('el badge NO grita sesion vencida al primer fallo',
           !/Sesión vencida/.test(badge), badge);
     check('pero avisa que hay algo en espera', /en espera/.test(badge), badge);
-    check('no se mando nada sin credencial valida', filas.length === filasAntes + 3,
+    check('no se mando nada sin credencial valida', filas.length === filasAntes + 4,
           'filas=' + filas.length);
 
-    console.log('\n8b. Al tercer fallo seguido si se avisa');
+    console.log('\n8c. Al tercer fallo seguido si se avisa');
     for (let i = 0; i < 2; i++) {
       await page.evaluate(() => dispatchEvent(new Event('online')));
       await esperar(9500);
@@ -831,9 +858,9 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await contarLocal(page);
     check('y el parto sigue intacto', c.pendientes === 1, JSON.stringify(c));
 
-    console.log('\n8c. Un rechazo del backend se cree a la primera');
-    /* Esta es la unica senal autoritativa: el backend es el que verifica el
-       token contra Google. Con un "sesion:false" no hace falta esperar tres. */
+    console.log('\n8d. Un rechazo del backend se cree a la primera');
+    /* Esta es la unica senal autoritativa: el backend es el que verifica la
+       credencial. Con un "sesion:false" no hace falta esperar tres. */
     rechazarSesion = true;
     await page.evaluate((cred) => {
       window.__cred = cred; window.__auto = true;
@@ -845,17 +872,19 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1500);
     badge = await badgeQuieto(page);
     check('el rechazo del servidor si la marca vencida', /Sesión vencida/.test(badge), badge);
-    check('sin escribir ninguna fila', filas.length === filasAntes + 3, 'filas=' + filas.length);
+    check('sin escribir ninguna fila', filas.length === filasAntes + 4, 'filas=' + filas.length);
     rechazarSesion = false;
 
-    console.log('\n9. Renovada la sesion, se recupera solo');
+    console.log('\n9. Renovada la sesion, se recupera solo y de paso recibe la credencial propia');
     await page.evaluate((cred) => {
       window.__cred = cred; window.__auto = true;
       dispatchEvent(new Event('online'));
     }, jwtFalso(DISPOSITIVO, 60));
     c = await esperarSync(page, 15);
     check('la cola se drena', c.pendientes === 0, JSON.stringify(c));
-    check('la fila llego', filas.length === filasAntes + 4, 'filas=' + filas.length);
+    check('la fila llego', filas.length === filasAntes + 5, 'filas=' + filas.length);
+    check('una sesion vieja consigue la credencial sin volver a entrar',
+          await page.evaluate(() => /^ses-/.test((JSON.parse(localStorage.getItem('sesion') || '{}')).token || '')));
 
     console.log('\n10. Reintento del mismo parto');
     const antes = filas.length;
@@ -1271,7 +1300,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     // red": solo cuenta intentos). Lo que el respaldo garantiza es la forma.
     check('con intentos y error como campos', pendJson && 'intentos' in pendJson[0] && 'error' in pendJson[0] && 'creado' in pendJson[0],
           JSON.stringify(pendJson && Object.keys(pendJson[0])));
-    check('sin credenciales adentro', !/id_token/.test(volcado));
+    check('sin credenciales adentro', !/id_token|sesion_token/.test(volcado));
     check('avisa cuantos son',
           /1 sin sincronizar/.test(await page.$eval('#pendientesEstado', (e) => e.textContent)));
     await page.click('#btnCerrarPendientes');

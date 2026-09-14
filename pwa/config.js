@@ -7,7 +7,7 @@ window.CONFIG = {
   URL_EXEC: 'https://script.google.com/macros/s/AKfycbwKFYj8SNgluOrJD8rIQ9PsxrkCqghkyW_UkLB8UwwRD_gfm2ol8jJOVCccki33AsZz/exec',
   CLIENT_ID: '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com',
   DOMINIO: 'admin.com.ar',
-  // Cuanto vale la sesion cacheada sin volver a ver a Google. Es lo que permite
-  // que la tablet abra y cargue partos en el corral, sin señal.
+  // Cuanto vale la sesion local si el backend no entrega credencial propia
+  // (backends anteriores a r7). Con r7 manda lo que diga el backend.
   DIAS_SESION: 30
 };

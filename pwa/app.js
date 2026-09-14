@@ -109,8 +109,13 @@ async function abrirSesion(jwt) {
   catch (e) { return { ok: false, error: 'sin conexion' }; }
   if (!r.ok) return r;
 
+  // Con backend r7 llega la credencial propia de 30 dias: desde aca la tablet
+  // no vuelve a depender del token de Google (1 h) para sincronizar. Con un
+  // backend anterior no viene, y se sigue como antes.
   sesion = { email: r.email, admin: !!r.admin,
-             hasta: Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
+             token: r.sesion_token || '',
+             hasta: r.sesion_hasta ? Date.parse(r.sesion_hasta)
+                                   : Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
   localStorage.setItem('sesion', JSON.stringify(sesion));
   sesionVencida = false;
   fallosToken = 0;
@@ -132,8 +137,16 @@ function cerrarSesion() {
 }
 
 const tokenSirve = (margen) => !!idToken.valor && idToken.exp - margen > Date.now();
-/** Credencial propia del backend (llega con r7); hasta entonces siempre falso. */
+/** La credencial propia del backend (30 dias) esta y no vencio. */
 const sesionSirve = () => !!(sesion && sesion.token) && sesion.hasta - 60000 > Date.now();
+
+/** Cualquier respuesta puede traer credencial nueva (login o renovacion silenciosa). */
+function guardarCredencial(r) {
+  if (!r || !r.sesion_token || !sesion) return;
+  sesion.token = r.sesion_token;
+  if (r.sesion_hasta) sesion.hasta = Date.parse(r.sesion_hasta);
+  localStorage.setItem('sesion', JSON.stringify(sesion));
+}
 
 /**
  * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
@@ -1397,11 +1410,16 @@ async function enviar(payload) {
     const r = await fetch(cfg.url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
+      // Van las dos credenciales: el backend prefiere la propia (30 dias) y cae
+      // al id_token de Google si esa no sirve. Un backend viejo ignora la propia.
+      body: JSON.stringify(Object.assign({ id_token: idToken.valor,
+                                           sesion_token: (sesion && sesion.token) || '' }, payload)),
       redirect: 'follow',
       signal: corte.signal
     });
-    return r.json();
+    const j = await r.json();
+    guardarCredencial(j);
+    return j;
   } finally {
     clearTimeout(reloj);
   }
@@ -1437,12 +1455,18 @@ async function sincronizar() {
     });
     if (!tareas.length) { sesionVencida = false; fallosToken = 0; return; }
 
-    // Sin credencial vigente no se intenta: los partos quedan en la cola,
-    // intactos. Pero un fallo suelto del prompt de Google no es una sesion
-    // caida — se avisa recien al tercero seguido.
-    if (!(await tokenVigente())) {
-      if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
-      return;
+    // Con la credencial propia vigente no hace falta Google. Sin ella (sesion
+    // anterior al backend r7) se pide el id_token y, si sirve, se aprovecha
+    // para conseguir la credencial sin obligar a nadie a volver a entrar.
+    if (!sesionSirve()) {
+      // Sin credencial vigente no se intenta: los partos quedan en la cola,
+      // intactos. Pero un fallo suelto del prompt de Google no es una sesion
+      // caida — se avisa recien al tercero seguido.
+      if (!(await tokenVigente())) {
+        if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
+        return;
+      }
+      try { await enviar({ accion: 'sesion' }); } catch (e) { /* se sigue con el id_token */ }
     }
     fallosToken = 0;
     sesionVencida = false;
@@ -1497,6 +1521,9 @@ async function sincronizar() {
         // Sesion caida: cortar, no quemar la cola entera. Esta es la unica senal
         // autoritativa: la da el backend, que es el que verifica el token.
         sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR;
+        // La credencial propia ya no sirve (vencida o secreto rotado): se
+        // suelta, para que el proximo login la reemplace y no la siga mandando.
+        if (sesion && sesion.token) { sesion.token = ''; localStorage.setItem('sesion', JSON.stringify(sesion)); }
         reg.intentos++;
         reg.error = res.error || 'sesion vencida';
         await guardarLocal(reg);
@@ -1563,7 +1590,7 @@ async function bajarPartosDelDia(fecha) {
   /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
      falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
      local y listo. */
-  if (!tokenSirve(60000)) { remotosViejo = true; return; }
+  if (!sesionSirve() && !tokenSirve(60000)) { remotosViejo = true; return; }
 
   try {
     const j = await enviar({ accion: 'partos', fecha });
@@ -1897,7 +1924,7 @@ function avisar(txt, malo) {
 async function bajarMaestro() {
   if (!cfg.url || !sesion) return false;
   try {
-    if (!(await tokenVigente())) return false;
+    if (!sesionSirve() && !(await tokenVigente())) return false;
     const j = await enviar({ accion: 'maestro' });
     if (!j.ok) { $('estadoConfig').textContent = 'El servicio respondió: ' + j.error; return false; }
     listas = Object.assign({}, LISTAS_BASE, j.listas);
@@ -1948,6 +1975,8 @@ function pintarDiagnostico() {
   todosLocal().then((t) => {
     $('diag').innerHTML = [
       `Sesión: <b>${sesion ? sesion.email : 'ninguna'}</b>${sesion && sesion.admin ? ' (admin)' : ''}`,
+      `Credencial de 30 días: <b>${sesionSirve() ? 'hasta ' + aDDMMAAAA(new Date(sesion.hasta).toISOString().slice(0, 10))
+                                                : 'no (usa el token de Google de 1 h)'}</b>`,
       `Conexión: <b>${navigator.onLine ? 'con señal' : 'sin señal'}</b>`,
       `Registros locales: ${t.length} (pendientes ${t.filter((r) => r.estado === 'pendiente').length},
        con error ${t.filter((r) => r.estado === 'error').length})`,
@@ -2060,7 +2089,7 @@ setInterval(sincronizar, 30000);
    partos por subir, que es cuando un fallo se nota. */
 setInterval(() => {
   if (!sesion || !navigator.onLine || document.hidden) return;
-  if (tokenSirve(MARGEN_TOKEN)) return;
+  if (sesionSirve() || tokenSirve(MARGEN_TOKEN)) return;
   tokenVigente().then(pintarBadge);
 }, 120000);
 

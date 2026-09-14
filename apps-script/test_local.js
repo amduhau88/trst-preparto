@@ -209,6 +209,9 @@ const CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleuserc
 const ADMINS = 'andresduhau@admin.com.ar';
 const tokens = {};                 // id_token -> lo que contesta tokeninfo
 let llamadasAGoogle = 0;
+const props = { TOKEN, ADMINS };   // Script Properties, con estado: el secreto de sesion se guarda aca
+let uuidN = 0;
+const crypto = require('crypto');
 
 function registrarToken(nombre, campos) {
   tokens[nombre] = Object.assign({
@@ -226,8 +229,8 @@ const sandbox = {
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
   PropertiesService: {
     getScriptProperties: () => ({
-      getProperty: (k) => (k === 'TOKEN' ? TOKEN : k === 'ADMINS' ? ADMINS : null),
-      setProperty() {}
+      getProperty: (k) => (props[k] === undefined ? null : props[k]),
+      setProperty(k, v) { props[k] = v; }
     })
   },
   CacheService: {
@@ -257,7 +260,12 @@ const sandbox = {
     DigestAlgorithm: { SHA_256: 'sha256' },
     computeDigest: (_alg, txt) => Array.from(String(txt)).map((c) => c.charCodeAt(0)),
     base64EncodeWebSafe: (bytes) => Buffer.from(bytes).toString('base64url'),
-    getUuid: () => 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
+    base64DecodeWebSafe: (s) => Array.from(Buffer.from(String(s), 'base64url')),
+    newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') }),
+    computeHmacSha256Signature: (valor, clave) =>
+      Array.from(crypto.createHmac('sha256', String(clave)).update(String(valor)).digest()),
+    // Distinto en cada llamada, como el real: rotar un secreto tiene que dar otro.
+    getUuid: () => 'aaaabbbb-cccc-dddd-eeee-' + String(++uuidN).padStart(12, '0'),
     formatDate(d, tz, fmt) {
       const s = {
         'yyyyMMdd': `${d.getFullYear()}${dosDigitos(d.getMonth() + 1)}${dosDigitos(d.getDate())}`,
@@ -573,6 +581,69 @@ check('maestro por POST con sesion', s.ok === true && s.listas.operario.length =
 check('maestro por POST sin sesion rechaza', post({ accion: 'maestro' }).ok === false);
 s = post({ accion: 'partos', id_token: 'bueno', fecha: '2026-08-12' });
 check('partos por POST con sesion', s.ok === true && Array.isArray(s.partos), JSON.stringify(s).slice(0, 80));
+
+console.log('\n10b. Credencial propia de 30 dias');
+s = post({ accion: 'sesion', id_token: 'bueno' });
+check('el login entrega la credencial',
+      typeof s.sesion_token === 'string' && s.sesion_token.indexOf('.') > 0 && /^\d{4}-/.test(s.sesion_hasta),
+      JSON.stringify(s).slice(0, 120));
+const cred = s.sesion_token;
+check('vale 30 dias', Math.round((Date.parse(s.sesion_hasta) - Date.now()) / 86400000) === 30, s.sesion_hasta);
+check('el secreto quedo guardado en Script Properties', typeof props.SESION_SECRETO === 'string' && props.SESION_SECRETO.length >= 32);
+llamadasAGoogle = 0;
+r = post(partoBase({ uuid: 'u-cred-01', token: undefined, sesion_token: cred }));
+check('un parto entra solo con la credencial, sin id_token', r.ok === true, JSON.stringify(r));
+check('sin consultar a Google', llamadasAGoogle === 0, 'llamadas=' + llamadasAGoogle);
+check('_log guarda el mail de la credencial',
+      log().some((l) => l[0] === 'u-cred-01' && l[5] === 'tablet.maternidad@admin.com.ar'));
+check('no viene renovacion cuando falta mucho', r.sesion_token === undefined, JSON.stringify(r));
+check('maestro con la credencial', post({ accion: 'maestro', sesion_token: cred }).ok === true);
+check('admin por credencial sigue siendo admin',
+      post({ accion: 'sesion', sesion_token: post({ accion: 'sesion', id_token: 'admin' }).sesion_token }).admin === true);
+check('firma alterada -> sesion invalida',
+      /sesion invalida/.test(post(partoBase({ uuid: 'u-cred-02', token: undefined, sesion_token: cred.slice(0, -2) + 'zz' })).error || ''));
+check('cuerpo alterado -> sesion invalida',
+      /sesion invalida/.test(post({ accion: 'maestro', sesion_token: 'e30.' + cred.split('.')[1] }).error || ''));
+{
+  const x = post({ accion: 'maestro', sesion_token: 'abc.def' });
+  check('credencial falsa sin id_token -> sesion:false', x.sesion === false && /sesion invalida/.test(x.error), JSON.stringify(x));
+}
+check('credencial falsa + id_token bueno -> entra por Google',
+      post({ accion: 'maestro', sesion_token: 'abc.def', id_token: 'bueno' }).ok === true);
+check('el camino de scripts no recibe credencial',
+      post({ accion: 'sesion', token: TOKEN }).sesion_token === undefined);
+// Credenciales fabricadas con el secreto real: vencida, por vencer y de otro dominio.
+const fabricar = (e, x) => {
+  const cuerpo = Buffer.from(JSON.stringify({ e, x })).toString('base64url');
+  const firma = crypto.createHmac('sha256', props.SESION_SECRETO).update(cuerpo).digest().toString('base64url');
+  return cuerpo + '.' + firma;
+};
+{
+  const x = post({ accion: 'maestro', sesion_token: fabricar('tablet.maternidad@admin.com.ar', Date.now() - 1000) });
+  check('vencida -> sesion vencida', x.ok === false && /sesion vencida/.test(x.error), JSON.stringify(x));
+}
+{
+  const x = post({ accion: 'maestro', sesion_token: fabricar('alguien@gmail.com', Date.now() + 86400000) });
+  check('de otro dominio -> rechazada', x.ok === false && /no es de admin.com.ar/.test(x.error), JSON.stringify(x));
+}
+{
+  const x = post(partoBase({ uuid: 'u-cred-03', token: undefined,
+                             sesion_token: fabricar('tablet.maternidad@admin.com.ar', Date.now() + 2 * 86400000) }));
+  check('con menos de 7 dias, la respuesta trae credencial nueva',
+        x.ok === true && typeof x.sesion_token === 'string' &&
+        Math.round((Date.parse(x.sesion_hasta) - Date.now()) / 86400000) === 30, JSON.stringify(x).slice(0, 160));
+  check('y la nueva sirve', post({ accion: 'maestro', sesion_token: x.sesion_token }).ok === true);
+}
+{
+  const antes = props.SESION_SECRETO;
+  sandbox.rotarSecretoSesion();
+  check('rotar el secreto invalida lo emitido', props.SESION_SECRETO !== antes &&
+        post({ accion: 'maestro', sesion_token: cred }).ok === false);
+  check('y el login vuelve a dar una que sirve', (() => {
+    const n = post({ accion: 'sesion', id_token: 'bueno' }).sesion_token;
+    return post({ accion: 'maestro', sesion_token: n }).ok === true;
+  })());
+}
 
 console.log('\n11. Convivencia con el camino de scripts');
 check('el token compartido sigue entrando', post(partoBase({ uuid: 'u-script-99' })).ok === true);

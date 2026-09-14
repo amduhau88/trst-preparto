@@ -172,6 +172,23 @@ de descartar.
 En **Partos cargados**, el chip **Otro día** abre un calendario para ver cualquier fecha, con lo que
 cargó esta tablet y lo que trajo la planilla.
 
+## Cómo se mantiene la sesión en la tablet (desde r7)
+
+Al entrar con Google, el backend entrega una **credencial propia de 30 días** (firmada con un secreto
+que vive en Script Properties, `SESION_SECRETO`). La tablet sincroniza con esa credencial y **no
+vuelve a depender del token de Google**, que dura una hora y cuya renovación silenciosa fallaba en el
+corral: era el motivo del cartel `Sesión vencida` cada hora y de la cola que se acumulaba. Si a la
+credencial le quedan menos de 7 días, el backend la renueva sola en cualquier respuesta: una tablet
+que se usa no vuelve a pedir login. Ajustes → Diagnóstico muestra hasta cuándo vale.
+
+- **Una tablet se perdió o hay que sacarle el acceso a todas:** en el editor de Apps Script correr
+  `rotarSecretoSesion()`. Todas las tablets vuelven a pedir login una vez; la cola no se pierde.
+- **Suspender la cuenta de Google de una tablet** ya no la corta en el acto: su credencial sigue
+  valiendo hasta 30 días. Para cortarla ya, rotar el secreto.
+- Una tablet con sesión anterior a r7 consigue la credencial sola la primera vez que sincroniza con
+  el token de Google vigente; si ese token ya venció, con volver a entrar una vez alcanza.
+- El camino de scripts (`token` compartido) no cambia.
+
 ## Un parto no llegó a la planilla
 
 En orden:
