@@ -373,7 +373,7 @@ function doGet(e) {
     if (p.action === 'partos') {
       var a2 = autorizar_(p);
       if (!a2.ok) return json_({ ok: false, error: a2.error });
-      return json_({ ok: true, partos: partosDelDia_(ss, p.fecha) });
+      return json_({ ok: true, partos: partosDelDia_(ss, p.fecha, p.todos === '1' || p.todos === 'true') });
     }
 
     if (p.action === 'calostro') {

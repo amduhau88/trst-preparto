@@ -136,7 +136,28 @@ const api = http.createServer((req, res) => {
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
     if (p.accion === 'partos') {
-      return responder({ ok: true, partos: filas.filter((f) => f.fecha === p.fecha && !f.anulada) });
+      const lista = p.todos === true ? filas.filter((f) => !f.anulada)
+                                     : filas.filter((f) => f.fecha === p.fecha && !f.anulada);
+      return responder({ ok: true, partos: lista });
+    }
+    // El parto completo con las claves de la tablet, como partoDesdeFilas_ en Codigo.gs.
+    if (p.accion === 'parto') {
+      const mias = filas.filter((f) => f.uuid === p.uuid && !f.anulada);
+      if (!mias.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+      const b = mias[0];
+      const muerto = /muert/i.test(String(b.sexo));
+      return responder({ ok: true, parto: {
+        uuid: b.uuid, operario: b.operario, id_vaca: b.id_vaca, fecha_parto: b.fecha,
+        hora_nacimiento: b.hora, tipo_parto: b.tipo_parto, sexo: b.sexo, tambo: b.tambo || '1',
+        notas: b.notas || '', lts_madre: b.lts_madre !== undefined ? String(b.lts_madre) : '5',
+        calostro: b.madre || { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---' },
+        terneros: muerto ? [] : mias.map((f) => f.estado_cria === 'Muerto' ? { id_ternero: '', raza: '', vive: false } : {
+          id_ternero: f.id_ternero, raza: f.raza || 'Holando', peso: f.peso, vive: true,
+          calostro: f.calostro || { origen: 'Propia madre', id_vaca_origen: f.id_vaca, calidad_ternero: '26', lts_ternero: '4' }
+        }),
+        cargado_en: new Date(String(b.cargado_en).replace(' ', 'T') + ':00').toISOString(),
+        dispositivo: b.dispositivo || ''
+      } });
     }
 
     /* Cambiar el sexo: la unica operacion que cambia CUANTAS filas tiene un
@@ -219,7 +240,7 @@ const api = http.createServer((req, res) => {
       const t = (p.terneros || [])[i] || {};
       filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
                    operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro,
-                   madre: p.calostro,
+                   madre: p.calostro, lts_madre: p.lts_madre, notas: p.notas, raza: t.raza,
                    // Lo que devuelve la accion 'partos', con los nombres del backend.
                    id_vaca: p.id_vaca, fecha: p.fecha_parto, hora: p.hora_nacimiento,
                    tipo_parto: p.tipo_parto, sexo: p.sexo, id_ternero: t.id_ternero,
@@ -1507,6 +1528,8 @@ const visible = (page, sel) => page.evaluate((s) => {
           await page.$eval('#chipOtroDia', (e) => e.classList.contains('on') && /20\/01\/2026/.test(e.textContent)));
     check('trae el parto de esa fecha desde la planilla',
           await page.$eval('#filas', (e) => /3131/.test(e.textContent)));
+    check('el operario NO puede corregir un parto de la planilla', !(await page.$('[data-editar-remoto]')) &&
+          await page.$eval('#filas', (e) => /otra tablet/.test(e.textContent)));
     check('el KPI dice de que dia es', /20\/01\/2026/.test(await page.$eval('#kTotL', (e) => e.textContent)));
     await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
     await esperar(300);
@@ -1583,6 +1606,62 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate(() => dispatchEvent(new Event('online')));
     await esperar(1500);
     check('y el servidor nunca lo recibe', !filas.some((f) => f.vaca === '6090') && !recibidos.includes(uuid6090));
+
+    console.log('\n14c. "Todos": la planilla completa, agrupada por fecha y con buscador');
+    filas.push({ uuid: 'u-viejo-2', id_vaca: '2020', vaca: '2020', fecha: '2026-02-02', hora: '06:00',
+                 tipo_parto: '1 Normal', sexo: '1 Hembra Viva', id_ternero: '8888', estado_cria: 'Vivo',
+                 peso: 38, cria: '1/1', operario: 'Trini', tambo: '1', cargado_en: '2026-02-02 06:30',
+                 dispositivo: 'tablet-2' });
+    await page.click('.tab[data-v="list"]');
+    await esperar(300);
+    await page.click('#chipTodos');
+    await esperar(1000);
+    check('trae partos de varias fechas, locales y de la planilla',
+          await page.$eval('#filas', (e) => /3131/.test(e.textContent) && /2020/.test(e.textContent) && /6071/.test(e.textContent)));
+    check('con separadores por fecha', (await page.$$eval('.sepfecha', (s) => s.length)) >= 3,
+          String(await page.$$eval('.sepfecha', (s) => s.length)));
+    check('del mas nuevo al mas viejo', await page.$eval('#filas', (e) => {
+      const t = e.textContent; return t.indexOf('6071') < t.indexOf('2020') && t.indexOf('2020') < t.indexOf('3131');
+    }));
+    check('el buscador aparece', await visible(page, '#fBuscar'));
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '3131'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por vaca deja solo esa', await page.$eval('#filas', (e) => /3131/.test(e.textContent) && !/2020/.test(e.textContent)));
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '8888'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por caravana tambien', await page.$eval('#filas', (e) => /2020/.test(e.textContent) && !/3131/.test(e.textContent)));
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(300);
+
+    console.log('\n14d. El admin corrige un parto de la planilla, vaca y fecha incluidas');
+    check('hay Corregir en el parto remoto', !!(await page.$('[data-editar-remoto="u-hace-un-mes"]')));
+    await page.click('[data-editar-remoto="u-hace-un-mes"]');
+    await esperar(900);
+    check('abre el formulario con ese parto', await visible(page, '#v-form') &&
+          (await page.$eval('#fVaca', (e) => e.value)) === '3131' && (await page.evaluate(() => st.fecha)) === '2026-01-20');
+    check('nada bloqueado para el admin', await page.evaluate(() =>
+      !document.getElementById('fVaca').classList.contains('bloqueado') &&
+      !document.getElementById('cFecha').classList.contains('bloqueado') &&
+      !document.querySelector('#terneros [data-ternero]').classList.contains('bloqueado')));
+    check('ofrece Otra fecha', await visible(page, '#chipOtraFecha'));
+    check('el aviso dice que es admin', /admin/.test(await page.$eval('#avisoEdicion', (e) => e.textContent)));
+    await page.evaluate(() => { const v = document.getElementById('fVaca'); v.value = '3132'; v.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.evaluate(() => { const i = document.getElementById('fOtraFecha'); i.value = '2026-01-21'; i.dispatchEvent(new Event('change', { bubbles: true })); });
+    await esperar(300);
+    check('la fecha elegida queda en el estado', (await page.evaluate(() => st.fecha)) === '2026-01-21');
+    const edAntes = ediciones.length;
+    await page.click('#btnGuardarEd');
+    for (let i = 0; i < 40 && ediciones.length === edAntes; i++) await esperar(250);
+    const ed = ediciones[ediciones.length - 1] || {};
+    check('la correccion llego al servidor con la identidad nueva',
+          ediciones.length > edAntes && ed.uuid === 'u-hace-un-mes' && ed.id_vaca === '3132' &&
+          ed.fecha_parto === '2026-01-21' && typeof ed.hora_nacimiento === 'string' && typeof ed.tipo_parto === 'string' &&
+          ed.terneros && ed.terneros[0] && ed.terneros[0].id_ternero === '7777',
+          JSON.stringify(ed).slice(0, 220));
+    check('la copia local (sombra) sigue la identidad nueva', await page.evaluate(async () => {
+      const r = (await todosLocal()).find((x) => x.uuid === 'u-hace-un-mes');
+      return !!r && r.sombra === true && r.payload.id_vaca === '3132' && r.payload.fecha_parto === '2026-01-21' && r.estado === 'ok';
+    }));
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 

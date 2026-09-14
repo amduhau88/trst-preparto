@@ -338,6 +338,9 @@ let listaFecha = '';
    aparecia en ninguna pantalla (Hoy/Ayer no lo alcanzan) y el operario no
    tenia como verlo ni corregirlo. */
 const LISTA_PENDIENTES = 'pendientes';
+/* "Todos": el historico completo de la planilla mas lo local, con buscador. */
+const LISTA_TODOS = 'todos';
+const esAdmin = () => !!(sesion && sesion.admin);
 const sinSubir = (r) => r.estado !== 'ok' || !!r.edicion || !!r.cambioSexo || !!r.revisarEdicion;
 
 function pintarFechas() {
@@ -353,14 +356,23 @@ function pintarFechas() {
   $('cFecha').innerHTML = delForm.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
              data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
-  ).join('');
+  ).join('') +
+    // Un admin corrigiendo puede poner cualquier fecha: la carga sigue siendo Hoy/Ayer.
+    (st.editando && esAdmin()
+      ? `<label class="chip fecha" id="chipOtraFecha" style="position:relative;cursor:pointer">
+           Otra fecha<span class="dia">elegir</span>
+           <input type="date" id="fOtraFecha" value="${st.fecha}" max="${opciones[0].iso}" aria-label="Fecha del parto"
+                  style="position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;padding:0;border:0">
+         </label>` : '');
 
   const cont = $('cListaFecha');
   if (!cont) return;
   // Cualquier fecha valida se respeta (chip "Otro dia"); solo lo roto se reancla en Hoy.
-  if (listaFecha !== LISTA_PENDIENTES && !/^\d{4}-\d{2}-\d{2}$/.test(listaFecha)) listaFecha = opciones[0].iso;
+  if (listaFecha !== LISTA_PENDIENTES && listaFecha !== LISTA_TODOS &&
+      !/^\d{4}-\d{2}-\d{2}$/.test(listaFecha)) listaFecha = opciones[0].iso;
   const nPend = ultimoPend + ultimoErr;
-  const otroDia = listaFecha !== LISTA_PENDIENTES && !opciones.some((o) => o.iso === listaFecha);
+  const otroDia = listaFecha !== LISTA_PENDIENTES && listaFecha !== LISTA_TODOS &&
+                  !opciones.some((o) => o.iso === listaFecha);
   cont.innerHTML = opciones.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
              data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
@@ -372,6 +384,8 @@ function pintarFechas() {
               aria-label="Ver los partos de otro día"
               style="position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;padding:0;border:0">
      </label>` +
+    `<button type="button" class="chip fecha ${listaFecha === LISTA_TODOS ? 'on' : ''}"
+             data-chip="listaFecha" data-val="${LISTA_TODOS}" id="chipTodos">Todos<span class="dia">toda la planilla</span></button>` +
     `<button type="button" class="chip fecha warn ${listaFecha === LISTA_PENDIENTES ? 'on' : ''}"
              data-chip="listaFecha" data-val="${LISTA_PENDIENTES}" id="chipPendientes">Sin sincronizar<span class="dia">todos los días · <b id="chipPendN">${nPend}</b></span></button>`;
 }
@@ -608,6 +622,8 @@ document.addEventListener('click', (e) => {
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
   const ds = e.target.closest('[data-descartar]');
   if (ds) return descartarCambio(ds.dataset.descartar);
+  const er = e.target.closest('[data-editar-remoto]');
+  if (er) return abrirEdicionRemota(er.dataset.editarRemoto);
   const chip = e.target.closest('[data-chip]');
   if (chip) return elegirChip(chip);
   const step = e.target.closest('[data-step]');
@@ -619,6 +635,19 @@ document.addEventListener('click', (e) => {
   }
   const tab = e.target.closest('.tab');
   if (tab) return ver(tab.dataset.v);
+});
+
+// Buscador de "Todos": filtra en memoria lo ya bajado.
+document.addEventListener('input', (e) => { if (e.target && e.target.id === 'fBuscar') refrescar(); });
+
+// "Otra fecha" (admin corrigiendo): la fecha del parto pasa a ser la elegida.
+document.addEventListener('change', (e) => {
+  if (!e.target || e.target.id !== 'fOtraFecha') return;
+  const iso = e.target.value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !st.editando || !esAdmin()) return;
+  st.fecha = iso;
+  pintarFechas();
+  pintarModoEdicion();
 });
 
 // "Otro dia": el calendario elige la fecha y la lista la sigue, como un chip mas.
@@ -1034,6 +1063,25 @@ function aEstado(p) {
   opciones($('fHora'), listas.hora_nacimiento, p.hora_nacimiento);
 }
 
+/* Admin: corregir un parto que esta en la planilla pero no en esta tablet. Se
+   baja completo (accion=parto) y se guarda como registro local "sombra": desde
+   ahi la correccion viaja por la misma cola que cualquier otra. */
+async function abrirEdicionRemota(uuid) {
+  if (!esAdmin()) return;
+  if ((await todosLocal()).some((r) => r.uuid === uuid)) return abrirEdicion(uuid, false);
+  if (!navigator.onLine) return avisar('Sin señal: ese parto está en la planilla, no en esta tablet', true);
+  let j;
+  try { j = await enviar({ accion: 'parto', uuid }); } catch (e) { j = null; }
+  if (!j || !j.ok || !j.parto) return avisar('No se pudo traer el parto: ' + ((j && j.error) || 'sin respuesta'), true);
+  const p = j.parto;
+  await guardarLocal({
+    uuid, estado: 'ok', intentos: 0, error: '', sombra: true,
+    creado: Date.parse(p.cargado_en) || Date.now(),
+    payload: p
+  });
+  return abrirEdicion(uuid, false);
+}
+
 async function abrirEdicion(uuid, focoPeso) {
   const reg = (await todosLocal()).find((r) => r.uuid === uuid);
   if (!reg) return avisar('Ese parto ya no está en la tablet', true);
@@ -1114,14 +1162,16 @@ function pintarModoEdicion() {
   const editando = !!st.editando;
   const aviso = $('avisoEdicion');
 
+  // Un admin cambia cualquier campo, identidad incluida. El operario, no.
+  const bloquear = editando && !esAdmin();
   BLOQUEADO_AL_EDITAR.forEach((id) => {
     const el = $(id);
-    if (el) el.classList.toggle('bloqueado', editando);
+    if (el) el.classList.toggle('bloqueado', bloquear);
   });
   // ID y raza identifican al animal, asi que normalmente no se tocan. Pero si
   // el sexo cambio puede haber una cria nueva, y una cria sin caravana no sirve.
   document.querySelectorAll('#terneros [data-ternero], #terneros [data-caja^="raza:"]')
-    .forEach((el) => el.classList.toggle('bloqueado', editando && !sexoCambio()));
+    .forEach((el) => el.classList.toggle('bloqueado', bloquear && !sexoCambio()));
 
   aviso.classList.toggle('hidden', !editando);
   if (!editando) return;
@@ -1131,6 +1181,9 @@ function pintarModoEdicion() {
     (sexoCambio()
       ? ` Cambiaste el <b>código de sexo</b>: se va a reescribir el parto entero,
          así que revisá los datos de cada cría.`
+      : esAdmin()
+      ? ` Como <b>admin</b> podés cambiar cualquier campo, incluidos vaca, fecha, hora,
+         tipo, operario, caravanas y notas. Queda registrado en la planilla quién lo cambió.`
       : ` Se pueden cambiar <b>sexo, peso, calostro y tambo</b>;
          el resto lo corrige Nahuel en la planilla.`) +
     `<button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
@@ -1138,8 +1191,18 @@ function pintarModoEdicion() {
 }
 
 /** Lo que se manda al backend: el parto entero, que del otro lado se compara. */
-function armarEdicion() {
+/** Identidad del parto y de cada cria: solo la manda (y la aplica) un admin. */
+function identidadAdmin() {
   return {
+    fecha_parto: st.fecha,
+    hora_nacimiento: $('fHora').value,
+    tipo_parto: st.tipo_parto,
+    notas: $('fNotas').value.trim()
+  };
+}
+
+function armarEdicion() {
+  return Object.assign(esAdmin() ? identidadAdmin() : {}, {
     accion: 'editar',
     uuid: st.editando,
     operario: $('fOperario').value,
@@ -1156,9 +1219,10 @@ function armarEdicion() {
       if (!t.vive) return {};                      // cria muerta: no lleva nada
       const cria = { calostro: calostroDeLaCria(t.cal) };
       if (t.peso !== null) cria.peso = t.peso;
+      if (esAdmin()) { cria.id_ternero = t.id_ternero; cria.raza = t.raza; }
       return cria;
     })
-  };
+  });
 }
 
 /**
@@ -1176,7 +1240,7 @@ function faltantesEdicion(reg) {
     const cual = st.terneros.length > 1 ? ` (ternero ${i + 1})` : '';
     const pesoAntes = reg.payload.terneros[i] ? reg.payload.terneros[i].peso : undefined;
     const cambiaPeso = t.peso !== null && String(t.peso) !== String(pesoAntes);
-    if (cambiaPeso && quien !== autor) {
+    if (cambiaPeso && quien !== autor && !esAdmin()) {
       f.push(`el peso lo carga ${autor}, que fue quien cargó el parto`);
     }
     if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
@@ -1233,7 +1297,7 @@ async function guardarCambioSexo(reg) {
     reg.cambioSexo = null;
   } else {
     reg.payload = p;
-    reg.cambioSexo = {
+    reg.cambioSexo = Object.assign(esAdmin() ? Object.assign(identidadAdmin(), { id_vaca: p.id_vaca }) : {}, {
       accion: 'cambiar_sexo',
       uuid: reg.uuid,
       op_uuid: nuevoUuid(),          // idempotencia de ESTA operacion
@@ -1243,7 +1307,7 @@ async function guardarCambioSexo(reg) {
       calostro: p.calostro,
       tambo: p.tambo,
       terneros: p.terneros
-    };
+    });
     reg.edicion = null;              // el cambio de sexo la subsume
   }
   reg.error = '';
@@ -1294,6 +1358,12 @@ async function guardarEdicion() {
 
 /** Deja el parto local igual a como va a quedar la planilla. */
 function aplicarEnPayload(p, ed) {
+  if (esAdmin()) {
+    // La identidad la manda solo el admin; la copia local la sigue.
+    ['operario', 'id_vaca', 'fecha_parto', 'hora_nacimiento', 'tipo_parto', 'notas'].forEach((k) => {
+      if (ed[k] !== undefined) p[k] = ed[k];
+    });
+  }
   if (ed.tambo !== undefined) p.tambo = ed.tambo;
   if (ed.lts_madre !== undefined) p.lts_madre = ed.lts_madre;
   if (ed.calostro) p.calostro = Object.assign({}, p.calostro, ed.calostro);
@@ -1301,6 +1371,8 @@ function aplicarEnPayload(p, ed) {
     const destino = p.terneros[i];
     if (!destino || !t.calostro) return;
     if (t.peso !== undefined) destino.peso = t.peso;
+    if (t.id_ternero !== undefined) destino.id_ternero = t.id_ternero;
+    if (t.raza !== undefined) destino.raza = t.raza;
     destino.calostro = Object.assign({}, destino.calostro, t.calostro);
   });
 }
@@ -1587,13 +1659,14 @@ async function bajarPartosDelDia(fecha) {
   // La vista "Sin sincronizar" es solo lo de esta tablet: no hay nada remoto que traer.
   if (fecha === LISTA_PENDIENTES) return refrescar();
   if (!cfg.url || !sesion || !navigator.onLine) { remotosViejo = true; return; }
+  const todos = fecha === LISTA_TODOS;
   /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
      falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
      local y listo. */
   if (!sesionSirve() && !tokenSirve(60000)) { remotosViejo = true; return; }
 
   try {
-    const j = await enviar({ accion: 'partos', fecha });
+    const j = await enviar(todos ? { accion: 'partos', todos: true } : { accion: 'partos', fecha });
     if (!j || !j.ok) { remotosViejo = true; return; }
     remotos = j.partos || [];
     remotosFecha = fecha;
@@ -1610,7 +1683,7 @@ function partosRemotos(fecha) {
   if (remotosFecha !== fecha) return [];
   const porUuid = new Map();
   remotos.forEach((f) => {
-    if (f.fecha !== fecha) return;
+    if (fecha !== LISTA_TODOS && f.fecha !== fecha) return;
     if (!porUuid.has(f.uuid)) porUuid.set(f.uuid, []);
     porUuid.get(f.uuid).push(f);
   });
@@ -1651,7 +1724,7 @@ function vistaRemota(filas) {
   const f = filas[0];
   const vivas = filas.filter((x) => String(x.estado_cria) !== 'Muerto');
   return {
-    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora,
+    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora, fecha: f.fecha,
     tipo: f.tipo_parto, sexo: f.sexo, operario: f.operario,
     cargado: String(f.cargado_en || '').slice(5).replace('-', '/'),
     muerto: !vivas.length,
@@ -1675,11 +1748,16 @@ let ultimoErr = 0;
 async function refrescar() {
   const todos = await todosLocal();
   const modoPend = listaFecha === LISTA_PENDIENTES;
+  const modoTodos = listaFecha === LISTA_TODOS;
   // "Sin sincronizar": todo lo trabado de esta tablet, de cualquier dia, del
   // mas viejo al mas nuevo (el mas viejo es el que traba la cola).
+  // "Todos": todo lo local, del mas nuevo al mas viejo, mas lo de la planilla.
   const mios = modoPend
     ? todos.filter(sinSubir).sort((a, b) =>
         String(a.payload.fecha_parto).localeCompare(String(b.payload.fecha_parto)) || a.creado - b.creado)
+    : modoTodos
+    ? todos.slice().sort((a, b) =>
+        String(b.payload.fecha_parto).localeCompare(String(a.payload.fecha_parto)) || b.creado - a.creado)
     : todos.filter((r) => r.payload.fecha_parto === listaFecha).sort((a, b) => b.creado - a.creado);
   ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
   ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
@@ -1689,13 +1767,21 @@ async function refrescar() {
   // Lo que esta trabado de OTRO dia suma al badge pero no se ve en el dia
   // elegido: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista
   // y se manda al chip "Sin sincronizar", que los junta a todos.
-  const fuera = modoPend ? [] : todos.filter((r) => r.payload.fecha_parto !== listaFecha && sinSubir(r));
+  const fuera = (modoPend || modoTodos) ? [] : todos.filter((r) => r.payload.fecha_parto !== listaFecha && sinSubir(r));
 
   // El uuid es la llave: un parto que esta en las dos partes gana el local, que
   // es el unico que sabe si tiene una correccion sin subir.
   const mismos = new Set(mios.map((r) => r.uuid));
-  const delDia = modoPend ? mios.map(vistaLocal) : mios.map(vistaLocal).concat(
+  let delDia = modoPend ? mios.map(vistaLocal) : mios.map(vistaLocal).concat(
     partosRemotos(listaFecha).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
+  if (modoTodos) {
+    delDia.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    // Buscador: son cientos de filas. Se filtra por vaca o por caravana.
+    const q = ($('fBuscar').value || '').trim().toLowerCase();
+    if (q) delDia = delDia.filter((v) => String(v.id_vaca).toLowerCase().includes(q) ||
+                                         v.crias.some((c) => String(c.id).toLowerCase().includes(q)));
+  }
+  $('fBuscar').classList.toggle('hidden', !modoTodos);
 
   let h = 0, m = 0, muertos = 0;
   delDia.forEach((v) => {
@@ -1707,9 +1793,9 @@ async function refrescar() {
 
   $('kTot').textContent = delDia.length;
   const hoyISO = fechasPosibles()[0].iso;
-  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : listaFecha === hoyISO ? 'Partos hoy'
-                         : 'Partos del ' + aDDMMAAAA(listaFecha);
-  const conFecha = modoPend || !fechasPosibles().some((o) => o.iso === listaFecha);
+  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : modoTodos ? 'Partos (todos)'
+                         : listaFecha === hoyISO ? 'Partos hoy' : 'Partos del ' + aDDMMAAAA(listaFecha);
+  const conFecha = modoPend || modoTodos || !fechasPosibles().some((o) => o.iso === listaFecha);
   $('kHM').textContent = h + ' / ' + m;
   $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
   $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
@@ -1726,10 +1812,28 @@ async function refrescar() {
   $('avisoRemotos').classList.toggle('hidden', modoPend || !remotosViejo);
 
   $('cabecera').classList.toggle('hidden', !delDia.length);
+  let fechaAnterior = '';
   $('filas').innerHTML = delDia.length ? delDia.map((v) => {
     const cria = v.muerto ? v.sexo
       : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`)).join(' + ');
-    return `<div class="listrow">
+    // En "Todos", un separador por fecha para no perderse entre cientos de filas.
+    let sep = '';
+    if (modoTodos && v.fecha !== fechaAnterior) {
+      fechaAnterior = v.fecha;
+      sep = `<div class="meta sepfecha" style="padding:10px 4px 4px;font-weight:600">${aDDMMAAAA(v.fecha || '')}</div>`;
+    }
+    // Un operario solo corrige lo suyo y no toca un parto con cria muerta (no hay
+    // nada editable ahi salvo el sexo). Un admin corrige todo, tambien lo remoto.
+    const boton = v.mia
+      ? ((!v.muerto || esAdmin())
+          ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
+               data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>` : '')
+      : esAdmin()
+        ? `<button class="btn" type="button" data-editar-remoto="${v.uuid}">Corregir</button>`
+        // Un parto de otra tablet se ve, pero un operario no lo corrige desde aca:
+        // la correccion viaja con el registro local, que en esta tablet no existe.
+        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>';
+    return sep + `<div class="listrow">
       <div class="id">${v.id_vaca}</div>
       <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
         ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}${v.intentos > 1 ? ` · ${v.intentos} intentos` : ''}</div>` : ''}</div>
@@ -1738,13 +1842,8 @@ async function refrescar() {
       <div class="ocultar">${v.tipo}</div>
       <div class="ocultar">${v.operario}</div>
       <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
-      <div>${v.mia && v.descartable && sesion && sesion.admin
-          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${v.muerto ? '' : v.mia
-        ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
-             data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>`
-        // Un parto de otra tablet se ve, pero no se corrige desde aca: la
-        // correccion viaja con el registro local, que en esta tablet no existe.
-        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>'}</div>
+      <div>${v.mia && v.descartable && esAdmin()
+          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${boton}</div>
     </div>`;
   }).join('') : `<div class="vacio">${modoPend
     ? 'No hay partos sin sincronizar. Todo lo cargado ya está en la planilla.'

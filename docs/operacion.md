@@ -172,6 +172,32 @@ de descartar.
 En **Partos cargados**, el chip **Otro día** abre un calendario para ver cualquier fecha, con lo que
 cargó esta tablet y lo que trajo la planilla.
 
+## Admins: Andrés y Nahuel (desde r7)
+
+Los admins son las cuentas listadas en la propiedad del script `ADMINS` (editor de Apps Script →
+Configuración del proyecto → Propiedades del script), separadas por coma. Hoy:
+`andresduhau@admin.com.ar,nvelazquez@admin.com.ar`. Se lee en cada request; en la app, el rol se
+fija al entrar, así que un admin nuevo vuelve a entrar una vez. El token compartido de scripts **no**
+es admin para corregir: `verificar.sh` prueba las reglas de operario con él.
+
+Lo que sólo un admin puede hacer, desde **cualquier dispositivo** (su celular o computadora):
+
+- **Corregir cualquier parto de la planilla**, de cualquier fecha, incluidos los que cargó otra
+  tablet. En **Partos cargados** aparece *Corregir* también en las filas de la planilla; al abrirlo
+  se baja completo y queda como copia local ("sombra") desde donde viaja la corrección.
+- **Cambiar cualquier campo**: vaca, fecha (chip *Otra fecha*), hora, tipo, operario, caravanas,
+  raza, notas, además de calostro, peso, tambo y sexo. Sin la ventana del día y sin la regla del
+  peso. Si cambia la fecha o la vaca, el backend recalcula el **ID Parto** en todas las filas del
+  parto. `_log` guarda `editado por … (admin <mail>)` con cada cambio.
+- **Descartar** en la cola (ver arriba) y **Ajustes**.
+
+Ojo: corregir fecha o vaca de un parto que Nahuel ya cargó en DairyComp deja el tilde puesto y el
+dato viejo allá. Hay que corregirlo también en DairyComp.
+
+En **Partos cargados**, el chip **Todos** trae el histórico completo de la planilla más lo local,
+agrupado por fecha del más nuevo al más viejo, con un buscador por vaca o caravana. Lo ve
+cualquier usuario; la diferencia del admin es el botón *Corregir*.
+
 ## Cómo se mantiene la sesión en la tablet (desde r7)
 
 Al entrar con Google, el backend entrega una **credencial propia de 30 días** (firmada con un secreto
@@ -229,7 +255,7 @@ En orden:
 | Cambió | Qué hacer |
 |---|---|
 | `pwa/*` (pantalla) | Nada: al pushear, GitHub Pages publica solo. **Subir `CACHE` en `pwa/sw.js`** o las tablets siguen con la versión vieja |
-| `apps-script/Codigo.gs` | **Subir `VERSION`** (y `VERSION_ESPERADA` en `verificar.sh`), pegar en el editor y redeployar con el lápiz (ver README) |
+| `apps-script/Codigo.gs` | **Subir `VERSION`** (y `VERSION_ESPERADA` en `verificar.sh`), pegar en el editor y redeployar con el lápiz (ver README). r7 además necesita la propiedad `ADMINS`; el secreto de sesión se crea solo |
 
 ### Publicar r6 sin frenar a los operarios
 

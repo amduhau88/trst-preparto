@@ -234,6 +234,7 @@ echo "11. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
 check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
 check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'
+check "partos todos con token" "$(get "action=partos&todos=1&token=$TOKEN")" '"partos":\['
 check "partos del dia" "$(get "action=partos&token=$TOKEN&fecha=$FECHA")" '"ok":true'
 
 echo
