@@ -1461,5 +1461,116 @@ r = post(partoBase({ uuid: 'u-post-migracion' }));
 check('la app sigue escribiendo despues de migrar', r.ok === true, JSON.stringify(r));
 check('en la hoja renombrada', mig.filas.length === 5, 'filas=' + mig.filas.length);
 
+console.log('\n24. Edicion total para admin (personas en ADMINS)');
+libro = nuevoLibro();
+const ayerISO = '2026-08-01T10:00:00.000Z';
+const mellizo = [
+  { id_ternero: 'M1', raza: 'Holando', peso: 40, vive: true, sexo: 'Macho', calostro: calostroOk },
+  { id_ternero: 'M2', raza: 'Holando', peso: 41, vive: true, sexo: 'Hembra', calostro: calostroOk }];
+r = post(partoBase({ uuid: 'u-adm-01', id_vaca: '4115', fecha_parto: '2026-08-12', sexo: '8 Otros Gemelos (M+M o M+H)',
+                     terneros: mellizo, cargado_en: ayerISO, notas: 'nota vieja' }));
+check('parto mellizo de ayer creado', r.ok === true && r.filas_escritas === 2, JSON.stringify(r));
+const edAdmin = (extra) => post(Object.assign({ id_token: 'admin', accion: 'editar', uuid: 'u-adm-01', operario: 'Julio' }, extra));
+const edDisp = (extra) => post(Object.assign({ id_token: 'bueno', accion: 'editar', uuid: 'u-adm-01', operario: 'Julio' }, extra));
+const edScript = (extra) => post(Object.assign({ token: TOKEN, accion: 'editar', uuid: 'u-adm-01', operario: 'Julio' }, extra));
+
+r = edDisp({ terneros: [{ peso: 44 }, {}] });
+check('operario: fuera de la ventana del dia, rechazado', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+r = edScript({ terneros: [{ peso: 44 }, {}] });
+check('token de scripts: tampoco (corrige como operario)', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+
+r = edAdmin({ fecha_parto: '2026-08-15', id_vaca: '5000' });
+check('admin cambia fecha y vaca aunque el parto sea viejo', r.ok === true && r.cambios >= 2, JSON.stringify(r));
+{
+  const f = formato();
+  check('la fecha entro como Date en las 2 filas', f[0][COL.fecha] instanceof Date && f[0][COL.fecha].getDate() === 15 && f[1][COL.fecha].getDate() === 15);
+  check('la vaca cambio en las 2 filas', f[0][COL.id_vaca] === '5000' && f[1][COL.id_vaca] === '5000');
+  check('el ID Parto se recalculo en las 2 filas', f[0][COL.id_parto] === '20260815-5000-uadm' && f[1][COL.id_parto] === '20260815-5000-uadm',
+        f[0][COL.id_parto] + ' / ' + f[1][COL.id_parto]);
+  check('la cria y el uuid no se tocaron', f[0][COL.cria] === '1/2' && f[1][COL.cria] === '2/2' && f[0][COL.uuid] === 'u-adm-01');
+}
+r = edAdmin({ operario: 'Trini', hora_nacimiento: '08:30', tipo_parto: '2 Asistido', notas: '',
+              terneros: [{ id_ternero: '9990', raza: 'Angus', peso: 50 }, { id_ternero: '9991' }] });
+// 14: operario/hora/tipo/notas en las 2 filas (8), caravana en las 2 (2), raza y peso
+// en la primera (2), y el ID de vaca origen en las 2 (2): la vaca cambio a 5000 y
+// esas crias tomaron calostro de la propia madre, asi que el origen la sigue.
+check('admin cambia operario, hora, tipo, caravana, raza, peso y vacia las notas', r.ok === true && r.cambios === 14, JSON.stringify(r));
+check('y el origen del calostro sigue a la vaca nueva', formato()[0][COL.id_vaca_origen] === '5000');
+{
+  const f = formato();
+  check('operario/hora/tipo en la fila', f[0][COL.operario] === 'Trini' && f[0][COL.hora] === '08:30' && f[0][COL.tipo_parto] === '2 Asistido');
+  check('caravana y raza por cria', f[0][COL.id_ternero] === '9990' && f[0][COL.raza] === 'Angus' && f[1][COL.id_ternero] === '9991' && f[1][COL.raza] === 'Holando');
+  check('el peso lo cambio sin ser quien cargo', f[0][COL.peso] === 50);
+  check('las notas quedaron vacias', f[0][COL.notas] === '' && f[1][COL.notas] === '');
+  check('el ID Parto no cambio (ni fecha ni vaca)', f[0][COL.id_parto] === '20260815-5000-uadm');
+}
+check('_log dice quien fue, como admin', log().some((l) => /editado por Trini \(admin andresduhau@admin.com.ar\)/.test(String(l[4]))),
+      JSON.stringify(log().map((l) => l[4]).slice(-3)));
+r = edAdmin({ fecha_parto: '2026-13-45' });
+check('fecha invalida rechazada', r.ok === false && /fecha_parto invalida/.test((r.detalles || []).join()), JSON.stringify(r));
+r = edAdmin({ operario: 'Nadie' });
+check('operario fuera de lista rechazado', r.ok === false && /operario fuera de lista/.test((r.detalles || []).join()), JSON.stringify(r));
+
+// Un operario dentro de la ventana: puede lo de siempre, no la identidad.
+post(partoBase({ uuid: 'u-adm-02', id_vaca: '4200', terneros: mellizo.slice(0, 1) }));
+const edDisp2 = (extra) => post(Object.assign({ id_token: 'bueno', accion: 'editar', uuid: 'u-adm-02', operario: 'Julio' }, extra));
+r = edDisp2({ id_vaca: '4200', fecha_parto: '2026-08-12', tambo: '3' });
+check('operario: mandar la misma vaca y fecha no molesta', r.ok === true && r.cambios === 1, JSON.stringify(r));
+r = edDisp2({ id_vaca: '4201' });
+check('operario: cambiar la vaca -> solo un admin', r.ok === false && /solo un admin cambia id_vaca/.test((r.detalles || []).join()), JSON.stringify(r));
+r = edDisp2({ terneros: [{ id_ternero: 'OTRA' }] });
+check('operario: cambiar la caravana -> solo un admin', r.ok === false && /solo un admin cambia id_ternero/.test((r.detalles || []).join()), JSON.stringify(r));
+
+console.log('\n25. accion=parto: el parto completo, como lo manda la tablet');
+r = post({ id_token: 'bueno', accion: 'parto', uuid: 'u-adm-01' });
+check('responde ok con el parto', r.ok === true && r.parto && r.parto.uuid === 'u-adm-01', JSON.stringify(r).slice(0, 120));
+{
+  const q = r.parto || {};
+  check('identidad', q.id_vaca === '5000' && q.fecha_parto === '2026-08-15' && q.hora_nacimiento === '08:30' &&
+        q.tipo_parto === '2 Asistido' && q.operario === 'Trini' && q.sexo === '8 Otros Gemelos (M+M o M+H)', JSON.stringify(q).slice(0, 200));
+  check('dos terneros con sus claves', Array.isArray(q.terneros) && q.terneros.length === 2 &&
+        q.terneros[0].id_ternero === '9990' && q.terneros[0].peso === 50 && q.terneros[0].vive === true &&
+        q.terneros[0].calostro && 'origen' in q.terneros[0].calostro && 'id_vaca_origen' in q.terneros[0].calostro &&
+        'calidad_ternero' in q.terneros[0].calostro && 'lts_ternero' in q.terneros[0].calostro, JSON.stringify(q.terneros));
+  check('calostro de la madre', q.calostro && q.calostro.calidad_sin_mejorar === '26' && q.calostro.mejorado === 'No' && q.lts_madre === '5', JSON.stringify(q.calostro));
+  check('cargado_en en ISO', /^\d{4}-\d{2}-\d{2}T/.test(q.cargado_en), q.cargado_en);
+}
+r = post({ id_token: 'bueno', accion: 'parto', uuid: 'no-existe' });
+check('inexistente -> no existe el parto', r.ok === false && /no existe el parto/.test(r.error));
+r = post({ accion: 'parto', uuid: 'u-adm-01' });
+check('sin sesion no entrega nada', r.ok === false);
+r = post(partoBase({ uuid: 'u-adm-03', id_vaca: '4300', sexo: '7 Macho Muerto', terneros: [] }));
+r = post({ id_token: 'bueno', accion: 'parto', uuid: 'u-adm-03' });
+check('parto con cria muerta: sin terneros', r.ok === true && r.parto.terneros.length === 0 && r.parto.sexo === '7 Macho Muerto', JSON.stringify(r.parto && r.parto.terneros));
+
+console.log('\n26. partos todos: el historico completo, del mas nuevo al mas viejo');
+post(partoBase({ uuid: 'u-todos-a', id_vaca: '7001', fecha_parto: '2026-07-01' }));
+post(partoBase({ uuid: 'u-todos-b', id_vaca: '7002', fecha_parto: '2026-09-01' }));
+r = post({ id_token: 'bueno', accion: 'partos', todos: true });
+check('trae todas las fechas', r.ok === true && r.partos.length === formato().length, `${r.partos && r.partos.length} vs ${formato().length}`);
+{
+  const fechas = r.partos.map((x) => x.fecha);
+  const ordenadas = fechas.slice().sort().reverse();
+  check('ordenado por fecha descendente', JSON.stringify(fechas) === JSON.stringify(ordenadas), JSON.stringify(fechas));
+  check('el mellizo trae sus 2 filas juntas', r.partos.filter((x) => x.uuid === 'u-adm-01').length === 2);
+}
+r = post({ id_token: 'bueno', accion: 'partos', fecha: '2026-09-01' });
+check('por fecha sigue igual', r.ok === true && r.partos.length === 1 && r.partos[0].uuid === 'u-todos-b');
+
+console.log('\n27. cambiar_sexo: admin sin ventana del dia, operario no');
+post(partoBase({ uuid: 'u-adm-04', id_vaca: '4400', sexo: '6 Macho Vivo', cargado_en: ayerISO, terneros: mellizo.slice(0, 1) }));
+const sexoNuevo = { accion: 'cambiar_sexo', uuid: 'u-adm-04', operario: 'Julio', sexo: '1 Hembra Viva',
+                    calostro: calostroMadre, lts_madre: '5',
+                    terneros: [{ id_ternero: 'M1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] };
+r = post(Object.assign({ id_token: 'bueno', op_uuid: 'op-adm-1' }, sexoNuevo));
+check('operario: fuera de ventana, rechazado', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+r = post(Object.assign({ id_token: 'admin', op_uuid: 'op-adm-2', id_vaca: '4401' }, sexoNuevo));
+check('admin: cambia el sexo y de paso la vaca', r.ok === true, JSON.stringify(r));
+{
+  const f = formato().filter((x) => x[COL.uuid] === 'u-adm-04' && x[COL.anulada] !== 'Si');
+  check('la fila quedo hembra y con la vaca nueva', f.length === 1 && f[0][COL.sexo] === '1 Hembra Viva' && f[0][COL.id_vaca] === '4401',
+        JSON.stringify(f.map((x) => [x[COL.sexo], x[COL.id_vaca]])));
+}
+
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);

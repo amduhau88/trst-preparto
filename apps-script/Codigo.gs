@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r7-sesion-2026-09-14';
+var VERSION = 'r7-admin-2026-09-14';
 
 /* Credencial propia de la tablet. El id_token de Google dura una hora y su
    renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
@@ -195,6 +195,15 @@ var EDITABLE_PARTO_EN_BLOQUE = {
 };
 var EDITABLE_PARTO = { tambo: COL.tambo };   // fuera del bloque: se corrige siempre
 
+/* Identidad del parto y de cada cria. Solo la cambia un admin (Andres, Nahuel):
+ * desde cualquier dispositivo, sobre cualquier parto, sin la ventana del dia.
+ * Fecha o vaca nuevas cambian el ID Parto de todas las filas del uuid. */
+var EDITABLE_ADMIN_PARTO = {
+  operario: COL.operario, id_vaca: COL.id_vaca, fecha_parto: COL.fecha,
+  hora_nacimiento: COL.hora, tipo_parto: COL.tipo_parto, notas: COL.notas
+};
+var EDITABLE_ADMIN_CRIA = { id_ternero: COL.id_ternero, raza: COL.raza };   // dentro del bloque G-Q
+
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
 var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
 var DOMINIO = 'admin.com.ar';
@@ -250,7 +259,18 @@ function doPost(e) {
       return json_({ ok: true, listas: leerMaestro_(SpreadsheetApp.openById(SS_ID)) });
     }
     if (payload.accion === 'partos') {
-      return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha) });
+      return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha,
+                                                     payload.todos === true) });
+    }
+    // Un parto completo, con las mismas claves que manda la tablet: es lo que
+    // un admin abre en el formulario desde cualquier dispositivo.
+    if (payload.accion === 'parto') {
+      if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
+      var ssP = SpreadsheetApp.openById(SS_ID);
+      if (!esquemaOk_(ssP)) return json_({ ok: false, error: SIN_MIGRAR });
+      var filasP = filasActivas_(filasDeUuid_(hojaRegistros_(ssP), payload.uuid));
+      if (!filasP.length) return json_({ ok: false, error: 'no existe el parto ' + payload.uuid });
+      return json_({ ok: true, parto: partoDesdeFilas_(filasP, ssP.getSpreadsheetTimeZone()) });
     }
     if (payload.accion === 'calostro') {
       return json_(consultaCalostro_(SpreadsheetApp.openById(SS_ID), payload.vaca));
@@ -397,8 +417,7 @@ function construirFilas_(ss, p) {
   var tz = ss.getSpreadsheetTimeZone();
   var fecha = parseFecha_(p.fecha_parto);
   var partoMuerto = esMuerto_(p.sexo);
-  var idParto = Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + p.id_vaca + '-' +
-                String(p.uuid).replace(/-/g, '').substring(0, 4);
+  var idParto = idParto_(tz, fecha, p.id_vaca, p.uuid);
   // La marca de carga viene de la tablet, del momento en que se apreto Guardar.
   // Solo se pone la del servidor si el payload no la trae (formato muy viejo).
   var cargadoEn = p.cargado_en ? new Date(p.cargado_en) : new Date();
@@ -486,8 +505,17 @@ function calidadTernero_(madre, cal) {
 var FORMATO_CAMPO = {
   peso: num_, lts_ternero: num_, lts_madre: num_,
   calidad_sin_mejorar: str_, mejorado: str_, calidad_mejorado: str_,
-  origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_
+  origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_,
+  // Solo admin. La fecha entra como Date real, igual que en el alta.
+  operario: str_, id_vaca: str_, fecha_parto: parseFecha_, hora_nacimiento: str_,
+  tipo_parto: str_, notas: str_, id_ternero: str_, raza: str_
 };
+
+/** Misma formula que el alta: yyyyMMdd-vaca-4 del uuid. Se recalcula si un admin cambia fecha o vaca. */
+function idParto_(tz, fecha, idVaca, uuid) {
+  return Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + idVaca + '-' +
+         String(uuid).replace(/-/g, '').substring(0, 4);
+}
 
 /**
  * Corrige un parto ya escrito, sin agregar ni borrar filas: se pisan celdas de
@@ -514,9 +542,13 @@ function editarParto_(p, auth) {
     var filas = filasActivas_(filasDeUuid_(hoja, p.uuid));
     if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
 
+    // Editar todo es de las PERSONAS en ADMINS. El token de scripts es admin
+    // para leer, pero corrige como un operario: verificar.sh prueba esas reglas.
+    var admin = !!auth.admin && auth.via !== 'token';
     // La ventana es lo cargado HOY, no la fecha del parto: un parto de ayer
     // cargado esta manana todavia se corrige, y uno cargado ayer ya no.
-    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
+    // Un admin corrige cualquier parto, de cualquier fecha.
+    if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
       return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
     }
 
@@ -538,6 +570,19 @@ function editarParto_(p, auth) {
 
       // El tambo (R) es del parto y esta fuera de ese bloque: se corrige siempre.
       anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
+
+      // Identidad del parto: solo admin. Para un operario se ignora lo que
+      // venga (la tablet manda operario e id_vaca siempre), salvo que intente
+      // cambiarlo de verdad: ahi se le dice quien puede.
+      Object.keys(EDITABLE_ADMIN_PARTO).forEach(function (clave) {
+        if (admin) {
+          anotarCambio_(cambios, err, listas, f, EDITABLE_ADMIN_PARTO[clave], clave, p[clave], '');
+        } else if (clave !== 'operario' && p[clave] !== undefined && p[clave] !== null &&
+                   String(p[clave]) !== String(f.datos[EDITABLE_ADMIN_PARTO[clave]]) &&
+                   !(clave === 'fecha_parto' && sonMismaFecha_(p[clave], f.datos[COL.fecha], tz))) {
+          err.push('solo un admin cambia ' + clave);
+        }
+      });
 
       // El calostro de la madre tambien es del parto, pero vive DENTRO del
       // bloque G-Q. Escribirlo en una fila de cria muerta dejaria valores
@@ -593,10 +638,19 @@ function editarParto_(p, auth) {
       // parto entero al corregir cualquier cosa, y reenviar el mismo peso no es
       // pesar. Si no, corregir el calostro quedaria bloqueado para todos menos
       // uno, sin motivo.
-      if (t.peso !== undefined && String(f.datos[COL.peso]) !== String(num_(t.peso)) &&
+      if (!admin && t.peso !== undefined && String(f.datos[COL.peso]) !== String(num_(t.peso)) &&
           String(p.operario) !== String(f.datos[COL.operario])) {
         err.push(pre + 'el peso lo carga ' + f.datos[COL.operario] + ', que fue quien cargo el parto');
       }
+
+      // Caravana y raza de la cria: solo admin (para el operario se desbloquean
+      // unicamente con un cambio de sexo, que va por cambiar_sexo).
+      Object.keys(EDITABLE_ADMIN_CRIA).forEach(function (clave) {
+        if (admin) anotarCambio_(cambios, err, listas, f, EDITABLE_ADMIN_CRIA[clave], clave, t[clave], pre);
+        else if (t[clave] !== undefined && t[clave] !== null && String(t[clave]) !== String(f.datos[EDITABLE_ADMIN_CRIA[clave]])) {
+          err.push(pre + 'solo un admin cambia ' + clave);
+        }
+      });
 
       var cal = t.calostro || {};
       Object.keys(EDITABLE_CRIA).forEach(function (clave) {
@@ -616,6 +670,19 @@ function editarParto_(p, auth) {
     }
     if (!cambios.length) return json_({ ok: true, uuid: p.uuid, cambios: 0 });
 
+    // Fecha o vaca nuevas: el ID Parto (W) se recalcula en todas las filas del uuid.
+    var cambiaId = cambios.some(function (c) { return c.campo === 'fecha_parto' || c.campo === 'id_vaca'; });
+    if (cambiaId) {
+      var fechaFinal = parseFecha_(p.fecha_parto) || filas[0].datos[COL.fecha];
+      var vacaFinal = p.id_vaca !== undefined && p.id_vaca !== '' ? str_(p.id_vaca) : str_(filas[0].datos[COL.id_vaca]);
+      var idNuevo = idParto_(tz, fechaFinal, vacaFinal, p.uuid);
+      filas.forEach(function (f) {
+        if (String(f.datos[COL.id_parto]) !== idNuevo) {
+          cambios.push({ fila: f.fila, col: COL.id_parto, campo: 'id_parto', de: f.datos[COL.id_parto], a: idNuevo });
+        }
+      });
+    }
+
     // Se escribe celda por celda a proposito: reescribir la fila entera pisaria
     // tambien el rodeo que Nahuel carga a mano en la columna R.
     cambios.forEach(function (c) {
@@ -623,7 +690,7 @@ function editarParto_(p, auth) {
     });
 
     log.appendRow([p.uuid, new Date(), JSON.stringify(cambios), cambios.length,
-                   'editado por ' + str_(p.operario), auth.email]);
+                   'editado por ' + str_(p.operario) + (admin ? ' (admin ' + auth.email + ')' : ''), auth.email]);
     actualizarDC_(ss);
 
     return json_({ ok: true, uuid: p.uuid, cambios: cambios.length, detalle: cambios });
@@ -635,7 +702,7 @@ function editarParto_(p, auth) {
 /** Valida un valor nuevo y, si de verdad cambia, lo anota para escribir. */
 function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
   if (valor === undefined || valor === null) return;      // no vino: no se toca
-  if (valor === '') {
+  if (valor === '' && clave !== 'notas') {                 // las notas si se pueden vaciar
     // Reenviar vacio algo que ya estaba vacio no es borrar nada: la tablet
     // manda el parto entero, y hay campos que son opcionales desde el alta
     // (la vaca que provee el calostro, por ejemplo).
@@ -646,6 +713,7 @@ function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
   enLista_(err, listas, clave, valor, pre);
 
   var nuevo = (FORMATO_CAMPO[clave] || str_)(valor);
+  if (clave === 'fecha_parto' && !nuevo) { err.push(pre + 'fecha_parto invalida: ' + valor); return; }
   if (String(f.datos[col]) === String(nuevo)) return;     // ya vale eso
   cambios.push({ fila: f.fila, col: col, campo: clave, de: f.datos[col], a: nuevo });
 }
@@ -708,9 +776,14 @@ function cambiarSexo_(p, auth) {
     var filas = filasDeUuid_(hoja, p.uuid).sort(function (a, b) { return a.fila - b.fila; });
     if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
 
-    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
+    var admin = !!auth.admin && auth.via !== 'token';
+    if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
       return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
     }
+    // La identidad solo la cambia un admin; para los demas sale de la fila.
+    var idDe = function (clave, col, fmt) {
+      return (admin && p[clave] !== undefined && p[clave] !== '') ? (fmt || str_)(p[clave]) : (fmt || str_)(base[col]);
+    };
 
     /* El parto entero, como va a quedar. Lo que este cambio no decide sale de
        la fila que ya existe, y asi se valida con las MISMAS reglas del alta en
@@ -719,10 +792,11 @@ function cambiarSexo_(p, auth) {
     var completo = {
       uuid: p.uuid,
       operario: str_(p.operario) || str_(base[COL.operario]),
-      id_vaca: str_(base[COL.id_vaca]),
-      fecha_parto: Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd'),
-      hora_nacimiento: str_(base[COL.hora]),
-      tipo_parto: str_(base[COL.tipo_parto]),
+      id_vaca: idDe('id_vaca', COL.id_vaca),
+      fecha_parto: (admin && parseFecha_(p.fecha_parto)) ? str_(p.fecha_parto)
+                   : Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd'),
+      hora_nacimiento: idDe('hora_nacimiento', COL.hora),
+      tipo_parto: idDe('tipo_parto', COL.tipo_parto),
       sexo: str_(p.sexo),
       lts_madre: p.lts_madre !== undefined ? p.lts_madre : base[COL.lts_madre],
       calostro: p.calostro || {
@@ -732,7 +806,7 @@ function cambiarSexo_(p, auth) {
       },
       terneros: p.terneros || [],
       tambo: p.tambo !== undefined ? str_(p.tambo) : str_(base[COL.tambo]),
-      notas: str_(base[COL.notas]),
+      notas: (admin && p.notas !== undefined) ? str_(p.notas) : str_(base[COL.notas]),
       cargado_en: base[COL.cargado_en],
       dispositivo: str_(base[COL.dispositivo])
     };
@@ -807,6 +881,59 @@ function cambiarSexo_(p, auth) {
 }
 
 var esAnulada_ = function (f) { return String(f.datos[COL.anulada]) === 'Si'; };
+
+/** Dos fechas (texto o Date) son el mismo dia calendario. */
+function sonMismaFecha_(a, b, tz) {
+  var da = a instanceof Date ? a : parseFecha_(a);
+  var db = b instanceof Date ? b : parseFecha_(b);
+  if (!da || !db) return false;
+  return Utilities.formatDate(da, tz, 'yyyy-MM-dd') === Utilities.formatDate(db, tz, 'yyyy-MM-dd');
+}
+
+/**
+ * Reconstruye el parto con las claves del payload de la tablet a partir de
+ * sus filas activas (una por cria). Es el inverso de construirFilas_.
+ */
+function partoDesdeFilas_(filas, tz) {
+  var ordenadas = filas.slice().sort(function (a, b) { return a.fila - b.fila; });
+  var base = ordenadas[0].datos;
+  var partoMuerto = esMuerto_(base[COL.sexo]);
+  var vacio = function (v) { return v === '' || v === null || v === undefined || String(v) === VACIO; };
+  var terneros = partoMuerto ? [] : ordenadas.map(function (f) {
+    var d = f.datos;
+    var muerta = String(d[COL.estado_cria]) === 'Muerto';
+    if (muerta) return { id_ternero: '', raza: '', vive: false };
+    return {
+      id_ternero: str_(d[COL.id_ternero]), raza: str_(d[COL.raza]),
+      peso: vacio(d[COL.peso]) ? undefined : num_(d[COL.peso]),
+      vive: true,
+      calostro: {
+        origen: str_(d[COL.origen_calostro]), id_vaca_origen: str_(d[COL.id_vaca_origen]),
+        calidad_ternero: str_(d[COL.calidad_ternero]),
+        lts_ternero: vacio(d[COL.lts_ternero]) ? '' : String(num_(d[COL.lts_ternero]))
+      }
+    };
+  });
+  var viva = ordenadas.filter(function (f) { return String(f.datos[COL.estado_cria]) !== 'Muerto'; })[0];
+  var m = viva ? viva.datos : base;
+  return {
+    uuid: str_(base[COL.uuid]),
+    operario: str_(base[COL.operario]), id_vaca: str_(base[COL.id_vaca]),
+    fecha_parto: base[COL.fecha] instanceof Date ? Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd') : str_(base[COL.fecha]),
+    hora_nacimiento: str_(base[COL.hora]), tipo_parto: str_(base[COL.tipo_parto]), sexo: str_(base[COL.sexo]),
+    lts_madre: vacio(m[COL.lts_madre]) ? '' : String(num_(m[COL.lts_madre])),
+    calostro: {
+      calidad_sin_mejorar: vacio(m[COL.calidad_sin_mejorar]) ? '' : str_(m[COL.calidad_sin_mejorar]),
+      mejorado: vacio(m[COL.mejorado]) ? 'No' : str_(m[COL.mejorado]),
+      calidad_mejorado: vacio(m[COL.calidad_mejorado]) ? VACIO : str_(m[COL.calidad_mejorado])
+    },
+    terneros: terneros,
+    tambo: str_(base[COL.tambo]), rodeo: str_(base[COL.rodeo]), notas: str_(base[COL.notas]),
+    cargado_en: base[COL.cargado_en] instanceof Date ? base[COL.cargado_en].toISOString() : str_(base[COL.cargado_en]),
+    dispositivo: str_(base[COL.dispositivo]),
+    id_parto: str_(base[COL.id_parto])
+  };
+}
 var filasActivas_ = function (filas) { return filas.filter(function (f) { return !esAnulada_(f); }); };
 
 /** Todas las filas de un parto, por uuid (columna X). Mellizos devuelven dos. */
@@ -983,7 +1110,7 @@ function leerMaestro_(ss) {
   return listas;
 }
 
-function partosDelDia_(ss, fechaISO) {
+function partosDelDia_(ss, fechaISO, todos) {
   var hoja = hojaRegistros_(ss);
   // Sin migrar, leer por posicion devolveria datos de otras columnas.
   if (!hoja || hoja.getLastRow() < 2 || !esquemaOk_(ss)) return [];
@@ -992,12 +1119,21 @@ function partosDelDia_(ss, fechaISO) {
   var buscada = fechaISO || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
   var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
 
-  return datos.map(function (f, i) {
+  var filas = datos.map(function (f, i) {
     return { f: f, fila: i + 2 };                 // +2: la 1 es el encabezado
   }).filter(function (r) {
     var d = r.f[COL.fecha];
-    return d instanceof Date && Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
-  }).map(function (r) {
+    if (!(d instanceof Date)) return false;
+    // "Todos": la pestaña Partos cargados muestra el historico completo.
+    return todos || Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
+  });
+  if (todos) {
+    // Del mas nuevo al mas viejo, y dentro del dia en el orden de la planilla.
+    filas.sort(function (a, b) {
+      return (b.f[COL.fecha] - a.f[COL.fecha]) || (a.fila - b.fila);
+    });
+  }
+  return filas.map(function (r) {
     var f = r.f;
     return {
       fila: r.fila,
