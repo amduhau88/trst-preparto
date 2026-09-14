@@ -155,7 +155,9 @@ se pueden recargar a mano los que falten.
 
 La cola se traba de a uno: se sube en orden de carga y, ante el primer error que no sea de
 validación, la app corta y reintenta **ese mismo parto** cada 30 s. El texto del error queda en
-rojo debajo de ese parto en la lista del día. Ese texto es lo primero que hay que leer.
+rojo debajo de ese parto. Para verlos todos juntos, de cualquier fecha: **Partos del día → chip
+«Sin sincronizar»** (el número del chip es la cola). Desde ahí se corrigen con *Corregir* sin que
+el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
 
 ## Un parto no llegó a la planilla
 

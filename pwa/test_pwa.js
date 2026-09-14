@@ -1270,6 +1270,67 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('Cerrar lo esconde', !(await visible(page, '#modalPendientes')));
     check('y la cola sigue intacta', (await contarLocal(page)).pendientes === 1);
 
+    console.log('\n12e. "Sin sincronizar": los partos trabados de CUALQUIER dia, en una sola lista');
+    // El parto en cola pasa a ser de hace meses: Hoy/Ayer no lo alcanzan.
+    await page.evaluate(() => new Promise((ok) => {
+      const req = indexedDB.open('preparto', 1);
+      req.onsuccess = () => {
+        const s = req.result.transaction('partos', 'readwrite').objectStore('partos');
+        const g = s.getAll();
+        g.onsuccess = () => {
+          const r = g.result.find((x) => x.payload.id_vaca === '6060');
+          r.payload.fecha_parto = '2026-01-15'; s.put(r); ok();
+        };
+      };
+    }));
+    await page.click('.tab[data-v="list"]');
+    await esperar(500);
+    check('en Hoy no aparece', !(await page.$eval('#filas', (e) => /6060/.test(e.textContent))));
+    check('pero el aviso de arriba lo cuenta y manda al chip',
+          await visible(page, '#avisoFuera') &&
+          /15\/01\/2026/.test(await page.$eval('#avisoFuera', (e) => e.textContent)) &&
+          /Sin sincronizar/.test(await page.$eval('#avisoFuera', (e) => e.textContent)),
+          await page.$eval('#avisoFuera', (e) => e.textContent));
+    check('el chip existe y cuenta 1',
+          await visible(page, '#chipPendientes') && (await page.$eval('#chipPendN', (e) => e.textContent)) === '1');
+    await page.click('#chipPendientes');
+    await esperar(400);
+    check('el chip queda seleccionado', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
+    check('aparece el parto viejo', await page.$eval('#filas', (e) => /6060/.test(e.textContent)));
+    check('con su fecha en la fila', await page.$eval('#filas', (e) => /15\/01\/2026/.test(e.textContent)));
+    check('el KPI cambia de rotulo', (await page.$eval('#kTotL', (e) => e.textContent)) === 'Sin sincronizar' &&
+          (await page.$eval('#kTot', (e) => e.textContent)) === '1');
+    check('sin aviso de "otro dia" ni de remotos',
+          !(await visible(page, '#avisoFuera')) && !(await visible(page, '#avisoRemotos')));
+
+    // Corregirlo desde aca NO le cambia la fecha: antes el formulario, que solo
+    // ofrece Hoy y Ayer, lo movia a hoy en silencio.
+    await page.click('#filas [data-editar]');
+    await esperar(400);
+    check('abre el formulario', await visible(page, '#v-form'));
+    check('la fecha del parto se respeta', (await page.evaluate(() => st.fecha)) === '2026-01-15',
+          await page.evaluate(() => st.fecha));
+    check('y se ve como chip "Del parto"',
+          await page.$eval('#cFecha', (e) => /Del parto/.test(e.textContent) && /15\/01\/2026/.test(e.textContent)));
+    await page.click('#btnCancelarEd');
+    await esperar(400);
+    check('cancelar vuelve a la lista', await visible(page, '#v-list'));
+    check('y sigue en "Sin sincronizar"', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
+    const fechaTrasCancelar = await page.evaluate(() => new Promise((ok) => {
+      const req = indexedDB.open('preparto', 1);
+      req.onsuccess = () => {
+        const g = req.result.transaction('partos').objectStore('partos').getAll();
+        g.onsuccess = () => ok(g.result.find((x) => x.payload.id_vaca === '6060').payload.fecha_parto);
+      };
+    }));
+    check('el registro guardado conserva su fecha', fechaTrasCancelar === '2026-01-15', fechaTrasCancelar);
+    // Volver a Hoy para que el resto de la corrida vea la lista de siempre.
+    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
+    await esperar(300);
+    check('Hoy vuelve a quedar seleccionado', !(await page.$eval('#chipPendientes', (e) => e.classList.contains('on'))));
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+
     await page.click('#btnCuenta');
     await esperar(200);
     await page.click('[data-cuenta="salir"]');
@@ -1292,6 +1353,15 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('se vuelve a entrar', await visible(page, '#v-form'));
     c = await esperarSync(page, 20);
     check('y el parto de la cola entra igual', c.pendientes === 0, JSON.stringify(c));
+    await page.click('.tab[data-v="list"]');
+    await esperar(300);
+    await page.click('#chipPendientes');
+    await esperar(300);
+    check('con la cola vacia, "Sin sincronizar" lo dice',
+          /No hay partos sin sincronizar/.test(await page.$eval('#filas', (e) => e.textContent)) &&
+          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
     check('con el operario que lo cargo, no con el que lo subio',
           (filas.find((f) => f.vaca === '6060') || {}).operario === quienCargo,
           quienCargo + ' -> ' + JSON.stringify(filas.find((f) => f.vaca === '6060')));
