@@ -68,7 +68,7 @@ si la cuenta deja de existir, deja de poder sincronizar.
 El peso **no se carga con el parto**: el ternero se pesa más tarde. El parto entra
 a la planilla al instante con la columna I vacía, y el peso se agrega después.
 
-En la tablet, **Partos del día** muestra los que faltan pesar con un botón **Pesar**
+En la tablet, **Partos cargados** muestra los que faltan pesar con un botón **Pesar**
 y una marca en la fila. El contador de arriba dice cuántos son. El peso lo carga
 **quien cargó el parto** — si lo intenta otro, la app dice de quién es.
 
@@ -96,7 +96,7 @@ El renglón original nunca se pisa.
 
 ### Ver los partos de todas las tablets
 
-**Partos del día** muestra lo cargado en esta tablet **y lo que cargaron las demás**,
+**Partos cargados** muestra lo cargado en esta tablet **y lo que cargaron las demás**,
 leyendo de la planilla. Los de otra tablet se ven pero no se corrigen desde acá: la
 corrección viaja con el registro local, que en esta tablet no existe.
 
@@ -153,11 +153,21 @@ Lo ve cualquier usuario, no hace falta ser admin (el admin también lo tiene en 
 parto en cola con su uuid, estado, el último error y el payload completo, sin credenciales. Con eso
 se pueden recargar a mano los que falten.
 
-La cola se traba de a uno: se sube en orden de carga y, ante el primer error que no sea de
-validación, la app corta y reintenta **ese mismo parto** cada 30 s. El texto del error queda en
-rojo debajo de ese parto. Para verlos todos juntos, de cualquier fecha: **Partos del día → chip
-«Sin sincronizar»** (el número del chip es la cola). Desde ahí se corrigen con *Corregir* sin que
-el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
+La cola sube en orden de carga. Si el backend rechaza **un** registro, se anota el error y se sigue
+con el siguiente (desde `preparto-v13`; antes ese registro trababa a todos los de atrás). Solo tres
+errores seguidos cortan la tanda, porque entonces es el servidor y no el registro. El texto del
+error queda en rojo debajo del parto. Para verlos todos juntos, de cualquier fecha: **Partos
+cargados → chip «Sin sincronizar»** (el número del chip es la cola). Desde ahí se corrigen con
+*Corregir* sin que el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
+
+Si el backend dice `no existe el parto` (la fila se borró a mano de `Registros`), la corrección pasa
+a **Revisar** y deja de reintentar. Un **admin** ve ahí el botón **Descartar**: saca de la tablet esa
+corrección (o un alta rechazada) sin tocar la planilla. Los operarios no lo tienen. Como la cola es
+de la tablet y no de la cuenta, el admin entra en la tablet con su cuenta (chip → Cambiar de usuario),
+descarta y devuelve la sesión.
+
+En **Partos cargados**, el chip **Otro día** abre un calendario para ver cualquier fecha, con lo que
+cargó esta tablet y lo que trajo la planilla.
 
 ## Un parto no llegó a la planilla
 

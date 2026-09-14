@@ -67,7 +67,7 @@ volver al paso 1.
   El operario nunca tiene que esperar ni reintentar.
 - El badge de arriba a la derecha dice siempre cómo está: *Sincronizado*,
   *N en espera*, *Sin señal* o *N para revisar*.
-- **Partos del día** muestra lo cargado hoy, también sin señal.
+- **Partos cargados** muestra lo cargado hoy, también sin señal.
 - Un parto marcado **"Revisar"** tiene un dato que la planilla rechazó; el motivo
   aparece debajo. Reintentar no lo arregla: hay que corregir el dato.
 

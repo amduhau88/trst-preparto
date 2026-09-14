@@ -132,6 +132,8 @@ function cerrarSesion() {
 }
 
 const tokenSirve = (margen) => !!idToken.valor && idToken.exp - margen > Date.now();
+/** Credencial propia del backend (llega con r7); hasta entonces siempre falso. */
+const sesionSirve = () => !!(sesion && sesion.token) && sesion.hasta - 60000 > Date.now();
 
 /**
  * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
@@ -237,6 +239,7 @@ function tx(modo, fn) {
 
 const guardarLocal = (reg) => tx('readwrite', (s) => s.put(reg));
 const todosLocal = () => tx('readonly', (s) => s.getAll());
+const borrarLocal = (uuid) => tx('readwrite', (s) => s.delete(uuid));
 
 /* ------------------------------------------------------------------ */
 /* Estado del formulario                                               */
@@ -341,12 +344,21 @@ function pintarFechas() {
 
   const cont = $('cListaFecha');
   if (!cont) return;
-  if (listaFecha !== LISTA_PENDIENTES && !opciones.some((o) => o.iso === listaFecha)) listaFecha = opciones[0].iso;
+  // Cualquier fecha valida se respeta (chip "Otro dia"); solo lo roto se reancla en Hoy.
+  if (listaFecha !== LISTA_PENDIENTES && !/^\d{4}-\d{2}-\d{2}$/.test(listaFecha)) listaFecha = opciones[0].iso;
   const nPend = ultimoPend + ultimoErr;
+  const otroDia = listaFecha !== LISTA_PENDIENTES && !opciones.some((o) => o.iso === listaFecha);
   cont.innerHTML = opciones.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
              data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
   ).join('') +
+    // El input cubre el chip entero, invisible: tocar el chip abre el calendario.
+    `<label class="chip fecha ${otroDia ? 'on' : ''}" id="chipOtroDia" style="position:relative;cursor:pointer">
+       Otro día<span class="dia">${otroDia ? aDDMMAAAA(listaFecha) : 'elegir fecha'}</span>
+       <input type="date" id="fOtroDia" value="${otroDia ? listaFecha : ''}" max="${opciones[0].iso}"
+              aria-label="Ver los partos de otro día"
+              style="position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;padding:0;border:0">
+     </label>` +
     `<button type="button" class="chip fecha warn ${listaFecha === LISTA_PENDIENTES ? 'on' : ''}"
              data-chip="listaFecha" data-val="${LISTA_PENDIENTES}" id="chipPendientes">Sin sincronizar<span class="dia">todos los días · <b id="chipPendN">${nPend}</b></span></button>`;
 }
@@ -581,6 +593,8 @@ document.addEventListener('click', (e) => {
 
   const ed = e.target.closest('[data-editar]');
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
+  const ds = e.target.closest('[data-descartar]');
+  if (ds) return descartarCambio(ds.dataset.descartar);
   const chip = e.target.closest('[data-chip]');
   if (chip) return elegirChip(chip);
   const step = e.target.closest('[data-step]');
@@ -592,6 +606,17 @@ document.addEventListener('click', (e) => {
   }
   const tab = e.target.closest('.tab');
   if (tab) return ver(tab.dataset.v);
+});
+
+// "Otro dia": el calendario elige la fecha y la lista la sigue, como un chip mas.
+document.addEventListener('change', (e) => {
+  if (!e.target || e.target.id !== 'fOtroDia') return;
+  const iso = e.target.value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+  listaFecha = iso;
+  pintarFechas();
+  refrescar();
+  bajarPartosDelDia(iso);
 });
 
 function elegirChip(chip) {
@@ -1013,6 +1038,55 @@ async function abrirEdicion(uuid, focoPeso) {
   }
 }
 
+/* Sacar de la cola lo que ya no va a subir solo. Solo admin: descartar es
+   decidir que la planilla tiene razon y la tablet no, y eso no lo decide el
+   operario en el corral. La planilla no se toca nunca desde aca. */
+async function descartarCambio(uuid) {
+  if (!(sesion && sesion.admin)) return;
+  const reg = (await todosLocal()).find((r) => r.uuid === uuid);
+  if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+  const vaca = reg.payload.id_vaca;
+
+  if (reg.estado === 'error') {
+    // Un alta rechazada nunca entro a la planilla: descartarla es borrarla de la tablet.
+    const ok = await confirmar('Descartar este parto',
+      `El parto de la vaca <b>${vaca}</b> fue rechazado por la planilla y <b>nunca entró</b>.
+       Se borra de esta tablet. Si hay que cargarlo, se carga de nuevo.`, 'Sí, descartar');
+    if (!ok) return;
+    await borrarLocal(uuid);
+    await refrescar();
+    return avisar('Parto descartado');
+  }
+
+  const ok = await confirmar('Descartar la corrección',
+    `Se descarta la corrección pendiente del parto de la vaca <b>${vaca}</b> en esta tablet.
+     La planilla queda como está.`, 'Sí, descartar');
+  if (!ok) return;
+
+  // Si la planilla ya no tiene el parto (se borro a mano), la copia local es un
+  // fantasma: se va con la correccion. Si lo tiene, se limpia el pendiente y se
+  // avisa que lo que muestra la tablet puede diferir de la planilla.
+  let enPlanilla = null;
+  if (navigator.onLine && sesion && (sesionSirve() || tokenSirve(60000))) {
+    try {
+      const j = await enviar({ accion: 'partos', fecha: reg.payload.fecha_parto });
+      if (j && j.ok) enPlanilla = (j.partos || []).some((f) => f.uuid === uuid);
+    } catch (e) { /* sin respuesta: se conserva la copia local */ }
+  }
+  if (enPlanilla === false) {
+    await borrarLocal(uuid);
+    await refrescar();
+    return avisar('Ese parto ya no estaba en la planilla: se sacó de la tablet');
+  }
+  reg.revisarEdicion = false;
+  reg.edicion = null;
+  reg.cambioSexo = null;
+  reg.error = '';
+  await guardarLocal(reg);
+  await refrescar();
+  avisar('Corrección descartada. La planilla manda: lo que muestre esta fila puede diferir.');
+}
+
 function cancelarEdicion() {
   st.editando = null;
   limpiar();
@@ -1370,6 +1444,10 @@ async function sincronizar() {
     fallosToken = 0;
     sesionVencida = false;
 
+    // Errores de servidor seguidos en esta tanda. Uno solo es de ESE registro y
+    // no tiene por que frenar a los demas; tres seguidos es el servidor caido.
+    let erroresSeguidos = 0;
+
     for (const { reg, tipo } of tareas) {
       let res;
       try {
@@ -1382,6 +1460,7 @@ async function sincronizar() {
         break;
       }
       if (res && res.ok) {
+        erroresSeguidos = 0;
         if (tipo === 'alta') {
           // duplicado:true tambien es exito: el parto ya estaba en la planilla.
           reg.estado = 'ok';
@@ -1411,15 +1490,33 @@ async function sincronizar() {
           reg.error = (tipo === 'sexo' ? 'cambio de sexo rechazado: ' : 'corrección rechazada: ') +
                       (res.detalles || []).join(' · ');
         }
+      } else if (res && res.sesion === false) {
+        // Sesion caida: cortar, no quemar la cola entera. Esta es la unica senal
+        // autoritativa: la da el backend, que es el que verifica el token.
+        sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR;
+        reg.intentos++;
+        reg.error = res.error || 'sesion vencida';
+        await guardarLocal(reg);
+        break;
+      } else if (tipo !== 'alta' && /no existe el parto/i.test((res && res.error) || '')) {
+        // La fila ya no esta en la planilla (se borro a mano): reintentar no la
+        // va a traer de vuelta. Un parto asi trababa la cola entera para
+        // siempre: 112 intentos y los partos de atras con cero.
+        reg.edicion = null;
+        reg.cambioSexo = null;
+        reg.revisarEdicion = true;
+        reg.error = 'ese parto ya no está en la planilla: la corrección no se puede aplicar';
+        await guardarLocal(reg);
+        continue;
       } else {
-        // Sesion caida o error del servidor: cortar, no quemar la cola entera.
-        // Esta es la unica senal autoritativa de sesion caida: la da el backend,
-        // que es el que verifica el token contra Google.
-        if (res && res.sesion === false) { sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR; }
+        // Error del servidor sobre ESTE registro: se anota y se sigue con el
+        // siguiente. Solo si el servidor falla tres veces seguidas se corta la
+        // tanda, porque entonces es el servidor y no el registro.
         reg.intentos++;
         reg.error = (res && res.error) || 'error del servidor';
         await guardarLocal(reg);
-        break;
+        if (++erroresSeguidos >= 3) break;
+        continue;
       }
       await guardarLocal(reg);
     }
@@ -1505,6 +1602,8 @@ function vistaLocal(r) {
     uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento, fecha: p.fecha_parto,
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
     cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
+    // Lo que ya no va a subir solo: una correccion rechazada o un alta rechazada.
+    descartable: !!r.revisarEdicion || r.estado === 'error',
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
       id: t.id_ternero || 's/id', vive: t.vive !== false,
       peso: t.peso === undefined ? null : t.peso
@@ -1575,7 +1674,10 @@ async function refrescar() {
   });
 
   $('kTot').textContent = delDia.length;
-  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : 'Partos hoy';
+  const hoyISO = fechasPosibles()[0].iso;
+  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : listaFecha === hoyISO ? 'Partos hoy'
+                         : 'Partos del ' + aDDMMAAAA(listaFecha);
+  const conFecha = modoPend || !fechasPosibles().some((o) => o.iso === listaFecha);
   $('kHM').textContent = h + ' / ' + m;
   $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
   $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
@@ -1599,12 +1701,13 @@ async function refrescar() {
       <div class="id">${v.id_vaca}</div>
       <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
         ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}</div>` : ''}</div>
-      <div>${modoPend ? `<span class="meta" style="display:block">${aDDMMAAAA(v.fecha || '')}</span>` : ''}${v.hora}</div>
+      <div>${conFecha ? `<span class="meta" style="display:block">${aDDMMAAAA(v.fecha || listaFecha)}</span>` : ''}${v.hora}</div>
       <div class="ocultar">${v.cargado}</div>
       <div class="ocultar">${v.tipo}</div>
       <div class="ocultar">${v.operario}</div>
       <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
-      <div>${v.muerto ? '' : v.mia
+      <div>${v.mia && v.descartable && sesion && sesion.admin
+          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${v.muerto ? '' : v.mia
         ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
              data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>`
         // Un parto de otra tablet se ve, pero no se corrige desde aca: la

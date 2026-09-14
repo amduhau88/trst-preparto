@@ -81,6 +81,7 @@ const sinSesion = [];          // requests que llegaron sin credencial valida
 let caidoHasta = 0;
 let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token parezca vivo
 let colgadoHasta = 0;          // acepta la conexion y NO contesta: el WiFi "presente pero muerto"
+let fallarAltas = false;       // el backend contesta un error de servidor (no de validacion) a cada alta
 
 const LISTAS = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
@@ -200,6 +201,7 @@ const api = http.createServer((req, res) => {
     }
 
     recibidos.push(p.uuid);
+    if (fallarAltas) return responder({ ok: false, error: 'boom del servidor' });
     if (uuidsVistos.has(p.uuid)) return responder({ ok: true, duplicado: true, uuid: p.uuid });
     if (!p.operario || !p.id_vaca) {
       return responder({ ok: false, error: 'validacion', detalles: ['faltan datos'] });
@@ -422,8 +424,10 @@ const visible = (page, sel) => page.evaluate((s) => {
           JSON.stringify(chipsFecha.map((c) => c.txt)));
     check('Ayer es un dia antes',
           (new Date(chipsFecha[0].val) - new Date(chipsFecha[1].val)) / 86400000 === 1);
-    check('no hay selector de fecha libre',
-          await page.evaluate(() => !document.querySelector('input[type="date"]')));
+    // En el formulario de carga no hay fecha libre (solo Hoy/Ayer). El
+    // calendario de "Otro dia" vive en la lista, y es otra cosa.
+    check('no hay selector de fecha libre en el formulario',
+          await page.evaluate(() => !document.querySelector('#v-form input[type="date"]')));
 
     console.log('\n3b. Rodeo: ya no se carga en la tablet');
     check('no hay campo de rodeo', await page.evaluate(() => !document.querySelector('#wrapRodeo')));
@@ -1366,6 +1370,116 @@ const visible = (page, sel) => page.evaluate((s) => {
           (filas.find((f) => f.vaca === '6060') || {}).operario === quienCargo,
           quienCargo + ' -> ' + JSON.stringify(filas.find((f) => f.vaca === '6060')));
 
+    console.log('\n12f. Un registro con error NO traba la cola');
+    /* Caso real del 14/09: un parto de prueba subio, alguien lo borro a mano de
+       la planilla, y la tablet tenia una correccion sobre el. El backend decia
+       "no existe el parto" y el bucle cortaba: 112 intentos, y 9 partos reales
+       atras con cero. */
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await elegirSexo(page, 1);                        // viva: que tenga boton Corregir
+    await cargarParto(page, '6070', '8070');
+    c = await esperarSync(page, 15);
+    check('el parto entra', c.pendientes === 0, JSON.stringify(c));
+    const uuidFantasma = await page.evaluate(async () =>
+      (await todosLocal()).find((r) => r.payload.id_vaca === '6070').uuid);
+    // "Alguien lo borra a mano de la planilla".
+    for (let i = filas.length - 1; i >= 0; i--) if (filas[i].uuid === uuidFantasma) filas.splice(i, 1);
+    // Se corrige desde la tablet con el servidor caido: la correccion queda en cola...
+    caidoHasta = Date.now() + 60000;
+    await page.click('.tab[data-v="list"]');
+    await esperar(200);
+    // El escenario anterior deja la lista en "Sin sincronizar": volver a Hoy.
+    await page.evaluate(() => document.querySelector(`[data-chip="listaFecha"][data-val="${fechasPosibles()[0].iso}"]`).click());
+    let hayBoton = false;
+    for (let i = 0; i < 12 && !hayBoton; i++) {       // la lista se pinta cuando vuelve el fetch
+      await esperar(250);
+      hayBoton = !!(await page.$(`[data-editar="${uuidFantasma}"]`));
+    }
+    check('el parto tiene boton Corregir', hayBoton);
+    await page.click(`[data-editar="${uuidFantasma}"]`);
+    await esperar(400);
+    const tamboAhora = await page.evaluate(() => st.tambo);
+    await page.evaluate((t) => {
+      [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val !== t).click();
+    }, tamboAhora);
+    await page.click('#btnGuardarEd');
+    await esperar(800);
+    check('la correccion quedo en cola', await page.evaluate(async (u) =>
+      !!(await todosLocal()).find((x) => x.uuid === u).edicion, uuidFantasma));
+    // ...y detras de ella, dos partos reales.
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await cargarParto(page, '6071', '8071');
+    await cargarParto(page, '6072', '8072');
+    await esperar(600);
+    c = await contarLocal(page);
+    check('hay 2 altas en cola detras de la correccion', c.pendientes === 2, JSON.stringify(c));
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 20);
+    check('las 2 altas entran igual', c.pendientes === 0 &&
+          filas.some((f) => f.vaca === '6071') && filas.some((f) => f.vaca === '6072'), JSON.stringify(c));
+    const fantasma = await page.evaluate(async (u) => {
+      const r = (await todosLocal()).find((x) => x.uuid === u);
+      return { revisar: r.revisarEdicion, edicion: r.edicion, error: r.error };
+    }, uuidFantasma);
+    check('la correccion queda en Revisar, sin reintentar',
+          fantasma.revisar === true && fantasma.edicion === null && /ya no está en la planilla/.test(fantasma.error),
+          JSON.stringify(fantasma));
+    await page.click('.tab[data-v="list"]');
+    await esperar(300);
+    await page.click('#chipPendientes');
+    await esperar(400);
+    check('se ve en "Sin sincronizar" con la pastilla Revisar',
+          await page.$eval('#filas', (e) => /6070/.test(e.textContent) && /Revisar/.test(e.textContent)));
+    check('el operario NO ve Descartar', !(await page.$('[data-descartar]')));
+
+    console.log('\n12g. Tres errores de servidor seguidos si cortan la tanda');
+    caidoHasta = Date.now() + 60000;                  // encolar 4 sin que salga nada
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    for (const v of ['6081', '6082', '6083', '6084']) await cargarParto(page, v, '8' + v.slice(1));
+    await esperar(500);
+    check('4 en cola', (await contarLocal(page)).pendientes === 4);
+    caidoHasta = 0;
+    fallarAltas = true;
+    const recibidosAntes = recibidos.length;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    await esperar(3000);
+    check('el servidor recibio 3 intentos y no el cuarto', recibidos.length - recibidosAntes === 3,
+          `${recibidos.length - recibidosAntes}`);
+    check('los 4 siguen en cola', (await contarLocal(page)).pendientes === 4);
+    fallarAltas = false;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 20);
+    check('con el servidor sano entran los 4', c.pendientes === 0, JSON.stringify(c));
+
+    console.log('\n12h. "Otro dia" muestra cualquier fecha');
+    filas.push({ uuid: 'u-hace-un-mes', id_vaca: '3131', vaca: '3131', fecha: '2026-01-20',
+                 hora: '04:10', tipo_parto: '1 Normal', sexo: '6 Macho Vivo', id_ternero: '7777',
+                 estado_cria: 'Vivo', peso: 44, cria: '1/1', operario: 'Julio', tambo: '2',
+                 cargado_en: '2026-01-20 04:30', dispositivo: 'tablet-2' });
+    await page.click('.tab[data-v="list"]');
+    await esperar(300);
+    check('el chip Otro dia existe', await visible(page, '#chipOtroDia'));
+    await page.evaluate(() => {
+      const i = document.getElementById('fOtroDia');
+      i.value = '2026-01-20';
+      i.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await esperar(900);
+    check('el chip queda seleccionado con la fecha',
+          await page.$eval('#chipOtroDia', (e) => e.classList.contains('on') && /20\/01\/2026/.test(e.textContent)));
+    check('trae el parto de esa fecha desde la planilla',
+          await page.$eval('#filas', (e) => /3131/.test(e.textContent)));
+    check('el KPI dice de que dia es', /20\/01\/2026/.test(await page.$eval('#kTotL', (e) => e.textContent)));
+    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
+    await esperar(300);
+    check('Hoy vuelve', !(await page.$eval('#chipOtroDia', (e) => e.classList.contains('on'))));
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+
     console.log('\n13. Salida de emergencia: 2 segundos sobre el logo');
     await page.evaluate(() => {
       const l = document.querySelector('.logo');
@@ -1393,6 +1507,24 @@ const visible = (page, sel) => page.evaluate((s) => {
           /andresduhau@admin\.com\.ar/.test(await page.$eval('#diag', (e) => e.textContent)));
     check('ya no pide URL ni token',
           await page.evaluate(() => !document.getElementById('fUrl') && !document.getElementById('fToken')));
+
+    console.log('\n14a. El admin descarta la correccion fantasma');
+    await page.click('.tab[data-v="list"]');
+    await esperar(300);
+    await page.click('#chipPendientes');
+    await esperar(400);
+    check('el fantasma sigue ahi', await page.$eval('#filas', (e) => /6070/.test(e.textContent)));
+    check('el admin SI ve Descartar', !!(await page.$('[data-descartar]')));
+    await page.click('[data-descartar]');
+    await esperar(300);
+    check('pide confirmacion', await visible(page, '#modalConf'));
+    await page.click('#btnConfSi');
+    await esperar(1200);
+    check('como la planilla ya no lo tiene, se va de la tablet',
+          !(await page.$eval('#filas', (e) => /6070/.test(e.textContent))) &&
+          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+    await page.click('.tab[data-v="config"]');
+    await esperar(300);
 
     console.log('\n14b. Ajustes tambien abre el respaldo de la cola (aca, vacia)');
     await page.click('#btnCopiarPendientes');

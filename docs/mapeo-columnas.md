@@ -137,7 +137,7 @@ y eso ahora tiene sus propias columnas.
 —corregir el sexo de un parto puede insertar filas en el medio.
 
 **Peso (col. I): se carga en un segundo paso.** El ternero se pesa más tarde, así que el
-parto entra con la columna vacía y el peso se agrega desde *Partos del día*. Vacío es
+parto entra con la columna vacía y el peso se agrega desde *Partos cargados*. Vacío es
 "falta pesar" — un tercer estado, distinto de `---` y de un número. Lo carga quien cargó
 el parto.
 
