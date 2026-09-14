@@ -161,10 +161,13 @@ cargados → chip «Sin sincronizar»** (el número del chip es la cola). Desde 
 *Corregir* sin que el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
 
 Si el backend dice `no existe el parto` (la fila se borró a mano de `Registros`), la corrección pasa
-a **Revisar** y deja de reintentar. Un **admin** ve ahí el botón **Descartar**: saca de la tablet esa
-corrección (o un alta rechazada) sin tocar la planilla. Los operarios no lo tienen. Como la cola es
-de la tablet y no de la cuenta, el admin entra en la tablet con su cuenta (chip → Cambiar de usuario),
-descarta y devuelve la sesión.
+a **Revisar** y deja de reintentar. Un **admin** ve el botón **Descartar** en **cualquier registro sin
+sincronizar** (desde `preparto-v14`): un alta pendiente o rechazada se borra de la tablet (nunca entró
+a la planilla; si hace falta se carga de nuevo); una corrección pendiente o en Revisar se limpia sin
+tocar la planilla. Los operarios no lo tienen. Como la cola es de la tablet y no de la cuenta, el
+admin entra en la tablet con su cuenta (chip → Cambiar de usuario), descarta y devuelve la sesión.
+La fila muestra el último error en rojo y cuántos intentos lleva, para saber por qué no sube antes
+de descartar.
 
 En **Partos cargados**, el chip **Otro día** abre un calendario para ver cualquier fecha, con lo que
 cargó esta tablet y lo que trajo la planilla.

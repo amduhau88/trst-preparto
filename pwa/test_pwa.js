@@ -1242,6 +1242,11 @@ const visible = (page, sel) => page.evaluate((s) => {
     const antesDeSalir = await contarLocal(page);
     check('el parto quedo pendiente', antesDeSalir.pendientes === 1,
           JSON.stringify(antesDeSalir));
+    await page.click('.tab[data-v="list"]');
+    await esperar(400);
+    check('el operario NO ve Descartar en un alta pendiente', !(await page.$('[data-descartar]')));
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
 
     console.log('\n12d. Copiar partos sin sincronizar: la cola se saca como texto, sin ser admin');
     check('el modal arranca escondido', !(await visible(page, '#modalPendientes')));
@@ -1523,6 +1528,32 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('como la planilla ya no lo tiene, se va de la tablet',
           !(await page.$eval('#filas', (e) => /6070/.test(e.textContent))) &&
           (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+    await page.click('.tab[data-v="config"]');
+    await esperar(300);
+
+    console.log('\n14e. El admin descarta un alta pendiente que no sube');
+    caidoHasta = Date.now() + 60000;
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await cargarParto(page, '6090', '8090');
+    await esperar(600);
+    check('el alta quedo pendiente', (await contarLocal(page)).pendientes === 1);
+    await page.click('.tab[data-v="list"]');
+    await esperar(400);
+    const uuid6090 = await page.evaluate(async () => (await todosLocal()).find((r) => r.payload.id_vaca === '6090').uuid);
+    check('el admin ve Descartar en el alta pendiente', !!(await page.$(`[data-descartar="${uuid6090}"]`)));
+    await page.click(`[data-descartar="${uuid6090}"]`);
+    await esperar(300);
+    check('pide confirmacion y avisa que nunca entro', await visible(page, '#modalConf') &&
+          /nunca entró a la planilla/.test(await page.$eval('#confDetalle', (e) => e.textContent)));
+    await page.click('#btnConfSi');
+    await esperar(500);
+    check('desaparece de la tablet', (await contarLocal(page)).pendientes === 0 &&
+          !(await page.evaluate(async () => (await todosLocal()).some((r) => r.payload.id_vaca === '6090'))));
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    await esperar(1500);
+    check('y el servidor nunca lo recibe', !filas.some((f) => f.vaca === '6090') && !recibidos.includes(uuid6090));
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 
