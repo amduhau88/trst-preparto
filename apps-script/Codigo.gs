@@ -16,7 +16,17 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r6-calostro-2026-08-26';
+var VERSION = 'r7-senasa-2026-09-14';
+
+/* Credencial propia de la tablet. El id_token de Google dura una hora y su
+   renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
+   "Sesion vencida" cada hora. Al entrar, el backend entrega una credencial
+   firmada por el (HMAC con un secreto en Script Properties) que vale 30 dias,
+   y la tablet manda esa en vez del token de Google. Se renueva sola cuando le
+   queda poco, asi una tablet que se usa no vuelve a pedir login nunca. */
+var SESION_DIAS = 30;
+var SESION_RENOVAR_DIAS = 7;
+var RENOVAR_SESION_ = '';   // mail al que hay que renovarle la credencial en esta ejecucion
 
 var SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8';
 var HOJA_FORMATO = 'Registros';
@@ -63,28 +73,44 @@ var COL = {
   lts_ternero: 16,         // Q  /
   tambo: 17,            // R
   rodeo: 18,            // S   la carga Nahuel en 'Datos Carga DC' y se replica
-  notas: 19,            // T
-  sexo_cria: 20,        // U
-  estado_cria: 21,      // V
-  id_parto: 22,         // W
-  cria: 23,             // X
-  uuid: 24,             // Y
+  caravana_senasa: 19,  // T   6 digitos, obligatoria hacia adelante (r7)
+  notas: 20,            // U
+  sexo_cria: 21,        // V
+  estado_cria: 22,      // W
+  id_parto: 23,         // X
+  cria: 24,             // Y
+  uuid: 25,             // Z
   /* Cuando el operario apreto Guardar en la tablet, NO cuando el parto llego a
    * la planilla: un parto cargado sin señal a las 3 de la mañana puede
    * sincronizar a las 9, y lo que interesa es la hora del corral. Tampoco lo
    * mueven pesar, corregir ni cambiar el sexo — esos son pasos posteriores.
    * Es distinto de Fecha Parto (C), que es cuando nacio el ternero. */
-  cargado_en: 25,       // Z
-  dispositivo: 26,      // AA
-  anulada: 27,          // AB
-  cargado_dc: 28        // AC
+  cargado_en: 26,       // AA
+  dispositivo: 27,      // AB
+  anulada: 28,          // AC
+  cargado_dc: 29        // AD
 };
-var ANCHO_FILA = 29;     // A..AC
+var ANCHO_FILA = 30;     // A..AD
 
 /* Encabezado esperado de la fila 1. El backend escribe POR POSICION: si alguien
  * inserta una columna en la planilla, sigue escribiendo donde estaba y corrompe
  * en silencio. Esto es lo que deja detectarlo (?action=esquema + verificar.sh). */
 var ENCABEZADOS = [
+  'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
+  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
+  'Lts Calostro Madre Produjo',
+  'Origen Calostro', 'ID Vaca Origen Calostro', 'Calidad Calostro Ternero',
+  'Lts Calostro para Ternero',
+  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Caravana SENASA', 'Notas',
+  'Sexo Cria', 'Estado Cria',
+  'ID Parto', 'Cria', 'UUID', 'Fecha y Hora de Carga', 'Dispositivo', 'Anulada', 'Cargado a DC'
+];
+
+/* El encabezado de r6, tal como quedo en produccion el 27/08. La migracion a r7
+ * inserta UNA columna (Caravana SENASA, antes de Notas) y no toca nada mas; se
+ * compara antes de tocar. */
+var ENCABEZADOS_R6 = [
   'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
   'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
   'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
@@ -134,22 +160,23 @@ var DC = {
   calostro_final: 5,    // el mejorado si se mejoro
   sexo: 6,
   id_ternero: 7,
-  lts_ternero: 8,
-  calidad_ternero: 9,
-  raza: 10,
-  lts_madre: 11,
-  metodo: 12,
-  operario: 13,
-  rodeo: 14,            // lo escribe Nahuel aca
-  cargado: 15,          // checkbox, lo tilda Nahuel aca
-  clave: 16             // oculta: uuid|cria
+  caravana_senasa: 8,   // a la derecha de ID Ternero (r7)
+  lts_ternero: 9,
+  calidad_ternero: 10,
+  raza: 11,
+  lts_madre: 12,
+  metodo: 13,
+  operario: 14,
+  rodeo: 15,            // lo escribe Nahuel aca
+  cargado: 16,          // checkbox, lo tilda Nahuel aca
+  clave: 17             // oculta: uuid|cria
 };
-var DC_ANCHO = 17;
+var DC_ANCHO = 18;
 var DC_METODO = 'Sonda';
 var DC_ENCABEZADOS = [
   'ID Vaca', 'Fecha', 'Sexo + ID Ternero', 'Tipo Parto',
   'Calidad Calostro Madre', 'Calidad Calostro Madre (final)',
-  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Lts Calostro para Ternero',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Caravana SENASA', 'Lts Calostro para Ternero',
   'Calidad Calostro que tomo el ternero', 'Raza', 'Lts Calostro Madre Produjo',
   'Metodo', 'Operario', 'Asignacion Rodeo', 'Cargado a DC', 'clave'
 ];
@@ -169,6 +196,7 @@ var LOCK_MS = 30000;
  * tablet: identifican al animal y los toca Nahuel en la planilla. */
 var EDITABLE_CRIA = {          // por cria: cada fila lleva la suya
   peso: COL.peso,
+  caravana_senasa: COL.caravana_senasa,
   origen_calostro: COL.origen_calostro,
   id_vaca_origen: COL.id_vaca_origen,
   calidad_ternero: COL.calidad_ternero,
@@ -184,6 +212,15 @@ var EDITABLE_PARTO_EN_BLOQUE = {
   lts_madre: COL.lts_madre
 };
 var EDITABLE_PARTO = { tambo: COL.tambo };   // fuera del bloque: se corrige siempre
+
+/* Identidad del parto y de cada cria. Solo la cambia un admin (Andres, Nahuel):
+ * desde cualquier dispositivo, sobre cualquier parto, sin la ventana del dia.
+ * Fecha o vaca nuevas cambian el ID Parto de todas las filas del uuid. */
+var EDITABLE_ADMIN_PARTO = {
+  operario: COL.operario, id_vaca: COL.id_vaca, fecha_parto: COL.fecha,
+  hora_nacimiento: COL.hora, tipo_parto: COL.tipo_parto, notas: COL.notas
+};
+var EDITABLE_ADMIN_CRIA = { id_ternero: COL.id_ternero, raza: COL.raza };   // dentro del bloque G-Q
 
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
 var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
@@ -219,17 +256,39 @@ function doPost(e) {
 
     var auth = autorizar_(payload);
     if (!auth.ok) return json_({ ok: false, error: auth.error, sesion: false });
+    // Renovacion silenciosa: si entro con la credencial propia y le queda poco,
+    // json_() le agrega una nueva a la respuesta, sea cual sea la accion.
+    RENOVAR_SESION_ = (auth.via === 'sesion' &&
+                       auth.hasta - Date.now() < SESION_RENOVAR_DIAS * 86400000) ? auth.email : '';
 
     // Consultas de solo lectura. Van por POST para que el ID token no viaje
     // en la URL, donde quedaria escrito en los logs de Google.
     if (payload.accion === 'sesion') {
-      return json_({ ok: true, email: auth.email, admin: auth.admin });
+      var resp = { ok: true, email: auth.email, admin: auth.admin };
+      // El camino de scripts no recibe credencial: ya tiene la suya.
+      if (auth.via !== 'token') {
+        var ses = emitirSesion_(auth.email);
+        resp.sesion_token = ses.token;
+        resp.sesion_hasta = ses.hasta;
+      }
+      return json_(resp);
     }
     if (payload.accion === 'maestro') {
       return json_({ ok: true, listas: leerMaestro_(SpreadsheetApp.openById(SS_ID)) });
     }
     if (payload.accion === 'partos') {
-      return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha) });
+      return json_({ ok: true, partos: partosDelDia_(SpreadsheetApp.openById(SS_ID), payload.fecha,
+                                                     payload.todos === true) });
+    }
+    // Un parto completo, con las mismas claves que manda la tablet: es lo que
+    // un admin abre en el formulario desde cualquier dispositivo.
+    if (payload.accion === 'parto') {
+      if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
+      var ssP = SpreadsheetApp.openById(SS_ID);
+      if (!esquemaOk_(ssP)) return json_({ ok: false, error: SIN_MIGRAR });
+      var filasP = filasActivas_(filasDeUuid_(hojaRegistros_(ssP), payload.uuid));
+      if (!filasP.length) return json_({ ok: false, error: 'no existe el parto ' + payload.uuid });
+      return json_({ ok: true, parto: partoDesdeFilas_(filasP, ssP.getSpreadsheetTimeZone()) });
     }
     if (payload.accion === 'calostro') {
       return json_(consultaCalostro_(SpreadsheetApp.openById(SS_ID), payload.vaca));
@@ -332,7 +391,7 @@ function doGet(e) {
     if (p.action === 'partos') {
       var a2 = autorizar_(p);
       if (!a2.ok) return json_({ ok: false, error: a2.error });
-      return json_({ ok: true, partos: partosDelDia_(ss, p.fecha) });
+      return json_({ ok: true, partos: partosDelDia_(ss, p.fecha, p.todos === '1' || p.todos === 'true') });
     }
 
     if (p.action === 'calostro') {
@@ -376,8 +435,7 @@ function construirFilas_(ss, p) {
   var tz = ss.getSpreadsheetTimeZone();
   var fecha = parseFecha_(p.fecha_parto);
   var partoMuerto = esMuerto_(p.sexo);
-  var idParto = Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + p.id_vaca + '-' +
-                String(p.uuid).replace(/-/g, '').substring(0, 4);
+  var idParto = idParto_(tz, fecha, p.id_vaca, p.uuid);
   // La marca de carga viene de la tablet, del momento en que se apreto Guardar.
   // Solo se pone la del servidor si el payload no la trae (formato muy viejo).
   var cargadoEn = p.cargado_en ? new Date(p.cargado_en) : new Date();
@@ -409,7 +467,11 @@ function construirFilas_(ss, p) {
       // Nahuel desde 'Datos Carga DC'. Vacio se lee como "falta asignar", que es
       // el estado real; '---' no sirve porque en G-Q ya significa "cria muerta"
       // y sumarle un segundo sentido lo vuelve ambiguo.
-      str_(p.tambo), '', str_(p.notas),
+      str_(p.tambo), '',
+      // Caravana SENASA (T): '---' en cria muerta como el bloque G-Q; vacia si
+      // el payload no la trae (partos viejos o cola anterior a la app v15).
+      muerto ? VACIO : str_(t.caravana_senasa || ''),
+      str_(p.notas),
       sexoCria_(p, t), muerto ? 'Muerto' : 'Vivo',
       idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn,
       str_(p.dispositivo), '', false
@@ -465,8 +527,17 @@ function calidadTernero_(madre, cal) {
 var FORMATO_CAMPO = {
   peso: num_, lts_ternero: num_, lts_madre: num_,
   calidad_sin_mejorar: str_, mejorado: str_, calidad_mejorado: str_,
-  origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_
+  origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_,
+  // Solo admin. La fecha entra como Date real, igual que en el alta.
+  operario: str_, id_vaca: str_, fecha_parto: parseFecha_, hora_nacimiento: str_,
+  tipo_parto: str_, notas: str_, id_ternero: str_, raza: str_, caravana_senasa: str_
 };
+
+/** Misma formula que el alta: yyyyMMdd-vaca-4 del uuid. Se recalcula si un admin cambia fecha o vaca. */
+function idParto_(tz, fecha, idVaca, uuid) {
+  return Utilities.formatDate(fecha, tz, 'yyyyMMdd') + '-' + idVaca + '-' +
+         String(uuid).replace(/-/g, '').substring(0, 4);
+}
 
 /**
  * Corrige un parto ya escrito, sin agregar ni borrar filas: se pisan celdas de
@@ -493,9 +564,13 @@ function editarParto_(p, auth) {
     var filas = filasActivas_(filasDeUuid_(hoja, p.uuid));
     if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
 
+    // Editar todo es de las PERSONAS en ADMINS. El token de scripts es admin
+    // para leer, pero corrige como un operario: verificar.sh prueba esas reglas.
+    var admin = !!auth.admin && auth.via !== 'token';
     // La ventana es lo cargado HOY, no la fecha del parto: un parto de ayer
     // cargado esta manana todavia se corrige, y uno cargado ayer ya no.
-    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
+    // Un admin corrige cualquier parto, de cualquier fecha.
+    if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
       return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
     }
 
@@ -517,6 +592,19 @@ function editarParto_(p, auth) {
 
       // El tambo (R) es del parto y esta fuera de ese bloque: se corrige siempre.
       anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
+
+      // Identidad del parto: solo admin. Para un operario se ignora lo que
+      // venga (la tablet manda operario e id_vaca siempre), salvo que intente
+      // cambiarlo de verdad: ahi se le dice quien puede.
+      Object.keys(EDITABLE_ADMIN_PARTO).forEach(function (clave) {
+        if (admin) {
+          anotarCambio_(cambios, err, listas, f, EDITABLE_ADMIN_PARTO[clave], clave, p[clave], '');
+        } else if (clave !== 'operario' && p[clave] !== undefined && p[clave] !== null &&
+                   String(p[clave]) !== String(f.datos[EDITABLE_ADMIN_PARTO[clave]]) &&
+                   !(clave === 'fecha_parto' && sonMismaFecha_(p[clave], f.datos[COL.fecha], tz))) {
+          err.push('solo un admin cambia ' + clave);
+        }
+      });
 
       // El calostro de la madre tambien es del parto, pero vive DENTRO del
       // bloque G-Q. Escribirlo en una fila de cria muerta dejaria valores
@@ -572,14 +660,24 @@ function editarParto_(p, auth) {
       // parto entero al corregir cualquier cosa, y reenviar el mismo peso no es
       // pesar. Si no, corregir el calostro quedaria bloqueado para todos menos
       // uno, sin motivo.
-      if (t.peso !== undefined && String(f.datos[COL.peso]) !== String(num_(t.peso)) &&
+      if (!admin && t.peso !== undefined && String(f.datos[COL.peso]) !== String(num_(t.peso)) &&
           String(p.operario) !== String(f.datos[COL.operario])) {
         err.push(pre + 'el peso lo carga ' + f.datos[COL.operario] + ', que fue quien cargo el parto');
       }
 
+      // Caravana y raza de la cria: solo admin (para el operario se desbloquean
+      // unicamente con un cambio de sexo, que va por cambiar_sexo).
+      Object.keys(EDITABLE_ADMIN_CRIA).forEach(function (clave) {
+        if (admin) anotarCambio_(cambios, err, listas, f, EDITABLE_ADMIN_CRIA[clave], clave, t[clave], pre);
+        else if (t[clave] !== undefined && t[clave] !== null && String(t[clave]) !== String(f.datos[EDITABLE_ADMIN_CRIA[clave]])) {
+          err.push(pre + 'solo un admin cambia ' + clave);
+        }
+      });
+
       var cal = t.calostro || {};
       Object.keys(EDITABLE_CRIA).forEach(function (clave) {
         var valor = clave === 'peso' ? t.peso
+                  : clave === 'caravana_senasa' ? t.caravana_senasa
                   : clave === 'origen_calostro' ? cal.origen
                   : clave === 'id_vaca_origen' ? idOrigenEditado_(p, f, cal)
                   : cal[clave];
@@ -595,6 +693,19 @@ function editarParto_(p, auth) {
     }
     if (!cambios.length) return json_({ ok: true, uuid: p.uuid, cambios: 0 });
 
+    // Fecha o vaca nuevas: el ID Parto (W) se recalcula en todas las filas del uuid.
+    var cambiaId = cambios.some(function (c) { return c.campo === 'fecha_parto' || c.campo === 'id_vaca'; });
+    if (cambiaId) {
+      var fechaFinal = parseFecha_(p.fecha_parto) || filas[0].datos[COL.fecha];
+      var vacaFinal = p.id_vaca !== undefined && p.id_vaca !== '' ? str_(p.id_vaca) : str_(filas[0].datos[COL.id_vaca]);
+      var idNuevo = idParto_(tz, fechaFinal, vacaFinal, p.uuid);
+      filas.forEach(function (f) {
+        if (String(f.datos[COL.id_parto]) !== idNuevo) {
+          cambios.push({ fila: f.fila, col: COL.id_parto, campo: 'id_parto', de: f.datos[COL.id_parto], a: idNuevo });
+        }
+      });
+    }
+
     // Se escribe celda por celda a proposito: reescribir la fila entera pisaria
     // tambien el rodeo que Nahuel carga a mano en la columna R.
     cambios.forEach(function (c) {
@@ -602,7 +713,7 @@ function editarParto_(p, auth) {
     });
 
     log.appendRow([p.uuid, new Date(), JSON.stringify(cambios), cambios.length,
-                   'editado por ' + str_(p.operario), auth.email]);
+                   'editado por ' + str_(p.operario) + (admin ? ' (admin ' + auth.email + ')' : ''), auth.email]);
     actualizarDC_(ss);
 
     return json_({ ok: true, uuid: p.uuid, cambios: cambios.length, detalle: cambios });
@@ -614,7 +725,7 @@ function editarParto_(p, auth) {
 /** Valida un valor nuevo y, si de verdad cambia, lo anota para escribir. */
 function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
   if (valor === undefined || valor === null) return;      // no vino: no se toca
-  if (valor === '') {
+  if (valor === '' && clave !== 'notas') {                 // las notas si se pueden vaciar
     // Reenviar vacio algo que ya estaba vacio no es borrar nada: la tablet
     // manda el parto entero, y hay campos que son opcionales desde el alta
     // (la vaca que provee el calostro, por ejemplo).
@@ -623,8 +734,13 @@ function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
     return;
   }
   enLista_(err, listas, clave, valor, pre);
+  if (clave === 'caravana_senasa' && !/^\d{6}$/.test(String(valor).trim())) {
+    err.push(pre + 'caravana SENASA invalida: son 6 digitos, vino "' + valor + '"');
+    return;
+  }
 
   var nuevo = (FORMATO_CAMPO[clave] || str_)(valor);
+  if (clave === 'fecha_parto' && !nuevo) { err.push(pre + 'fecha_parto invalida: ' + valor); return; }
   if (String(f.datos[col]) === String(nuevo)) return;     // ya vale eso
   cambios.push({ fila: f.fila, col: col, campo: clave, de: f.datos[col], a: nuevo });
 }
@@ -644,7 +760,7 @@ function idOrigenEditado_(p, f, cal) {
 }
 
 function tocaAlgo_(t) {
-  if (t.peso !== undefined) return true;
+  if (t.peso !== undefined || t.caravana_senasa !== undefined) return true;
   var cal = t.calostro || {};
   return Object.keys(cal).some(function (k) { return cal[k] !== undefined; });
 }
@@ -687,9 +803,14 @@ function cambiarSexo_(p, auth) {
     var filas = filasDeUuid_(hoja, p.uuid).sort(function (a, b) { return a.fila - b.fila; });
     if (!filas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
 
-    if (!cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
+    var admin = !!auth.admin && auth.via !== 'token';
+    if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
       return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
     }
+    // La identidad solo la cambia un admin; para los demas sale de la fila.
+    var idDe = function (clave, col, fmt) {
+      return (admin && p[clave] !== undefined && p[clave] !== '') ? (fmt || str_)(p[clave]) : (fmt || str_)(base[col]);
+    };
 
     /* El parto entero, como va a quedar. Lo que este cambio no decide sale de
        la fila que ya existe, y asi se valida con las MISMAS reglas del alta en
@@ -698,10 +819,11 @@ function cambiarSexo_(p, auth) {
     var completo = {
       uuid: p.uuid,
       operario: str_(p.operario) || str_(base[COL.operario]),
-      id_vaca: str_(base[COL.id_vaca]),
-      fecha_parto: Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd'),
-      hora_nacimiento: str_(base[COL.hora]),
-      tipo_parto: str_(base[COL.tipo_parto]),
+      id_vaca: idDe('id_vaca', COL.id_vaca),
+      fecha_parto: (admin && parseFecha_(p.fecha_parto)) ? str_(p.fecha_parto)
+                   : Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd'),
+      hora_nacimiento: idDe('hora_nacimiento', COL.hora),
+      tipo_parto: idDe('tipo_parto', COL.tipo_parto),
       sexo: str_(p.sexo),
       lts_madre: p.lts_madre !== undefined ? p.lts_madre : base[COL.lts_madre],
       calostro: p.calostro || {
@@ -711,7 +833,7 @@ function cambiarSexo_(p, auth) {
       },
       terneros: p.terneros || [],
       tambo: p.tambo !== undefined ? str_(p.tambo) : str_(base[COL.tambo]),
-      notas: str_(base[COL.notas]),
+      notas: (admin && p.notas !== undefined) ? str_(p.notas) : str_(base[COL.notas]),
       cargado_en: base[COL.cargado_en],
       dispositivo: str_(base[COL.dispositivo])
     };
@@ -786,6 +908,60 @@ function cambiarSexo_(p, auth) {
 }
 
 var esAnulada_ = function (f) { return String(f.datos[COL.anulada]) === 'Si'; };
+
+/** Dos fechas (texto o Date) son el mismo dia calendario. */
+function sonMismaFecha_(a, b, tz) {
+  var da = a instanceof Date ? a : parseFecha_(a);
+  var db = b instanceof Date ? b : parseFecha_(b);
+  if (!da || !db) return false;
+  return Utilities.formatDate(da, tz, 'yyyy-MM-dd') === Utilities.formatDate(db, tz, 'yyyy-MM-dd');
+}
+
+/**
+ * Reconstruye el parto con las claves del payload de la tablet a partir de
+ * sus filas activas (una por cria). Es el inverso de construirFilas_.
+ */
+function partoDesdeFilas_(filas, tz) {
+  var ordenadas = filas.slice().sort(function (a, b) { return a.fila - b.fila; });
+  var base = ordenadas[0].datos;
+  var partoMuerto = esMuerto_(base[COL.sexo]);
+  var vacio = function (v) { return v === '' || v === null || v === undefined || String(v) === VACIO; };
+  var terneros = partoMuerto ? [] : ordenadas.map(function (f) {
+    var d = f.datos;
+    var muerta = String(d[COL.estado_cria]) === 'Muerto';
+    if (muerta) return { id_ternero: '', raza: '', vive: false };
+    return {
+      id_ternero: str_(d[COL.id_ternero]), raza: str_(d[COL.raza]),
+      caravana_senasa: vacio(d[COL.caravana_senasa]) ? '' : str_(d[COL.caravana_senasa]),
+      peso: vacio(d[COL.peso]) ? undefined : num_(d[COL.peso]),
+      vive: true,
+      calostro: {
+        origen: str_(d[COL.origen_calostro]), id_vaca_origen: str_(d[COL.id_vaca_origen]),
+        calidad_ternero: str_(d[COL.calidad_ternero]),
+        lts_ternero: vacio(d[COL.lts_ternero]) ? '' : String(num_(d[COL.lts_ternero]))
+      }
+    };
+  });
+  var viva = ordenadas.filter(function (f) { return String(f.datos[COL.estado_cria]) !== 'Muerto'; })[0];
+  var m = viva ? viva.datos : base;
+  return {
+    uuid: str_(base[COL.uuid]),
+    operario: str_(base[COL.operario]), id_vaca: str_(base[COL.id_vaca]),
+    fecha_parto: base[COL.fecha] instanceof Date ? Utilities.formatDate(base[COL.fecha], tz, 'yyyy-MM-dd') : str_(base[COL.fecha]),
+    hora_nacimiento: str_(base[COL.hora]), tipo_parto: str_(base[COL.tipo_parto]), sexo: str_(base[COL.sexo]),
+    lts_madre: vacio(m[COL.lts_madre]) ? '' : String(num_(m[COL.lts_madre])),
+    calostro: {
+      calidad_sin_mejorar: vacio(m[COL.calidad_sin_mejorar]) ? '' : str_(m[COL.calidad_sin_mejorar]),
+      mejorado: vacio(m[COL.mejorado]) ? 'No' : str_(m[COL.mejorado]),
+      calidad_mejorado: vacio(m[COL.calidad_mejorado]) ? VACIO : str_(m[COL.calidad_mejorado])
+    },
+    terneros: terneros,
+    tambo: str_(base[COL.tambo]), rodeo: str_(base[COL.rodeo]), notas: str_(base[COL.notas]),
+    cargado_en: base[COL.cargado_en] instanceof Date ? base[COL.cargado_en].toISOString() : str_(base[COL.cargado_en]),
+    dispositivo: str_(base[COL.dispositivo]),
+    id_parto: str_(base[COL.id_parto])
+  };
+}
 var filasActivas_ = function (filas) { return filas.filter(function (f) { return !esAnulada_(f); }); };
 
 /** Todas las filas de un parto, por uuid (columna X). Mellizos devuelven dos. */
@@ -880,6 +1056,13 @@ function validar_(p, listas) {
     }
     if (t.vive === false) return;                   // cria muerta: va toda en '---'
 
+    /* Caravana SENASA: 6 digitos exactos. Obligatoria desde la app que la pide
+       (formato >= 2). Un payload sin 'formato' es una cola vieja: entra sin
+       caravana, porque perder un parto del corral es peor que una celda vacia. */
+    var caravana = String(t.caravana_senasa === undefined || t.caravana_senasa === null ? '' : t.caravana_senasa).trim();
+    if (Number(p.formato) >= 2 && !caravana) err.push(pre + 'falta la caravana SENASA (6 digitos)');
+    if (caravana && !/^\d{6}$/.test(caravana)) err.push(pre + 'caravana SENASA invalida: son 6 digitos, vino "' + caravana + '"');
+
     enLista_(err, listas, 'raza', t.raza, pre);
     // El peso se carga en un segundo paso, cuando el ternero se pesa de verdad.
     // Vacio es un estado legitimo del alta ("falta pesar"); enLista_ deja pasar
@@ -962,7 +1145,7 @@ function leerMaestro_(ss) {
   return listas;
 }
 
-function partosDelDia_(ss, fechaISO) {
+function partosDelDia_(ss, fechaISO, todos) {
   var hoja = hojaRegistros_(ss);
   // Sin migrar, leer por posicion devolveria datos de otras columnas.
   if (!hoja || hoja.getLastRow() < 2 || !esquemaOk_(ss)) return [];
@@ -971,12 +1154,21 @@ function partosDelDia_(ss, fechaISO) {
   var buscada = fechaISO || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
   var datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues();
 
-  return datos.map(function (f, i) {
+  var filas = datos.map(function (f, i) {
     return { f: f, fila: i + 2 };                 // +2: la 1 es el encabezado
   }).filter(function (r) {
     var d = r.f[COL.fecha];
-    return d instanceof Date && Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
-  }).map(function (r) {
+    if (!(d instanceof Date)) return false;
+    // "Todos": la pestaña Partos cargados muestra el historico completo.
+    return todos || Utilities.formatDate(d, tz, 'yyyy-MM-dd') === buscada;
+  });
+  if (todos) {
+    // Del mas nuevo al mas viejo, y dentro del dia en el orden de la planilla.
+    filas.sort(function (a, b) {
+      return (b.f[COL.fecha] - a.f[COL.fecha]) || (a.fila - b.fila);
+    });
+  }
+  return filas.map(function (r) {
     var f = r.f;
     return {
       fila: r.fila,
@@ -984,6 +1176,7 @@ function partosDelDia_(ss, fechaISO) {
       fecha: Utilities.formatDate(f[COL.fecha], tz, 'yyyy-MM-dd'), hora: f[COL.hora],
       tipo_parto: f[COL.tipo_parto], sexo: f[COL.sexo],
       id_ternero: f[COL.id_ternero], raza: f[COL.raza], peso: f[COL.peso],
+      caravana_senasa: f[COL.caravana_senasa],
       calidad_sin_mejorar: f[COL.calidad_sin_mejorar], mejorado: f[COL.mejorado],
       calidad_mejorado: f[COL.calidad_mejorado], lts_madre: f[COL.lts_madre],
       origen_calostro: f[COL.origen_calostro], id_vaca_origen: f[COL.id_vaca_origen],
@@ -1013,7 +1206,7 @@ function hojaRegistros_(ss) {
 }
 
 /* Mensaje unico, para reconocerlo de un vistazo en _log y en la tablet. */
-var SIN_MIGRAR = 'la planilla todavia no esta migrada a r6: correr migrarR6()';
+var SIN_MIGRAR = 'la planilla todavia no esta migrada a r7: correr revisarMigracionR7() y migrarR7()';
 
 /**
  * ¿La hoja tiene el layout que este codigo espera?
@@ -1111,6 +1304,7 @@ function reconstruirDC_(ss) {
       limpio(calostroFinal_(f)),
       f[COL.sexo],
       limpio(id),
+      limpio(f[COL.caravana_senasa]),
       limpio(f[COL.lts_ternero]),
       limpio(f[COL.calidad_ternero]),
       limpio(f[COL.raza]),
@@ -1273,6 +1467,11 @@ function buscarUuid_(log, uuid) {
 /* ------------------------------------------------------------------ */
 
 function json_(obj) {
+  if (RENOVAR_SESION_ && obj && obj.ok && !obj.sesion_token) {
+    var ses = emitirSesion_(RENOVAR_SESION_);
+    obj.sesion_token = ses.token;
+    obj.sesion_hasta = ses.hasta;
+  }
   return ContentService.createTextOutput(JSON.stringify(obj))
                        .setMimeType(ContentService.MimeType.JSON);
 }
@@ -1280,6 +1479,67 @@ function json_(obj) {
 function tokenValido_(token) {
   var esperado = PropertiesService.getScriptProperties().getProperty('TOKEN');
   return !!esperado && token === esperado;
+}
+
+/* ------------------------------------------------------------------ */
+/* Credencial propia (30 dias)                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Secreto con el que se firman las credenciales. Vive en Script Properties,
+ * nunca en el repo. Se crea solo la primera vez que hace falta; rotarlo
+ * (rotarSecretoSesion) invalida todas las credenciales emitidas: todas las
+ * tablets vuelven a pedir login una vez.
+ */
+function secretoSesion_() {
+  var props = PropertiesService.getScriptProperties();
+  var s = props.getProperty('SESION_SECRETO');
+  if (s) return s;
+  var lock = LockService.getScriptLock();
+  lock.tryLock(LOCK_MS);
+  try {
+    s = props.getProperty('SESION_SECRETO');
+    if (!s) {
+      s = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      props.setProperty('SESION_SECRETO', s);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return s;
+}
+
+/** cuerpo.firma — cuerpo = base64({e: mail, x: vencimiento ms}), firma = HMAC-SHA256(cuerpo, secreto). */
+function emitirSesion_(email) {
+  var x = Date.now() + SESION_DIAS * 86400000;
+  var cuerpo = Utilities.base64EncodeWebSafe(JSON.stringify({ e: String(email).toLowerCase(), x: x }));
+  var firma = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(cuerpo, secretoSesion_()));
+  return { token: cuerpo + '.' + firma, hasta: new Date(x).toISOString() };
+}
+
+function verificarSesion_(token) {
+  var partes = String(token || '').split('.');
+  if (partes.length !== 2 || !partes[0] || !partes[1]) return { ok: false, error: 'sesion invalida' };
+  var firma = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(partes[0], secretoSesion_()));
+  if (firma !== partes[1]) return { ok: false, error: 'sesion invalida' };
+  var d;
+  try { d = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(partes[0])).getDataAsString()); }
+  catch (err) { return { ok: false, error: 'sesion invalida' }; }
+  if (!(Number(d.x) > Date.now())) return { ok: false, error: 'sesion vencida' };
+  var email = String(d.e || '').toLowerCase();
+  if (email.split('@')[1] !== DOMINIO) return { ok: false, error: 'la cuenta no es de ' + DOMINIO };
+  return { ok: true, email: email, hasta: Number(d.x) };
+}
+
+/**
+ * Invalida TODAS las credenciales emitidas (p. ej. si una tablet se perdio).
+ * Correrla desde el editor. Cada tablet vuelve a pedir login una sola vez;
+ * los partos en cola no se pierden.
+ */
+function rotarSecretoSesion() {
+  var s = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('SESION_SECRETO', s);
+  Logger.log('Secreto de sesion rotado: todas las tablets tienen que volver a entrar.');
 }
 
 /* ------------------------------------------------------------------ */
@@ -1298,8 +1558,17 @@ function autorizar_(datos) {
   if (datos.token && tokenValido_(datos.token)) {
     return { ok: true, email: 'script', admin: true, via: 'token' };
   }
+
+  // Credencial propia de 30 dias. Si no sirve (vencida, secreto rotado) y vino
+  // ademas un id_token de Google vigente, se entra por ese: la tablet manda
+  // los dos y el login normal vuelve a dar una credencial nueva.
+  var ses = datos.sesion_token ? verificarSesion_(datos.sesion_token) : { ok: false };
+  if (ses.ok) {
+    return { ok: true, email: ses.email, admin: esAdmin_(ses.email), via: 'sesion', hasta: ses.hasta };
+  }
   if (!datos.id_token) {
-    return { ok: false, error: datos.token ? 'token invalido' : 'falta sesion' };
+    return { ok: false, error: datos.token ? 'token invalido'
+                              : datos.sesion_token ? (ses.error || 'sesion invalida') : 'falta sesion' };
   }
 
   var info = verificarIdToken_(datos.id_token);
@@ -1413,6 +1682,7 @@ function diagnostico() {
   var props = PropertiesService.getScriptProperties();
   Logger.log('TOKEN configurado : ' + (props.getProperty('TOKEN') ? 'si' : 'NO'));
   Logger.log('ADMINS            : ' + (props.getProperty('ADMINS') || '(vacio)'));
+  Logger.log('SESION_SECRETO    : ' + (props.getProperty('SESION_SECRETO') ? 'si' : 'NO (se crea solo en el primer login)'));
   Logger.log('CLIENT_ID         : ' + CLIENT_ID);
 
   try {
@@ -1453,6 +1723,7 @@ function configurarDC() {
   dc.hideColumns(DC.clave + 1);
   dc.getRange(2, DC.id_vaca + 1, n, 1).setNumberFormat('@');
   dc.getRange(2, DC.id_ternero + 1, n, 1).setNumberFormat('@');
+  dc.getRange(2, DC.caravana_senasa + 1, n, 1).setNumberFormat('@');
 
   // Se protege todo salvo las dos columnas que se editan aca.
   try {
@@ -1607,6 +1878,97 @@ function letraCol_(i) {
  * Correrla ANTES de migrarR6(), mirar el Registro de ejecucion, y recien
  * entonces migrar.
  */
+/* ------------------------------------------------------------------ */
+/* Migracion r6 -> r7: una columna nueva, Caravana SENASA               */
+/* ------------------------------------------------------------------ */
+
+function planMigracionR7_(ss) {
+  var log = [];
+  var ok = true;
+  var di = function (m) { log.push(m); };
+  var hoja = hojaRegistros_(ss);
+  if (!hoja) { di('No existe la hoja de registros.'); return { ok: false, log: log }; }
+
+  var real = hoja.getRange(1, 1, 1, ENCABEZADOS_R6.length).getValues()[0].map(str_);
+  if (normalizar_(real[19]) === normalizar_('Caravana SENASA')) {
+    di('La hoja YA tiene "Caravana SENASA" en T: no hay nada que migrar.');
+    return { ok: false, log: log };
+  }
+  var mal = [];
+  ENCABEZADOS_R6.forEach(function (esperado, i) {
+    if (normalizar_(real[i]) !== normalizar_(esperado)) mal.push((i + 1) + ': "' + real[i] + '" (esperaba "' + esperado + '")');
+  });
+  if (mal.length) {
+    ok = false;
+    di('El encabezado de Registros NO es el de r6. Diferencias:');
+    mal.forEach(di);
+  } else {
+    di('Encabezado de Registros: es el de r6, columna por columna.');
+  }
+  if (ss.getSheetByName('Registros_backup_r6')) {
+    ok = false;
+    di('Ya existe "Registros_backup_r6": borralo o renombralo antes de migrar.');
+  }
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (!dc) {
+    di('No existe "' + HOJA_DC + '": se migra solo Registros; despues correr configurarDC().');
+  } else {
+    var h = dc.getRange(1, 1, 1, 9).getValues()[0].map(str_);
+    if (normalizar_(h[7]) !== normalizar_('ID Ternero')) { ok = false; di('En ' + HOJA_DC + ' la columna H no es "ID Ternero": "' + h[7] + '"'); }
+    if (normalizar_(h[8]) === normalizar_('Caravana SENASA')) { ok = false; di(HOJA_DC + ' ya tiene la columna Caravana SENASA.'); }
+  }
+  di('Filas con datos en Registros: ' + Math.max(hoja.getLastRow() - 1, 0));
+  di('Se va a insertar "Caravana SENASA" como columna T (antes de Notas) en Registros' +
+     (dc ? ' y como columna I (despues de ID Ternero) en ' + HOJA_DC : '') + '. El historico queda vacio.');
+  di('Se guarda una copia intacta en "Registros_backup_r6" antes de tocar nada.');
+  return { ok: ok, log: log };
+}
+
+/** Ensayo: dice que haria migrarR7() sin escribir nada. Correrla desde el editor. */
+function revisarMigracionR7() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR7_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  Logger.log(plan.ok ? '>> LISTO para correr migrarR7().' : '>> NO migrar todavia: ver arriba.');
+  return plan.ok;
+}
+
+/**
+ * Inserta la columna Caravana SENASA en Registros (T) y en Datos Carga DC (I).
+ * Mientras esto no corra, el backend r7 se niega a escribir (SIN_MIGRAR) y las
+ * tablets encolan: se puede correr con la app en marcha.
+ */
+function migrarR7() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR7_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  if (!plan.ok) { Logger.log('>> No se migro nada.'); return; }
+
+  var hoja = hojaRegistros_(ss);
+  hoja.copyTo(ss).setName('Registros_backup_r6');
+  Logger.log('Respaldo guardado en Registros_backup_r6');
+
+  var colT = COL.caravana_senasa + 1;                         // 20, 1-based
+  hoja.insertColumnBefore(colT);
+  hoja.getRange(1, colT).setValue('Caravana SENASA').setFontWeight('bold');
+  // Texto ANTES de que entre el primer valor: Sheets le comeria el 0 inicial.
+  hoja.getRange(2, colT, Math.max(hoja.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (dc) {
+    var colI = DC.caravana_senasa + 1;                        // 9, 1-based
+    dc.insertColumnBefore(colI);
+    dc.getRange(1, colI).setValue('Caravana SENASA').setFontWeight('bold');
+    dc.getRange(2, colI, Math.max(dc.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+    var n = reconstruirDC_(ss);
+    Logger.log('Vista ' + HOJA_DC + ' reconstruida: ' + n + ' filas.');
+  }
+
+  var e = esquema_(ss);
+  Logger.log(e.ok ? 'Migrado a r7: ' + e.columnas + ' columnas, esquema OK. Las tablets drenan solas.'
+                  : 'ATENCION: el esquema no cierra despues de migrar: ' + JSON.stringify(e.diferencias));
+}
+
 function revisarMigracionR6() {
   var ss = SpreadsheetApp.openById(SS_ID);
   var plan = planMigracionR6_(ss);
@@ -1787,8 +2149,8 @@ function migrarR6() {
       v[9], v[10], v[11],                               // J-L calostro madre, igual
       v[13],                                            // N vieja -> M: lts madre
       origen, idOrigen, calTernero, v[14],              // N-Q: lo del ternero
-      v[16], v[17], v[18],                              // Q,R,S viejas -> R,S,T
-      v[19], v[20],                                     // T,U viejas -> U,V
+      v[16], v[17], '', v[18],                          // Q,R,S viejas -> R,S,(T caravana vacia),U
+      v[19], v[20],                                     // T,U viejas -> V,W
       v[21], criaDe_(v, porParto, vistas), v[23], v[24], v[25],
       '', false                                         // AB Anulada, AC Cargado a DC
     ];
@@ -1834,7 +2196,7 @@ function generarToken() {
  */
 function aplicarFormatos_(hoja) {
   var n = hoja.getMaxRows() - 1;
-  var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'id_parto', 'cria', 'uuid'];
+  var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'caravana_senasa', 'id_parto', 'cria', 'uuid'];
   texto.forEach(function (k) { hoja.getRange(2, COL[k] + 1, n, 1).setNumberFormat('@'); });
   hoja.getRange(2, COL.fecha + 1, n, 1).setNumberFormat('dd/MM/yyyy');
   hoja.getRange(2, COL.cargado_en + 1, n, 1).setNumberFormat('dd/MM/yyyy HH:mm');

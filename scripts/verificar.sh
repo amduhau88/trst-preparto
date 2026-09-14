@@ -110,7 +110,7 @@ JSON
 
 # Version que espera este script. Tiene que coincidir con VERSION en Codigo.gs:
 # si no, lo que esta publicado no es el codigo de este repo.
-VERSION_ESPERADA='r6-calostro-2026-08-26'
+VERSION_ESPERADA='r7-senasa-2026-09-14'
 
 echo
 echo "1. Conectividad"
@@ -130,6 +130,12 @@ printf '  ok    version publicada: %s\n' "$VERSION_ESPERADA"
 check "token invalido rechazado" \
       "$(post "$(TOK=token-que-no-es parto "tok-$RUN" 4115 '6 Macho Vivo' '[]' x)")" \
       'token invalido'
+check "app v15 sin caravana SENASA rechazada" \
+      "$(post "$(parto "sen-$RUN" 4115 '6 Macho Vivo' '[{"id_ternero":"1","raza":"Holando","vive":true,"calostro":{"origen":"Propia madre","lts_ternero":"4"}}]' senasa | sed 's/"uuid"/"formato":2,"uuid"/')")" \
+      'falta la caravana SENASA'
+check "credencial de sesion falsa rechazada" \
+      "$(post '{"accion":"sesion","sesion_token":"abc.def"}')" \
+      'sesion invalida'
 
 echo
 echo "2. Parto simple"
@@ -231,6 +237,7 @@ echo "11. Lectura"
 check "maestro con token" "$(get "action=maestro&token=$TOKEN")" '"operario":\["Julio"'
 check "maestro sin credencial" "$(get 'action=maestro')" 'falta sesion'
 check "maestro con token malo" "$(get 'action=maestro&token=nopenope')" 'token invalido'
+check "partos todos con token" "$(get "action=partos&todos=1&token=$TOKEN")" '"partos":\['
 check "partos del dia" "$(get "action=partos&token=$TOKEN&fecha=$FECHA")" '"ok":true'
 
 echo

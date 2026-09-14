@@ -80,6 +80,7 @@ const opsVistas = new Set();          // idempotencia de las operaciones de camb
 const sinSesion = [];          // requests que llegaron sin credencial valida
 let caidoHasta = 0;
 let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token parezca vivo
+const sesiones = new Map();    // credencial propia de 30 dias -> { email, exp (segundos) }, como el backend r7
 let colgadoHasta = 0;          // acepta la conexion y NO contesta: el WiFi "presente pero muerto"
 let fallarAltas = false;       // el backend contesta un error de servidor (no de validacion) a cada alta
 
@@ -116,7 +117,9 @@ const api = http.createServer((req, res) => {
     let p;
     try { p = JSON.parse(cuerpo); } catch (e) { return responder({ ok: false, error: 'json' }); }
 
-    const datos = leerJwt(p.id_token);
+    // Igual que autorizar_(): primero la credencial propia, despues el id_token.
+    let datos = (p.sesion_token && sesiones.get(p.sesion_token)) || null;
+    if (!datos || datos.exp * 1000 <= Date.now()) datos = leerJwt(p.id_token);
     const vigente = datos && datos.exp * 1000 > Date.now() && !rechazarSesion;
     if (!vigente) {
       sinSesion.push(p.uuid || p.accion || '?');
@@ -124,12 +127,38 @@ const api = http.createServer((req, res) => {
     }
 
     if (p.accion === 'sesion') {
-      return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN });
+      const t = 'ses-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const exp = Math.floor(Date.now() / 1000) + 30 * 86400;
+      sesiones.set(t, { email: datos.email, exp });
+      return responder({ ok: true, email: datos.email, admin: datos.email === ADMIN,
+                         sesion_token: t, sesion_hasta: new Date(exp * 1000).toISOString() });
     }
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
     if (p.accion === 'partos') {
-      return responder({ ok: true, partos: filas.filter((f) => f.fecha === p.fecha && !f.anulada) });
+      const lista = p.todos === true ? filas.filter((f) => !f.anulada)
+                                     : filas.filter((f) => f.fecha === p.fecha && !f.anulada);
+      return responder({ ok: true, partos: lista });
+    }
+    // El parto completo con las claves de la tablet, como partoDesdeFilas_ en Codigo.gs.
+    if (p.accion === 'parto') {
+      const mias = filas.filter((f) => f.uuid === p.uuid && !f.anulada);
+      if (!mias.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+      const b = mias[0];
+      const muerto = /muert/i.test(String(b.sexo));
+      return responder({ ok: true, parto: {
+        uuid: b.uuid, operario: b.operario, id_vaca: b.id_vaca, fecha_parto: b.fecha,
+        hora_nacimiento: b.hora, tipo_parto: b.tipo_parto, sexo: b.sexo, tambo: b.tambo || '1',
+        notas: b.notas || '', lts_madre: b.lts_madre !== undefined ? String(b.lts_madre) : '5',
+        calostro: b.madre || { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---' },
+        terneros: muerto ? [] : mias.map((f) => f.estado_cria === 'Muerto' ? { id_ternero: '', raza: '', vive: false } : {
+          id_ternero: f.id_ternero, raza: f.raza || 'Holando', peso: f.peso, vive: true,
+          caravana_senasa: f.caravana_senasa || '',
+          calostro: f.calostro || { origen: 'Propia madre', id_vaca_origen: f.id_vaca, calidad_ternero: '26', lts_ternero: '4' }
+        }),
+        cargado_en: new Date(String(b.cargado_en).replace(' ', 'T') + ':00').toISOString(),
+        dispositivo: b.dispositivo || ''
+      } });
     }
 
     /* Cambiar el sexo: la unica operacion que cambia CUANTAS filas tiene un
@@ -206,13 +235,19 @@ const api = http.createServer((req, res) => {
     if (!p.operario || !p.id_vaca) {
       return responder({ ok: false, error: 'validacion', detalles: ['faltan datos'] });
     }
+    // Como validar_ en Codigo.gs: con formato >= 2, cada cria viva trae 6 digitos.
+    if (Number(p.formato) >= 2) {
+      const sinCaravana = (p.terneros || []).filter((t) => t.vive !== false && !/^\d{6}$/.test(String(t.caravana_senasa || '')));
+      if (sinCaravana.length) return responder({ ok: false, error: 'validacion', detalles: ['falta la caravana SENASA (6 digitos)'] });
+    }
     uuidsVistos.add(p.uuid);
     const n = Math.max(1, (p.terneros || []).length);
     for (let i = 0; i < n; i++) {
       const t = (p.terneros || [])[i] || {};
       filas.push({ uuid: p.uuid, vaca: p.id_vaca, cria: `${i + 1}/${n}`,
                    operario: p.operario, tambo: p.tambo, peso: t.peso, calostro: t.calostro,
-                   madre: p.calostro,
+                   madre: p.calostro, lts_madre: p.lts_madre, notas: p.notas, raza: t.raza,
+                   caravana_senasa: t.caravana_senasa || '',
                    // Lo que devuelve la accion 'partos', con los nombres del backend.
                    id_vaca: p.id_vaca, fecha: p.fecha_parto, hora: p.hora_nacimiento,
                    tipo_parto: p.tipo_parto, sexo: p.sexo, id_ternero: t.id_ternero,
@@ -265,11 +300,24 @@ async function cargarParto(page, vaca, ternero) {
       inp.value = i === 0 ? t : String(Number(t) + 1);
       inp.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    // Caravana SENASA: 6 digitos por cria, obligatoria desde v15.
+    document.querySelectorAll('[data-senasa]').forEach((inp, i) => {
+      inp.value = String(100000 + (Number(t) % 900000) + i);
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    });
   }, vaca, ternero);
   await page.click('#btnGuardar');
   await new Promise((r) => setTimeout(r, 350));
   await cerrarCartel(page);
 }
+
+
+/** Caravana SENASA de 6 digitos en cada cria viva: obligatoria desde v15. */
+const llenarSenasa = (page) => page.evaluate(() => {
+  document.querySelectorAll('[data-senasa]').forEach((inp, i) => {
+    if (!/^\d{6}$/.test(inp.value)) { inp.value = String(300000 + i); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+  });
+});
 
 /** El cartel de exito tapa el formulario: hay que cerrarlo para seguir cargando. */
 const cerrarCartel = (page) => page.evaluate(() => {
@@ -404,6 +452,10 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('aparecen las pestañas', await visible(page, '.tabs'));
     check('guarda la sesion',
           await page.evaluate(() => (JSON.parse(localStorage.getItem('sesion') || '{}')).email) === DISPOSITIVO);
+    check('con la credencial propia de 30 dias', await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('sesion') || '{}');
+      return /^ses-/.test(s.token || '') && Math.round((s.hasta - Date.now()) / 86400000) === 30;
+    }));
     check('AJUSTES OCULTO para la cuenta de dispositivo',
           !(await visible(page, '.tab[data-v="config"]')));
     check('bajo las listas del Maestro',
@@ -586,6 +638,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       const b = document.querySelector('[data-brixternero="1"]');
       b.value = '29'; b.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('el cartel de confirmacion aparece', await visible(page, '#modalOk'));
@@ -649,6 +702,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
     });
     await esperar(300);
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('no guarda dos hembras con el codigo 8', !(await visible(page, '#modalOk')));
@@ -673,6 +727,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     check('la cria muerta pierde su ficha de calostro',
           await page.$$eval('#calostros .subcard', (c) => c.length) === 1);
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(500);
     check('el cartel avisa la cria muerta',
@@ -754,6 +809,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       const i = document.querySelector('[data-ternero]');
       i.value = t; i.dispatchEvent(new Event('input', { bubbles: true }));
     }, '208', '9093');
+    await llenarSenasa(page);
     await page.click('#btnGuardar');
     await esperar(400);
     check('sin señal el cartel avisa que queda en espera',
@@ -796,31 +852,47 @@ const visible = (page, sel) => page.evaluate((s) => {
           new Set(recibidos).size === uuidsVistos.size,
           `recibidos unicos ${new Set(recibidos).size} vs escritos ${uuidsVistos.size}`);
 
-    console.log('\n8. No poder renovar el token NO es una sesion caida');
-    /* En la tablet, One Tap se apaga solo (cooldown, cookies de terceros): si
-       cada timeout pintara "Sesion vencida", el cartel estaria en rojo casi todo
-       el dia mintiendo. La cola tiene que aguantar sin gritar. */
-    await page.evaluate(() => {                       // credencial vencida y sin renovacion
-      idToken = { valor: 'viejo', exp: Date.now() - 1000 };   // la que usa la app, en memoria
+    console.log('\n8. Con la credencial de 30 dias, el token de Google vencido no frena nada');
+    /* Antes cada parto dependia de renovar el id_token de Google (dura 1 h) con
+       One Tap, que en la tablet falla seguido: la cola quedaba "Sesion vencida"
+       cada hora. Ahora el login deja una credencial propia del backend y la cola
+       sube con esa, aunque Google no conteste. */
+    await page.evaluate(() => {                       // Google vencido y sin renovacion
+      idToken = { valor: 'viejo', exp: Date.now() - 1000 };
       localStorage.setItem('idToken', JSON.stringify(idToken));
       fallosToken = 0; sesionVencida = false;
       window.__auto = false;
     });
     await cargarParto(page, '999', '9099');
+    c = await esperarSync(page, 15);
+    check('el parto sube igual', c.pendientes === 0, JSON.stringify(c));
+    check('la fila llego', filas.length === filasAntes + 4, 'filas=' + filas.length);
+    let badge = await badgeQuieto(page);
+    check('y el cartel queda en verde', /Sincronizado/.test(badge), badge);
+
+    console.log('\n8b. Sin credencial propia (sesion anterior a r7), no poder renovar NO es una sesion caida');
+    await page.evaluate(() => {
+      sesion.token = ''; localStorage.setItem('sesion', JSON.stringify(sesion));
+      idToken = { valor: 'viejo', exp: Date.now() - 1000 };
+      localStorage.setItem('idToken', JSON.stringify(idToken));
+      fallosToken = 0; sesionVencida = false;
+      window.__auto = false;
+    });
+    await cargarParto(page, '998', '9098');
     await esperar(1200);
     c = await contarLocal(page);
     check('el parto queda pendiente', c.pendientes === 1, JSON.stringify(c));
     await esperar(9000);                              // que venza el intento de renovar
     c = await contarLocal(page);
     check('sigue guardado, no se perdio', c.pendientes === 1, JSON.stringify(c));
-    let badge = await badgeQuieto(page);
+    badge = await badgeQuieto(page);
     check('el badge NO grita sesion vencida al primer fallo',
           !/Sesión vencida/.test(badge), badge);
     check('pero avisa que hay algo en espera', /en espera/.test(badge), badge);
-    check('no se mando nada sin credencial valida', filas.length === filasAntes + 3,
+    check('no se mando nada sin credencial valida', filas.length === filasAntes + 4,
           'filas=' + filas.length);
 
-    console.log('\n8b. Al tercer fallo seguido si se avisa');
+    console.log('\n8c. Al tercer fallo seguido si se avisa');
     for (let i = 0; i < 2; i++) {
       await page.evaluate(() => dispatchEvent(new Event('online')));
       await esperar(9500);
@@ -831,9 +903,9 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await contarLocal(page);
     check('y el parto sigue intacto', c.pendientes === 1, JSON.stringify(c));
 
-    console.log('\n8c. Un rechazo del backend se cree a la primera');
-    /* Esta es la unica senal autoritativa: el backend es el que verifica el
-       token contra Google. Con un "sesion:false" no hace falta esperar tres. */
+    console.log('\n8d. Un rechazo del backend se cree a la primera');
+    /* Esta es la unica senal autoritativa: el backend es el que verifica la
+       credencial. Con un "sesion:false" no hace falta esperar tres. */
     rechazarSesion = true;
     await page.evaluate((cred) => {
       window.__cred = cred; window.__auto = true;
@@ -845,17 +917,19 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1500);
     badge = await badgeQuieto(page);
     check('el rechazo del servidor si la marca vencida', /Sesión vencida/.test(badge), badge);
-    check('sin escribir ninguna fila', filas.length === filasAntes + 3, 'filas=' + filas.length);
+    check('sin escribir ninguna fila', filas.length === filasAntes + 4, 'filas=' + filas.length);
     rechazarSesion = false;
 
-    console.log('\n9. Renovada la sesion, se recupera solo');
+    console.log('\n9. Renovada la sesion, se recupera solo y de paso recibe la credencial propia');
     await page.evaluate((cred) => {
       window.__cred = cred; window.__auto = true;
       dispatchEvent(new Event('online'));
     }, jwtFalso(DISPOSITIVO, 60));
     c = await esperarSync(page, 15);
     check('la cola se drena', c.pendientes === 0, JSON.stringify(c));
-    check('la fila llego', filas.length === filasAntes + 4, 'filas=' + filas.length);
+    check('la fila llego', filas.length === filasAntes + 5, 'filas=' + filas.length);
+    check('una sesion vieja consigue la credencial sin volver a entrar',
+          await page.evaluate(() => /^ses-/.test((JSON.parse(localStorage.getItem('sesion') || '{}')).token || '')));
 
     console.log('\n10. Reintento del mismo parto');
     const antes = filas.length;
@@ -951,6 +1025,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     console.log('\n11d. El peso lo carga quien cargo el parto');
     await apretar(MAS); await soltar();                       // 43 kg
     await page.select('#fOperario', 'Griselda');
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     check('Griselda no puede pesar un parto de Julio', await visible(page, '#v-form'),
@@ -962,6 +1037,7 @@ const visible = (page, sel) => page.evaluate((s) => {
           !ediciones.some((e) => e.uuid === (filas.find((f) => f.vaca === '7001') || {}).uuid));
 
     await page.select('#fOperario', 'Julio');
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     await esperarSync(page, 15);
@@ -982,6 +1058,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate(() => {
       [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val === '3').click();
     });
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(400);
     await esperarSync(page, 15);
@@ -1030,6 +1107,7 @@ const visible = (page, sel) => page.evaluate((s) => {
       document.querySelector('[data-caja="sexoc:1"] [data-val="Hembra"]').click();
     });
     await esperar(300);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(500);
     check('agregar una cria NO pide confirmacion', !(await visible(page, '#modalConf')));
@@ -1048,6 +1126,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     await elegirSexo(page, 6);
     await esperar(400);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(500);
     check('anular una cria SI pide confirmacion', await visible(page, '#modalConf'));
@@ -1057,6 +1136,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(400);
     check('cancelar no manda nada',
           filas.filter((f) => f.vaca === '8100' && !f.anulada).length === 2);
+
+    await llenarSenasa(page);
 
     await page.click('#btnGuardarEd');
     await esperar(400);
@@ -1113,7 +1194,7 @@ const visible = (page, sel) => page.evaluate((s) => {
 
     const propios = await page.$$eval('.listrow', (r) => r.length);
     // Otra tablet carga un parto: llega a la planilla sin pasar por esta.
-    const hoyISO = await page.evaluate(() => listaFecha);
+    const hoyISO = await page.evaluate(() => fechasPosibles()[0].iso);
     filas.push({ uuid: 'u-de-otra-tablet', id_vaca: '4242', vaca: '4242', fecha: hoyISO,
                  hora: '05:30', tipo_parto: '1 Normal', sexo: '1 Hembra Viva',
                  id_ternero: '9999', estado_cria: 'Vivo', peso: 41, cria: '1/1',
@@ -1160,14 +1241,12 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(200);
     await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[1].click());
     await esperar(400);
-    const fechas = await page.evaluate(() => ({ form: st.fecha, lista: listaFecha }));
-    check('el formulario se fue a ayer', fechas.form !== fechas.lista, JSON.stringify(fechas));
+    const fechas = await page.evaluate(() => ({ form: st.fecha, hoy: fechasPosibles()[0].iso }));
+    check('el formulario se fue a ayer', fechas.form !== fechas.hoy, JSON.stringify(fechas));
     await page.evaluate(() => ver('list'));
     await esperar(400);
-    check('la lista siguio en hoy',
-          await page.evaluate(() => document.querySelectorAll('#cListaFecha .chip')[0]
-            .classList.contains('on')));
-    check('y los partos de hoy siguen a la vista', !!(await filaDe('7001')));
+    check('la tabla no tiene seleccion de dia: muestra todo', !(await page.$('#cListaFecha')) &&
+          !!(await filaDe('7001')) && !!(await filaDe('4242')));
     await page.evaluate(() => document.querySelectorAll('#cFecha .chip')[0].click());
     await esperar(300);
 
@@ -1234,6 +1313,35 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(250);
     check('tocar afuera cierra el menu', !(await visible(page, '#menuCuenta')));
 
+    console.log('\n12b2. Sin caravana SENASA el parto no se guarda');
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await elegirSexo(page, 1);
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '6055';
+      const t = document.querySelector('[data-ternero]'); t.value = '8055'; t.dispatchEvent(new Event('input', { bubbles: true }));
+      const sn = document.querySelector('[data-senasa]'); sn.value = '12345'; sn.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('con 5 digitos no guarda y dice que falta', !(await visible(page, '#modalOk')) &&
+          /caravana SENASA/.test(await page.$eval('#toast', (e) => e.textContent)), await page.$eval('#toast', (e) => e.textContent));
+    check('el parto NO quedo guardado', (await leerPayload(page, '6055')) === undefined);
+    check('el campo solo acepta digitos', await page.evaluate(() => {
+      const sn = document.querySelector('[data-senasa]'); sn.value = '12a4567'; sn.dispatchEvent(new Event('input', { bubbles: true })); return sn.value === '124567';
+    }));
+    await page.evaluate(() => { const sn = document.querySelector('[data-senasa]'); sn.value = '123456'; sn.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('con 6 digitos guarda', await visible(page, '#modalOk'));
+    await cerrarCartel(page);
+    check('y el payload la lleva con formato 2', await page.evaluate(async () => {
+      const r = (await todosLocal()).find((x) => x.payload.id_vaca === '6055');
+      return r && r.payload.formato === 2 && r.payload.terneros[0].caravana_senasa === '123456';
+    }));
+    c = await esperarSync(page, 15);
+    check('y sube', c.pendientes === 0, JSON.stringify(c));
+
     console.log('\n12c. Cerrar sesion NO se lleva los partos de la cola');
     caidoHasta = Date.now() + 60000;                   // que el parto quede esperando
     const quienCargo = await page.$eval('#fOperario', (e) => e.value);
@@ -1271,7 +1379,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     // red": solo cuenta intentos). Lo que el respaldo garantiza es la forma.
     check('con intentos y error como campos', pendJson && 'intentos' in pendJson[0] && 'error' in pendJson[0] && 'creado' in pendJson[0],
           JSON.stringify(pendJson && Object.keys(pendJson[0])));
-    check('sin credenciales adentro', !/id_token/.test(volcado));
+    check('sin credenciales adentro', !/id_token|sesion_token/.test(volcado));
     check('avisa cuantos son',
           /1 sin sincronizar/.test(await page.$eval('#pendientesEstado', (e) => e.textContent)));
     await page.click('#btnCerrarPendientes');
@@ -1294,27 +1402,19 @@ const visible = (page, sel) => page.evaluate((s) => {
     }));
     await page.click('.tab[data-v="list"]');
     await esperar(500);
-    check('en Hoy no aparece', !(await page.$eval('#filas', (e) => /6060/.test(e.textContent))));
-    check('pero el aviso de arriba lo cuenta y manda al chip',
-          await visible(page, '#avisoFuera') &&
-          /15\/01\/2026/.test(await page.$eval('#avisoFuera', (e) => e.textContent)) &&
-          /Sin sincronizar/.test(await page.$eval('#avisoFuera', (e) => e.textContent)),
-          await page.$eval('#avisoFuera', (e) => e.textContent));
-    check('el chip existe y cuenta 1',
-          await visible(page, '#chipPendientes') && (await page.$eval('#chipPendN', (e) => e.textContent)) === '1');
-    await page.click('#chipPendientes');
-    await esperar(400);
-    check('el chip queda seleccionado', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
-    check('aparece el parto viejo', await page.$eval('#filas', (e) => /6060/.test(e.textContent)));
-    check('con su fecha en la fila', await page.$eval('#filas', (e) => /15\/01\/2026/.test(e.textContent)));
-    check('el KPI cambia de rotulo', (await page.$eval('#kTotL', (e) => e.textContent)) === 'Sin sincronizar' &&
-          (await page.$eval('#kTot', (e) => e.textContent)) === '1');
-    check('sin aviso de "otro dia" ni de remotos',
-          !(await visible(page, '#avisoFuera')) && !(await visible(page, '#avisoRemotos')));
+    check('aparece en la tabla con su fecha, aunque sea de hace meses',
+          await page.$eval('#filas', (e) => /6060/.test(e.textContent) && /15\/01\/2026/.test(e.textContent)));
+    check('con la pastilla Sin sincronizar y contado en el KPI',
+          (await filaDe('6060')).pill === 'Sin sincronizar' && Number(await page.$eval('#kPend', (e) => e.textContent)) >= 1);
+    // El servidor esta caido en este tramo: la tabla avisa que muestra la ultima copia.
+    check('con el servidor caido avisa que es la ultima copia', await visible(page, '#avisoRemotos'));
 
     // Corregirlo desde aca NO le cambia la fecha: antes el formulario, que solo
     // ofrece Hoy y Ayer, lo movia a hoy en silencio.
-    await page.click('#filas [data-editar]');
+    await page.evaluate(async () => {
+      const u = (await todosLocal()).find((x) => x.payload.id_vaca === '6060').uuid;
+      document.querySelector(`[data-editar="${u}"]`).click();
+    });
     await esperar(400);
     check('abre el formulario', await visible(page, '#v-form'));
     check('la fecha del parto se respeta', (await page.evaluate(() => st.fecha)) === '2026-01-15',
@@ -1324,7 +1424,6 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.click('#btnCancelarEd');
     await esperar(400);
     check('cancelar vuelve a la lista', await visible(page, '#v-list'));
-    check('y sigue en "Sin sincronizar"', await page.$eval('#chipPendientes', (e) => e.classList.contains('on')));
     const fechaTrasCancelar = await page.evaluate(() => new Promise((ok) => {
       const req = indexedDB.open('preparto', 1);
       req.onsuccess = () => {
@@ -1333,10 +1432,6 @@ const visible = (page, sel) => page.evaluate((s) => {
       };
     }));
     check('el registro guardado conserva su fecha', fechaTrasCancelar === '2026-01-15', fechaTrasCancelar);
-    // Volver a Hoy para que el resto de la corrida vea la lista de siempre.
-    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
-    await esperar(300);
-    check('Hoy vuelve a quedar seleccionado', !(await page.$eval('#chipPendientes', (e) => e.classList.contains('on'))));
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
@@ -1363,12 +1458,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await esperarSync(page, 20);
     check('y el parto de la cola entra igual', c.pendientes === 0, JSON.stringify(c));
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(300);
-    check('con la cola vacia, "Sin sincronizar" lo dice',
-          /No hay partos sin sincronizar/.test(await page.$eval('#filas', (e) => e.textContent)) &&
-          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+    await esperar(500);
+    check('con la cola vacia, el KPI Sin sincronizar da 0', (await page.$eval('#kPend', (e) => e.textContent)) === '0');
     await page.click('.tab[data-v="form"]');
     await esperar(200);
     check('con el operario que lo cargo, no con el que lo subio',
@@ -1394,8 +1485,6 @@ const visible = (page, sel) => page.evaluate((s) => {
     caidoHasta = Date.now() + 60000;
     await page.click('.tab[data-v="list"]');
     await esperar(200);
-    // El escenario anterior deja la lista en "Sin sincronizar": volver a Hoy.
-    await page.evaluate(() => document.querySelector(`[data-chip="listaFecha"][data-val="${fechasPosibles()[0].iso}"]`).click());
     let hayBoton = false;
     for (let i = 0; i < 12 && !hayBoton; i++) {       // la lista se pinta cuando vuelve el fetch
       await esperar(250);
@@ -1408,6 +1497,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate((t) => {
       [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val !== t).click();
     }, tamboAhora);
+    await llenarSenasa(page);
     await page.click('#btnGuardarEd');
     await esperar(800);
     check('la correccion quedo en cola', await page.evaluate(async (u) =>
@@ -1433,11 +1523,9 @@ const visible = (page, sel) => page.evaluate((s) => {
           fantasma.revisar === true && fantasma.edicion === null && /ya no está en la planilla/.test(fantasma.error),
           JSON.stringify(fantasma));
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(400);
-    check('se ve en "Sin sincronizar" con la pastilla Revisar',
-          await page.$eval('#filas', (e) => /6070/.test(e.textContent) && /Revisar/.test(e.textContent)));
+    await esperar(500);
+    check('se ve en la tabla con la pastilla Revisar y el motivo',
+          (await filaDe('6070')).pill === 'Revisar' && /ya no está en la planilla/.test((await filaDe('6070')).txt));
     check('el operario NO ve Descartar', !(await page.$('[data-descartar]')));
 
     console.log('\n12g. Tres errores de servidor seguidos si cortan la tanda');
@@ -1460,28 +1548,37 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await esperarSync(page, 20);
     check('con el servidor sano entran los 4', c.pendientes === 0, JSON.stringify(c));
 
-    console.log('\n12h. "Otro dia" muestra cualquier fecha');
+    console.log('\n12h. Rango de fechas y buscador sobre la tabla');
     filas.push({ uuid: 'u-hace-un-mes', id_vaca: '3131', vaca: '3131', fecha: '2026-01-20',
                  hora: '04:10', tipo_parto: '1 Normal', sexo: '6 Macho Vivo', id_ternero: '7777',
+                 caravana_senasa: '777777',
                  estado_cria: 'Vivo', peso: 44, cria: '1/1', operario: 'Julio', tambo: '2',
                  cargado_en: '2026-01-20 04:30', dispositivo: 'tablet-2' });
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    check('el chip Otro dia existe', await visible(page, '#chipOtroDia'));
-    await page.evaluate(() => {
-      const i = document.getElementById('fOtroDia');
-      i.value = '2026-01-20';
-      i.dispatchEvent(new Event('change', { bubbles: true }));
-    });
     await esperar(900);
-    check('el chip queda seleccionado con la fecha',
-          await page.$eval('#chipOtroDia', (e) => e.classList.contains('on') && /20\/01\/2026/.test(e.textContent)));
-    check('trae el parto de esa fecha desde la planilla',
-          await page.$eval('#filas', (e) => /3131/.test(e.textContent)));
-    check('el KPI dice de que dia es', /20\/01\/2026/.test(await page.$eval('#kTotL', (e) => e.textContent)));
-    await page.click('[data-chip="listaFecha"][data-val="' + new Date().toISOString().slice(0, 10) + '"]');
+    check('el parto de hace meses aparece sin elegir nada', !!(await filaDe('3131')));
+    check('el operario NO puede corregir un parto de la planilla', !(await page.$('[data-editar-remoto]')) &&
+          /otra tablet/.test((await filaDe('3131')).txt));
+    const nAntes = await page.$$eval('.listrow', (r) => r.length);
+    await page.evaluate(() => {
+      document.getElementById('fDesde').value = '2026-01-20';
+      document.getElementById('fHasta').value = '2026-01-20';
+      document.getElementById('fHasta').dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await esperar(400);
+    check('el rango deja solo ese dia', (await page.$$eval('.listrow', (r) => r.length)) === 1 && !!(await filaDe('3131')),
+          String(await page.$$eval('.listrow', (r) => r.length)));
+    check('el KPI dice cuantos de cuantos', /de \d+/.test(await page.$eval('#kTotL', (e) => e.textContent)));
+    check('aparece Limpiar', await visible(page, '#btnLimpiarFiltros'));
+    await page.click('#btnLimpiarFiltros');
+    await esperar(400);
+    check('Limpiar vuelve a mostrar todo', (await page.$$eval('.listrow', (r) => r.length)) === nAntes);
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '777777'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por caravana SENASA encuentra el parto', (await page.$$eval('.listrow', (r) => r.length)) === 1 && !!(await filaDe('3131')));
+    check('y la caravana se ve en la fila', /S\s*777777/.test((await filaDe('3131')).txt), (await filaDe('3131')).txt);
+    await page.click('#btnLimpiarFiltros');
     await esperar(300);
-    check('Hoy vuelve', !(await page.$eval('#chipOtroDia', (e) => e.classList.contains('on'))));
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
@@ -1515,9 +1612,7 @@ const visible = (page, sel) => page.evaluate((s) => {
 
     console.log('\n14a. El admin descarta la correccion fantasma');
     await page.click('.tab[data-v="list"]');
-    await esperar(300);
-    await page.click('#chipPendientes');
-    await esperar(400);
+    await esperar(500);
     check('el fantasma sigue ahi', await page.$eval('#filas', (e) => /6070/.test(e.textContent)));
     check('el admin SI ve Descartar', !!(await page.$('[data-descartar]')));
     await page.click('[data-descartar]');
@@ -1527,7 +1622,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(1200);
     check('como la planilla ya no lo tiene, se va de la tablet',
           !(await page.$eval('#filas', (e) => /6070/.test(e.textContent))) &&
-          (await page.$eval('#chipPendN', (e) => e.textContent)) === '0');
+          (await page.$eval('#kPend', (e) => e.textContent)) === '0');
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 
@@ -1554,6 +1649,71 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.evaluate(() => dispatchEvent(new Event('online')));
     await esperar(1500);
     check('y el servidor nunca lo recibe', !filas.some((f) => f.vaca === '6090') && !recibidos.includes(uuid6090));
+
+    console.log('\n14c. La tabla ordena por columna');
+    filas.push({ uuid: 'u-viejo-2', id_vaca: '2020', vaca: '2020', fecha: '2026-02-02', hora: '06:00',
+                 tipo_parto: '1 Normal', sexo: '1 Hembra Viva', id_ternero: '8888', estado_cria: 'Vivo',
+                 peso: 38, cria: '1/1', operario: 'Trini', tambo: '1', cargado_en: '2026-02-02 06:30',
+                 dispositivo: 'tablet-2' });
+    await page.click('.tab[data-v="list"]');
+    await esperar(1000);
+    const primera = () => page.$eval('.listrow', (e) => e.textContent.replace(/\s+/g, ' '));
+    check('trae partos de varias fechas, locales y de la planilla',
+          await page.$eval('#filas', (e) => /3131/.test(e.textContent) && /2020/.test(e.textContent) && /6071/.test(e.textContent)));
+    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082/.test(await primera()), await primera());
+    await page.click('#cabecera [data-orden="fecha"]');
+    await esperar(400);
+    check('tocar Fecha invierte: el mas viejo primero', /15\/01\/2026/.test(await primera()), await primera());
+    const vacas = () => page.$$eval('.listrow .id', (e) => e.map((n) => Number(n.textContent.trim())));
+    const ordenada = (a, dir) => a.every((v, i) => i === 0 || (dir > 0 ? v >= a[i - 1] : v <= a[i - 1]));
+    await page.click('#cabecera [data-orden="id_vaca"]');
+    await esperar(400);
+    check('tocar ID Vaca ordena por vaca ascendente', ordenada(await vacas(), 1), JSON.stringify(await vacas()));
+    await page.click('#cabecera [data-orden="id_vaca"]');
+    await esperar(400);
+    check('y otra vez, descendente', ordenada(await vacas(), -1), JSON.stringify(await vacas()));
+    check('la flecha marca la columna', await page.$eval('#cabecera [data-orden="id_vaca"]', (e) => e.classList.contains('on') && /▼/.test(e.textContent)));
+    await page.click('#cabecera [data-orden="fecha"]');
+    await esperar(300);
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '3131'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por vaca deja solo esa', await page.$eval('#filas', (e) => /3131/.test(e.textContent) && !/2020/.test(e.textContent)));
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = '8888'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(400);
+    check('buscar por caravana tambien', await page.$eval('#filas', (e) => /2020/.test(e.textContent) && !/3131/.test(e.textContent)));
+    await page.evaluate(() => { const i = document.getElementById('fBuscar'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await esperar(300);
+
+    console.log('\n14d. El admin corrige un parto de la planilla, vaca y fecha incluidas');
+    check('hay Corregir en el parto remoto', !!(await page.$('[data-editar-remoto="u-hace-un-mes"]')));
+    await page.click('[data-editar-remoto="u-hace-un-mes"]');
+    await esperar(900);
+    check('abre el formulario con ese parto', await visible(page, '#v-form') &&
+          (await page.$eval('#fVaca', (e) => e.value)) === '3131' && (await page.evaluate(() => st.fecha)) === '2026-01-20');
+    check('nada bloqueado para el admin', await page.evaluate(() =>
+      !document.getElementById('fVaca').classList.contains('bloqueado') &&
+      !document.getElementById('cFecha').classList.contains('bloqueado') &&
+      !document.querySelector('#terneros [data-ternero]').classList.contains('bloqueado')));
+    check('ofrece Otra fecha', await visible(page, '#chipOtraFecha'));
+    check('el aviso dice que es admin', /admin/.test(await page.$eval('#avisoEdicion', (e) => e.textContent)));
+    await page.evaluate(() => { const v = document.getElementById('fVaca'); v.value = '3132'; v.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.evaluate(() => { const i = document.getElementById('fOtraFecha'); i.value = '2026-01-21'; i.dispatchEvent(new Event('change', { bubbles: true })); });
+    await esperar(300);
+    check('la fecha elegida queda en el estado', (await page.evaluate(() => st.fecha)) === '2026-01-21');
+    const edAntes = ediciones.length;
+    await llenarSenasa(page);
+    await page.click('#btnGuardarEd');
+    for (let i = 0; i < 40 && ediciones.length === edAntes; i++) await esperar(250);
+    const ed = ediciones[ediciones.length - 1] || {};
+    check('la correccion llego al servidor con la identidad nueva',
+          ediciones.length > edAntes && ed.uuid === 'u-hace-un-mes' && ed.id_vaca === '3132' &&
+          ed.fecha_parto === '2026-01-21' && typeof ed.hora_nacimiento === 'string' && typeof ed.tipo_parto === 'string' &&
+          ed.terneros && ed.terneros[0] && ed.terneros[0].id_ternero === '7777',
+          JSON.stringify(ed).slice(0, 220));
+    check('la copia local (sombra) sigue la identidad nueva', await page.evaluate(async () => {
+      const r = (await todosLocal()).find((x) => x.uuid === 'u-hace-un-mes');
+      return !!r && r.sombra === true && r.payload.id_vaca === '3132' && r.payload.fecha_parto === '2026-01-21' && r.estado === 'ok';
+    }));
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 

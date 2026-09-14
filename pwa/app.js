@@ -109,8 +109,13 @@ async function abrirSesion(jwt) {
   catch (e) { return { ok: false, error: 'sin conexion' }; }
   if (!r.ok) return r;
 
+  // Con backend r7 llega la credencial propia de 30 dias: desde aca la tablet
+  // no vuelve a depender del token de Google (1 h) para sincronizar. Con un
+  // backend anterior no viene, y se sigue como antes.
   sesion = { email: r.email, admin: !!r.admin,
-             hasta: Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
+             token: r.sesion_token || '',
+             hasta: r.sesion_hasta ? Date.parse(r.sesion_hasta)
+                                   : Date.now() + (CONFIG.DIAS_SESION || 30) * 86400000 };
   localStorage.setItem('sesion', JSON.stringify(sesion));
   sesionVencida = false;
   fallosToken = 0;
@@ -132,8 +137,16 @@ function cerrarSesion() {
 }
 
 const tokenSirve = (margen) => !!idToken.valor && idToken.exp - margen > Date.now();
-/** Credencial propia del backend (llega con r7); hasta entonces siempre falso. */
+/** La credencial propia del backend (30 dias) esta y no vencio. */
 const sesionSirve = () => !!(sesion && sesion.token) && sesion.hasta - 60000 > Date.now();
+
+/** Cualquier respuesta puede traer credencial nueva (login o renovacion silenciosa). */
+function guardarCredencial(r) {
+  if (!r || !r.sesion_token || !sesion) return;
+  sesion.token = r.sesion_token;
+  if (r.sesion_hasta) sesion.hasta = Date.parse(r.sesion_hasta);
+  localStorage.setItem('sesion', JSON.stringify(sesion));
+}
 
 /**
  * Devuelve un ID token vigente, renovandolo en silencio si hace falta.
@@ -274,6 +287,7 @@ const sinCalostro = () => !st.cal.brixExc && Number(st.cal.brix) === SIN_CALOSTR
 function nuevoTernero() {
   return {
     id_ternero: '', raza: (listas.raza || [''])[0], peso: null,
+    caravana_senasa: '',              // 6 digitos, obligatoria desde v15
     sexo: '', vive: true,
     cal: {
       // De quien tomo el calostro ESTE ternero. Por defecto, su propia madre.
@@ -319,12 +333,17 @@ function fechasPosibles() {
    del formulario, cargar un parto tardio como "Ayer" dejaba la lista clavada en
    ayer: el operario veia los partos del dia anterior con el cartel en verde y lo
    leia como que la app perdio los de hoy. */
-let listaFecha = '';
+// Desde v15 la lista es UNA: todo lo de la planilla mas lo local. Se conserva
+// el nombre para no tocar todos los llamados.
+let listaFecha = 'todos';
 /* Valor especial del chip de la lista: en vez de un dia, TODO lo que esta sin
    sincronizar, de cualquier fecha. Un parto trabado de hace una semana no
    aparecia en ninguna pantalla (Hoy/Ayer no lo alcanzan) y el operario no
    tenia como verlo ni corregirlo. */
 const LISTA_PENDIENTES = 'pendientes';
+/* "Todos": el historico completo de la planilla mas lo local, con buscador. */
+const LISTA_TODOS = 'todos';
+const esAdmin = () => !!(sesion && sesion.admin);
 const sinSubir = (r) => r.estado !== 'ok' || !!r.edicion || !!r.cambioSexo || !!r.revisarEdicion;
 
 function pintarFechas() {
@@ -340,27 +359,15 @@ function pintarFechas() {
   $('cFecha').innerHTML = delForm.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
              data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
-  ).join('');
-
-  const cont = $('cListaFecha');
-  if (!cont) return;
-  // Cualquier fecha valida se respeta (chip "Otro dia"); solo lo roto se reancla en Hoy.
-  if (listaFecha !== LISTA_PENDIENTES && !/^\d{4}-\d{2}-\d{2}$/.test(listaFecha)) listaFecha = opciones[0].iso;
-  const nPend = ultimoPend + ultimoErr;
-  const otroDia = listaFecha !== LISTA_PENDIENTES && !opciones.some((o) => o.iso === listaFecha);
-  cont.innerHTML = opciones.map((o) =>
-    `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
-             data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
   ).join('') +
-    // El input cubre el chip entero, invisible: tocar el chip abre el calendario.
-    `<label class="chip fecha ${otroDia ? 'on' : ''}" id="chipOtroDia" style="position:relative;cursor:pointer">
-       Otro día<span class="dia">${otroDia ? aDDMMAAAA(listaFecha) : 'elegir fecha'}</span>
-       <input type="date" id="fOtroDia" value="${otroDia ? listaFecha : ''}" max="${opciones[0].iso}"
-              aria-label="Ver los partos de otro día"
-              style="position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;padding:0;border:0">
-     </label>` +
-    `<button type="button" class="chip fecha warn ${listaFecha === LISTA_PENDIENTES ? 'on' : ''}"
-             data-chip="listaFecha" data-val="${LISTA_PENDIENTES}" id="chipPendientes">Sin sincronizar<span class="dia">todos los días · <b id="chipPendN">${nPend}</b></span></button>`;
+    // Un admin corrigiendo puede poner cualquier fecha: la carga sigue siendo Hoy/Ayer.
+    (st.editando && esAdmin()
+      ? `<label class="chip fecha" id="chipOtraFecha" style="position:relative;cursor:pointer">
+           Otra fecha<span class="dia">elegir</span>
+           <input type="date" id="fOtraFecha" value="${st.fecha}" max="${opciones[0].iso}" aria-label="Fecha del parto"
+                  style="position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;padding:0;border:0">
+         </label>` : '');
+
 }
 
 const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0));
@@ -444,6 +451,11 @@ function pintarTerneros() {
           <div class="lab">ID Ternero</div>
           <input type="text" inputmode="numeric" placeholder="Nº de caravana"
                  value="${t.id_ternero}" data-ternero="${i}">
+        </label>
+        <label class="f">
+          <div class="lab">Caravana SENASA <span class="req">*</span></div>
+          <input type="text" inputmode="numeric" placeholder="6 dígitos" maxlength="6" pattern="[0-9]{6}"
+                 value="${t.caravana_senasa || ''}" data-senasa="${i}">
         </label>
         <div>
           <div class="lab">Raza</div>
@@ -595,6 +607,17 @@ document.addEventListener('click', (e) => {
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
   const ds = e.target.closest('[data-descartar]');
   if (ds) return descartarCambio(ds.dataset.descartar);
+  const er = e.target.closest('[data-editar-remoto]');
+  if (er) return abrirEdicionRemota(er.dataset.editarRemoto);
+  const ord = e.target.closest('[data-orden]');
+  if (ord) {
+    orden = { col: ord.dataset.orden, dir: orden.col === ord.dataset.orden ? -orden.dir : (ord.dataset.orden === 'fecha' ? -1 : 1) };
+    return refrescar();
+  }
+  if (e.target.closest('#btnLimpiarFiltros')) {
+    $('fBuscar').value = ''; $('fDesde').value = ''; $('fHasta').value = '';
+    return refrescar();
+  }
   const chip = e.target.closest('[data-chip]');
   if (chip) return elegirChip(chip);
   const step = e.target.closest('[data-step]');
@@ -608,16 +631,20 @@ document.addEventListener('click', (e) => {
   if (tab) return ver(tab.dataset.v);
 });
 
-// "Otro dia": el calendario elige la fecha y la lista la sigue, como un chip mas.
+// Filtros de la tabla: filtran en memoria lo ya bajado.
+document.addEventListener('input', (e) => { if (e.target && e.target.id === 'fBuscar') refrescar(); });
+document.addEventListener('change', (e) => { if (e.target && (e.target.id === 'fDesde' || e.target.id === 'fHasta')) refrescar(); });
+
+// "Otra fecha" (admin corrigiendo): la fecha del parto pasa a ser la elegida.
 document.addEventListener('change', (e) => {
-  if (!e.target || e.target.id !== 'fOtroDia') return;
+  if (!e.target || e.target.id !== 'fOtraFecha') return;
   const iso = e.target.value;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
-  listaFecha = iso;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !st.editando || !esAdmin()) return;
+  st.fecha = iso;
   pintarFechas();
-  refrescar();
-  bajarPartosDelDia(iso);
+  pintarModoEdicion();
 });
+
 
 function elegirChip(chip) {
   const clave = chip.dataset.chip;
@@ -802,6 +829,12 @@ document.addEventListener('input', (e) => {
     if (st.terneros.length > 1) pintarCalostros();
     return;
   }
+  const sn = e.target.closest('[data-senasa]');
+  if (sn) {
+    sn.value = sn.value.replace(/\D/g, '').slice(0, 6);      // solo digitos, 6 como mucho
+    st.terneros[+sn.dataset.senasa].caravana_senasa = sn.value;
+    return;
+  }
   const o = e.target.closest('[data-origen]');
   if (o) {
     const i = +o.dataset.origen;
@@ -832,7 +865,11 @@ function armarPayload() {
     sexo: st.sexo,
     terneros: [],
     tambo: st.tambo,
-    notas: $('fNotas').value.trim()
+    notas: $('fNotas').value.trim(),
+    // Version del payload: desde 2 la caravana SENASA es obligatoria. Un
+    // backend viejo lo ignora; el nuevo deja pasar sin caravana solo a las
+    // colas anteriores, que no traen este numero.
+    formato: 2
   };
 
   if (!esMuerto()) {
@@ -846,6 +883,7 @@ function armarPayload() {
     p.terneros = st.terneros.map((t) => {
       const cria = {
         id_ternero: String(t.id_ternero).trim(),
+        caravana_senasa: String(t.caravana_senasa || '').trim(),
         raza: t.raza,
         sexo: t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '',
         vive: t.vive
@@ -891,6 +929,7 @@ function faltantes(p) {
       const cual = varias ? ` (ternero ${i + 1})` : '';
       if (!t.vive) return;                       // cria muerta: no lleva datos
       if (!String(t.id_ternero).trim()) f.push('ID de ternero' + cual);
+      if (!/^\d{6}$/.test(String(t.caravana_senasa || '').trim())) f.push('caravana SENASA de 6 dígitos' + cual);
       if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
       if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
       if (t.cal.origen === ORIGEN_OTRA) {
@@ -1001,6 +1040,7 @@ function aEstado(p) {
         ? ORIGEN_OTRA : ORIGEN_PROPIA);
     return {
       id_ternero: t.id_ternero || '',
+      caravana_senasa: t.caravana_senasa && String(t.caravana_senasa) !== VACIO ? String(t.caravana_senasa) : '',
       raza: t.raza || (listas.raza || [''])[0],
       peso: t.peso === undefined || t.peso === '' ? null : +t.peso,
       sexo: t.sexo || '',
@@ -1019,6 +1059,25 @@ function aEstado(p) {
   $('fNotas').value = p.notas || '';
   opciones($('fOperario'), listas.operario, p.operario);
   opciones($('fHora'), listas.hora_nacimiento, p.hora_nacimiento);
+}
+
+/* Admin: corregir un parto que esta en la planilla pero no en esta tablet. Se
+   baja completo (accion=parto) y se guarda como registro local "sombra": desde
+   ahi la correccion viaja por la misma cola que cualquier otra. */
+async function abrirEdicionRemota(uuid) {
+  if (!esAdmin()) return;
+  if ((await todosLocal()).some((r) => r.uuid === uuid)) return abrirEdicion(uuid, false);
+  if (!navigator.onLine) return avisar('Sin señal: ese parto está en la planilla, no en esta tablet', true);
+  let j;
+  try { j = await enviar({ accion: 'parto', uuid }); } catch (e) { j = null; }
+  if (!j || !j.ok || !j.parto) return avisar('No se pudo traer el parto: ' + ((j && j.error) || 'sin respuesta'), true);
+  const p = j.parto;
+  await guardarLocal({
+    uuid, estado: 'ok', intentos: 0, error: '', sombra: true,
+    creado: Date.parse(p.cargado_en) || Date.now(),
+    payload: p
+  });
+  return abrirEdicion(uuid, false);
 }
 
 async function abrirEdicion(uuid, focoPeso) {
@@ -1101,14 +1160,16 @@ function pintarModoEdicion() {
   const editando = !!st.editando;
   const aviso = $('avisoEdicion');
 
+  // Un admin cambia cualquier campo, identidad incluida. El operario, no.
+  const bloquear = editando && !esAdmin();
   BLOQUEADO_AL_EDITAR.forEach((id) => {
     const el = $(id);
-    if (el) el.classList.toggle('bloqueado', editando);
+    if (el) el.classList.toggle('bloqueado', bloquear);
   });
   // ID y raza identifican al animal, asi que normalmente no se tocan. Pero si
   // el sexo cambio puede haber una cria nueva, y una cria sin caravana no sirve.
   document.querySelectorAll('#terneros [data-ternero], #terneros [data-caja^="raza:"]')
-    .forEach((el) => el.classList.toggle('bloqueado', editando && !sexoCambio()));
+    .forEach((el) => el.classList.toggle('bloqueado', bloquear && !sexoCambio()));
 
   aviso.classList.toggle('hidden', !editando);
   if (!editando) return;
@@ -1118,6 +1179,9 @@ function pintarModoEdicion() {
     (sexoCambio()
       ? ` Cambiaste el <b>código de sexo</b>: se va a reescribir el parto entero,
          así que revisá los datos de cada cría.`
+      : esAdmin()
+      ? ` Como <b>admin</b> podés cambiar cualquier campo, incluidos vaca, fecha, hora,
+         tipo, operario, caravanas y notas. Queda registrado en la planilla quién lo cambió.`
       : ` Se pueden cambiar <b>sexo, peso, calostro y tambo</b>;
          el resto lo corrige Nahuel en la planilla.`) +
     `<button class="btn" type="button" id="btnCancelarEd">Cancelar</button>`;
@@ -1125,8 +1189,18 @@ function pintarModoEdicion() {
 }
 
 /** Lo que se manda al backend: el parto entero, que del otro lado se compara. */
-function armarEdicion() {
+/** Identidad del parto y de cada cria: solo la manda (y la aplica) un admin. */
+function identidadAdmin() {
   return {
+    fecha_parto: st.fecha,
+    hora_nacimiento: $('fHora').value,
+    tipo_parto: st.tipo_parto,
+    notas: $('fNotas').value.trim()
+  };
+}
+
+function armarEdicion() {
+  return Object.assign(esAdmin() ? identidadAdmin() : {}, {
     accion: 'editar',
     uuid: st.editando,
     operario: $('fOperario').value,
@@ -1143,9 +1217,12 @@ function armarEdicion() {
       if (!t.vive) return {};                      // cria muerta: no lleva nada
       const cria = { calostro: calostroDeLaCria(t.cal) };
       if (t.peso !== null) cria.peso = t.peso;
+      // La caravana va siempre: un parto viejo sin ella se completa asi.
+      if (String(t.caravana_senasa || '').trim()) cria.caravana_senasa = String(t.caravana_senasa).trim();
+      if (esAdmin()) { cria.id_ternero = t.id_ternero; cria.raza = t.raza; }
       return cria;
     })
-  };
+  });
 }
 
 /**
@@ -1163,7 +1240,7 @@ function faltantesEdicion(reg) {
     const cual = st.terneros.length > 1 ? ` (ternero ${i + 1})` : '';
     const pesoAntes = reg.payload.terneros[i] ? reg.payload.terneros[i].peso : undefined;
     const cambiaPeso = t.peso !== null && String(t.peso) !== String(pesoAntes);
-    if (cambiaPeso && quien !== autor) {
+    if (cambiaPeso && quien !== autor && !esAdmin()) {
       f.push(`el peso lo carga ${autor}, que fue quien cargó el parto`);
     }
     if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
@@ -1220,7 +1297,7 @@ async function guardarCambioSexo(reg) {
     reg.cambioSexo = null;
   } else {
     reg.payload = p;
-    reg.cambioSexo = {
+    reg.cambioSexo = Object.assign(esAdmin() ? Object.assign(identidadAdmin(), { id_vaca: p.id_vaca }) : {}, {
       accion: 'cambiar_sexo',
       uuid: reg.uuid,
       op_uuid: nuevoUuid(),          // idempotencia de ESTA operacion
@@ -1230,7 +1307,7 @@ async function guardarCambioSexo(reg) {
       calostro: p.calostro,
       tambo: p.tambo,
       terneros: p.terneros
-    };
+    });
     reg.edicion = null;              // el cambio de sexo la subsume
   }
   reg.error = '';
@@ -1281,6 +1358,12 @@ async function guardarEdicion() {
 
 /** Deja el parto local igual a como va a quedar la planilla. */
 function aplicarEnPayload(p, ed) {
+  if (esAdmin()) {
+    // La identidad la manda solo el admin; la copia local la sigue.
+    ['operario', 'id_vaca', 'fecha_parto', 'hora_nacimiento', 'tipo_parto', 'notas'].forEach((k) => {
+      if (ed[k] !== undefined) p[k] = ed[k];
+    });
+  }
   if (ed.tambo !== undefined) p.tambo = ed.tambo;
   if (ed.lts_madre !== undefined) p.lts_madre = ed.lts_madre;
   if (ed.calostro) p.calostro = Object.assign({}, p.calostro, ed.calostro);
@@ -1288,6 +1371,9 @@ function aplicarEnPayload(p, ed) {
     const destino = p.terneros[i];
     if (!destino || !t.calostro) return;
     if (t.peso !== undefined) destino.peso = t.peso;
+    if (t.caravana_senasa !== undefined) destino.caravana_senasa = t.caravana_senasa;
+    if (t.id_ternero !== undefined) destino.id_ternero = t.id_ternero;
+    if (t.raza !== undefined) destino.raza = t.raza;
     destino.calostro = Object.assign({}, destino.calostro, t.calostro);
   });
 }
@@ -1397,11 +1483,16 @@ async function enviar(payload) {
     const r = await fetch(cfg.url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ id_token: idToken.valor }, payload)),
+      // Van las dos credenciales: el backend prefiere la propia (30 dias) y cae
+      // al id_token de Google si esa no sirve. Un backend viejo ignora la propia.
+      body: JSON.stringify(Object.assign({ id_token: idToken.valor,
+                                           sesion_token: (sesion && sesion.token) || '' }, payload)),
       redirect: 'follow',
       signal: corte.signal
     });
-    return r.json();
+    const j = await r.json();
+    guardarCredencial(j);
+    return j;
   } finally {
     clearTimeout(reloj);
   }
@@ -1437,12 +1528,18 @@ async function sincronizar() {
     });
     if (!tareas.length) { sesionVencida = false; fallosToken = 0; return; }
 
-    // Sin credencial vigente no se intenta: los partos quedan en la cola,
-    // intactos. Pero un fallo suelto del prompt de Google no es una sesion
-    // caida — se avisa recien al tercero seguido.
-    if (!(await tokenVigente())) {
-      if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
-      return;
+    // Con la credencial propia vigente no hace falta Google. Sin ella (sesion
+    // anterior al backend r7) se pide el id_token y, si sirve, se aprovecha
+    // para conseguir la credencial sin obligar a nadie a volver a entrar.
+    if (!sesionSirve()) {
+      // Sin credencial vigente no se intenta: los partos quedan en la cola,
+      // intactos. Pero un fallo suelto del prompt de Google no es una sesion
+      // caida — se avisa recien al tercero seguido.
+      if (!(await tokenVigente())) {
+        if (++fallosToken >= FALLOS_PARA_AVISAR) sesionVencida = true;
+        return;
+      }
+      try { await enviar({ accion: 'sesion' }); } catch (e) { /* se sigue con el id_token */ }
     }
     fallosToken = 0;
     sesionVencida = false;
@@ -1497,6 +1594,9 @@ async function sincronizar() {
         // Sesion caida: cortar, no quemar la cola entera. Esta es la unica senal
         // autoritativa: la da el backend, que es el que verifica el token.
         sesionVencida = true; fallosToken = FALLOS_PARA_AVISAR;
+        // La credencial propia ya no sirve (vencida o secreto rotado): se
+        // suelta, para que el proximo login la reemplace y no la siga mandando.
+        if (sesion && sesion.token) { sesion.token = ''; localStorage.setItem('sesion', JSON.stringify(sesion)); }
         reg.intentos++;
         reg.error = res.error || 'sesion vencida';
         await guardarLocal(reg);
@@ -1560,13 +1660,14 @@ async function bajarPartosDelDia(fecha) {
   // La vista "Sin sincronizar" es solo lo de esta tablet: no hay nada remoto que traer.
   if (fecha === LISTA_PENDIENTES) return refrescar();
   if (!cfg.url || !sesion || !navigator.onLine) { remotosViejo = true; return; }
+  const todos = fecha === LISTA_TODOS;
   /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
      falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
      local y listo. */
-  if (!tokenSirve(60000)) { remotosViejo = true; return; }
+  if (!sesionSirve() && !tokenSirve(60000)) { remotosViejo = true; return; }
 
   try {
-    const j = await enviar({ accion: 'partos', fecha });
+    const j = await enviar(todos ? { accion: 'partos', todos: true } : { accion: 'partos', fecha });
     if (!j || !j.ok) { remotosViejo = true; return; }
     remotos = j.partos || [];
     remotosFecha = fecha;
@@ -1583,7 +1684,7 @@ function partosRemotos(fecha) {
   if (remotosFecha !== fecha) return [];
   const porUuid = new Map();
   remotos.forEach((f) => {
-    if (f.fecha !== fecha) return;
+    if (fecha !== LISTA_TODOS && f.fecha !== fecha) return;
     if (!porUuid.has(f.uuid)) porUuid.set(f.uuid, []);
     porUuid.get(f.uuid).push(f);
   });
@@ -1604,14 +1705,15 @@ function vistaLocal(r) {
   return {
     uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento, fecha: p.fecha_parto,
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
-    cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
+    cargado: cuandoSeCargo(r.creado), cargadoTs: r.creado || 0, muerto, pesar, error: r.error || '',
     // Todo lo que no esta en la planilla o tiene algo sin subir. Un admin puede
     // descartarlo: es la salida cuando un registro traba la cola y no hay arreglo.
     descartable: sinSubir(r),
     intentos: r.intentos || 0,
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
       id: t.id_ternero || 's/id', vive: t.vive !== false,
-      peso: t.peso === undefined ? null : t.peso
+      peso: t.peso === undefined ? null : t.peso,
+      senasa: t.caravana_senasa || ''
     })),
     estado: (r.estado === 'error' || r.revisarEdicion) ? ['bad', 'Revisar']
           : (r.estado === 'pendiente' || r.edicion) ? ['wait', 'Sin sincronizar']
@@ -1624,15 +1726,17 @@ function vistaRemota(filas) {
   const f = filas[0];
   const vivas = filas.filter((x) => String(x.estado_cria) !== 'Muerto');
   return {
-    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora,
+    uuid: f.uuid, mia: false, id_vaca: f.id_vaca, hora: f.hora, fecha: f.fecha,
     tipo: f.tipo_parto, sexo: f.sexo, operario: f.operario,
     cargado: String(f.cargado_en || '').slice(5).replace('-', '/'),
+    cargadoTs: Date.parse(String(f.cargado_en || '').replace(' ', 'T')) || 0,
     muerto: !vivas.length,
     pesar: vivas.some((x) => x.peso === '' || x.peso === null || x.peso === undefined),
     error: '',
     crias: vivas.map((x) => ({
       id: x.id_ternero || 's/id', vive: true,
-      peso: x.peso === '' || x.peso === null || x.peso === undefined ? null : x.peso
+      peso: x.peso === '' || x.peso === null || x.peso === undefined ? null : x.peso,
+      senasa: x.caravana_senasa && String(x.caravana_senasa) !== VACIO ? String(x.caravana_senasa) : ''
     })),
     estado: ['ok', 'Sincronizado']
   };
@@ -1645,83 +1749,108 @@ function vistaRemota(filas) {
 let ultimoPend = 0;
 let ultimoErr = 0;
 
+/* Orden de la tabla: columna y sentido. Se toca en los encabezados. */
+let orden = { col: 'fecha', dir: -1 };
+const TOPE_FILAS = 300;
+
+function comparador(col, dir) {
+  const val = (v) => {
+    if (col === 'fecha') return String(v.fecha || '');
+    if (col === 'id_vaca') return String(v.id_vaca || '').padStart(8, '0');
+    if (col === 'hora') return String(v.hora || '');
+    if (col === 'cargado') return v.cargadoTs || 0;
+    if (col === 'operario') return String(v.operario || '');
+    if (col === 'estado') return v.estado[1];
+    return '';
+  };
+  return (a, b) => {
+    const x = val(a), y = val(b);
+    const r = typeof x === 'number' ? x - y : x.localeCompare(y);
+    // Empate: mas nuevo primero, siempre.
+    return (r * dir) || (String(b.fecha || '').localeCompare(String(a.fecha || ''))) || ((b.cargadoTs || 0) - (a.cargadoTs || 0));
+  };
+}
+
 async function refrescar() {
   const todos = await todosLocal();
-  const modoPend = listaFecha === LISTA_PENDIENTES;
-  // "Sin sincronizar": todo lo trabado de esta tablet, de cualquier dia, del
-  // mas viejo al mas nuevo (el mas viejo es el que traba la cola).
-  const mios = modoPend
-    ? todos.filter(sinSubir).sort((a, b) =>
-        String(a.payload.fecha_parto).localeCompare(String(b.payload.fecha_parto)) || a.creado - b.creado)
-    : todos.filter((r) => r.payload.fecha_parto === listaFecha).sort((a, b) => b.creado - a.creado);
   ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
   ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
-  const chipN = $('chipPendN');
-  if (chipN) chipN.textContent = ultimoPend + ultimoErr;
-
-  // Lo que esta trabado de OTRO dia suma al badge pero no se ve en el dia
-  // elegido: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista
-  // y se manda al chip "Sin sincronizar", que los junta a todos.
-  const fuera = modoPend ? [] : todos.filter((r) => r.payload.fecha_parto !== listaFecha && sinSubir(r));
 
   // El uuid es la llave: un parto que esta en las dos partes gana el local, que
   // es el unico que sabe si tiene una correccion sin subir.
-  const mismos = new Set(mios.map((r) => r.uuid));
-  const delDia = modoPend ? mios.map(vistaLocal) : mios.map(vistaLocal).concat(
-    partosRemotos(listaFecha).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
+  const mismos = new Set(todos.map((r) => r.uuid));
+  let lista = todos.map(vistaLocal).concat(
+    partosRemotos(LISTA_TODOS).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
+  const total = lista.length;
+
+  // Filtros: rango de fechas y buscador (vaca, caravana del ternero, caravana SENASA).
+  const desde = ($('fDesde').value || '').trim();
+  const hasta = ($('fHasta').value || '').trim();
+  const q = ($('fBuscar').value || '').trim().toLowerCase();
+  lista = lista.filter((v) => (!desde || String(v.fecha || '') >= desde) &&
+                              (!hasta || String(v.fecha || '') <= hasta) &&
+                              (!q || String(v.id_vaca).toLowerCase().includes(q) ||
+                                v.crias.some((c) => String(c.id).toLowerCase().includes(q) ||
+                                                    String(c.senasa).toLowerCase().includes(q))));
+  lista.sort(comparador(orden.col, orden.dir));
 
   let h = 0, m = 0, muertos = 0;
-  delDia.forEach((v) => {
+  lista.forEach((v) => {
     const sx = String(v.sexo);
     if (/Hembra/i.test(sx)) h += (sx.charAt(0) === '2' ? 2 : 1);
     if (/Macho/i.test(sx)) m += 1;
     if (v.muerto) muertos++;
   });
-
-  $('kTot').textContent = delDia.length;
-  const hoyISO = fechasPosibles()[0].iso;
-  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : listaFecha === hoyISO ? 'Partos hoy'
-                         : 'Partos del ' + aDDMMAAAA(listaFecha);
-  const conFecha = modoPend || !fechasPosibles().some((o) => o.iso === listaFecha);
+  $('kTot').textContent = lista.length;
+  $('kTotL').textContent = lista.length === total ? 'Partos' : `Partos (de ${total})`;
   $('kHM').textContent = h + ' / ' + m;
-  $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
-  $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
+  $('kPesar').textContent = lista.filter((v) => v.pesar).length;
+  $('kPend').textContent = lista.filter((v) => v.estado[0] !== 'ok').length;
   $('kMuertos').textContent = muertos;
 
-  const avisoFuera = $('avisoFuera');
-  avisoFuera.classList.toggle('hidden', !fuera.length);
-  if (fuera.length) {
-    const dias = [...new Set(fuera.map((r) => aDDMMAAAA(r.payload.fecha_parto)))].join(', ');
-    avisoFuera.innerHTML = `Hay <b>${fuera.length}</b> parto${fuera.length > 1 ? 's' : ''}
-      sin sincronizar de otro día (${dias}). Tocá <b>Sin sincronizar</b>, arriba, para verlos todos.`;
-  }
+  $('avisoRemotos').classList.toggle('hidden', !remotosViejo);
+  $('btnLimpiarFiltros').classList.toggle('hidden', !desde && !hasta && !q);
 
-  $('avisoRemotos').classList.toggle('hidden', modoPend || !remotosViejo);
+  // Encabezados: flecha en la columna que ordena.
+  document.querySelectorAll('#cabecera [data-orden]').forEach((el) => {
+    const on = el.dataset.orden === orden.col;
+    el.classList.toggle('on', on);
+    el.querySelector('.flecha').textContent = on ? (orden.dir < 0 ? ' ▼' : ' ▲') : '';
+  });
 
-  $('cabecera').classList.toggle('hidden', !delDia.length);
-  $('filas').innerHTML = delDia.length ? delDia.map((v) => {
+  $('cabecera').classList.toggle('hidden', !lista.length);
+  const visibles = lista.slice(0, TOPE_FILAS);
+  $('filas').innerHTML = visibles.length ? visibles.map((v) => {
     const cria = v.muerto ? v.sexo
-      : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`)).join(' + ');
+      : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`) +
+                           (c.senasa ? ` · S&nbsp;${c.senasa}` : '')).join(' + ');
+    // Un operario solo corrige lo suyo y no toca un parto con cria muerta (no hay
+    // nada editable ahi salvo el sexo). Un admin corrige todo, tambien lo remoto.
+    const boton = v.mia
+      ? ((!v.muerto || esAdmin())
+          ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
+               data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>` : '')
+      : esAdmin()
+        ? `<button class="btn" type="button" data-editar-remoto="${v.uuid}">Corregir</button>`
+        // Un parto de otra tablet se ve, pero un operario no lo corrige desde aca:
+        // la correccion viaja con el registro local, que en esta tablet no existe.
+        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>';
     return `<div class="listrow">
+      <div class="fecha">${aDDMMAAAA(v.fecha || '')}</div>
       <div class="id">${v.id_vaca}</div>
       <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
         ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}${v.intentos > 1 ? ` · ${v.intentos} intentos` : ''}</div>` : ''}</div>
-      <div>${conFecha ? `<span class="meta" style="display:block">${aDDMMAAAA(v.fecha || listaFecha)}</span>` : ''}${v.hora}</div>
+      <div>${v.hora}</div>
       <div class="ocultar">${v.cargado}</div>
       <div class="ocultar">${v.tipo}</div>
       <div class="ocultar">${v.operario}</div>
       <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
-      <div>${v.mia && v.descartable && sesion && sesion.admin
-          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${v.muerto ? '' : v.mia
-        ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
-             data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>`
-        // Un parto de otra tablet se ve, pero no se corrige desde aca: la
-        // correccion viaja con el registro local, que en esta tablet no existe.
-        : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>'}</div>
+      <div>${v.mia && v.descartable && esAdmin()
+          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${boton}</div>
     </div>`;
-  }).join('') : `<div class="vacio">${modoPend
-    ? 'No hay partos sin sincronizar. Todo lo cargado ya está en la planilla.'
-    : 'Todavía no hay partos cargados este día.'}</div>`;
+  }).join('') + (lista.length > TOPE_FILAS
+    ? `<div class="vacio">Se muestran ${TOPE_FILAS} de ${lista.length}. Afiná el rango de fechas o buscá una vaca.</div>` : '')
+  : `<div class="vacio">${total ? 'Ningún parto coincide con el filtro.' : 'Todavía no hay partos cargados.'}</div>`;
 
   pintarBadge();
   pintarPie();
@@ -1897,7 +2026,7 @@ function avisar(txt, malo) {
 async function bajarMaestro() {
   if (!cfg.url || !sesion) return false;
   try {
-    if (!(await tokenVigente())) return false;
+    if (!sesionSirve() && !(await tokenVigente())) return false;
     const j = await enviar({ accion: 'maestro' });
     if (!j.ok) { $('estadoConfig').textContent = 'El servicio respondió: ' + j.error; return false; }
     listas = Object.assign({}, LISTAS_BASE, j.listas);
@@ -1948,6 +2077,8 @@ function pintarDiagnostico() {
   todosLocal().then((t) => {
     $('diag').innerHTML = [
       `Sesión: <b>${sesion ? sesion.email : 'ninguna'}</b>${sesion && sesion.admin ? ' (admin)' : ''}`,
+      `Credencial de 30 días: <b>${sesionSirve() ? 'hasta ' + aDDMMAAAA(new Date(sesion.hasta).toISOString().slice(0, 10))
+                                                : 'no (usa el token de Google de 1 h)'}</b>`,
       `Conexión: <b>${navigator.onLine ? 'con señal' : 'sin señal'}</b>`,
       `Registros locales: ${t.length} (pendientes ${t.filter((r) => r.estado === 'pendiente').length},
        con error ${t.filter((r) => r.estado === 'error').length})`,
@@ -2060,14 +2191,14 @@ setInterval(sincronizar, 30000);
    partos por subir, que es cuando un fallo se nota. */
 setInterval(() => {
   if (!sesion || !navigator.onLine || document.hidden) return;
-  if (tokenSirve(MARGEN_TOKEN)) return;
+  if (sesionSirve() || tokenSirve(MARGEN_TOKEN)) return;
   tokenVigente().then(pintarBadge);
 }, 120000);
 
 (async function iniciar() {
   const hoy = new Date();
   st.fecha = aISO(hoy);
-  listaFecha = st.fecha;
+  listaFecha = LISTA_TODOS;
   $('subFecha').textContent = hoy.toLocaleDateString('es-AR',
     { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -2088,7 +2219,6 @@ setInterval(() => {
     if (hoyAhora === hoyConocido) return;
     // La lista sigue al dia nuevo solo si estaba mirando "hoy": si el operario
     // la dejo en ayer a proposito, se respeta.
-    if (listaFecha === hoyConocido) { listaFecha = hoyAhora; bajarPartosDelDia(hoyAhora); }
     hoyConocido = hoyAhora;
     pintarFechas();
     $('subFecha').textContent = new Date().toLocaleDateString('es-AR',

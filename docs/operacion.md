@@ -156,9 +156,9 @@ se pueden recargar a mano los que falten.
 La cola sube en orden de carga. Si el backend rechaza **un** registro, se anota el error y se sigue
 con el siguiente (desde `preparto-v13`; antes ese registro trababa a todos los de atrás). Solo tres
 errores seguidos cortan la tanda, porque entonces es el servidor y no el registro. El texto del
-error queda en rojo debajo del parto. Para verlos todos juntos, de cualquier fecha: **Partos
-cargados → chip «Sin sincronizar»** (el número del chip es la cola). Desde ahí se corrigen con
-*Corregir* sin que el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
+error queda en rojo debajo del parto en **Partos cargados**, con cuántos intentos lleva; el KPI
+«Sin sincronizar» los cuenta y la columna Estado los ordena. Desde ahí se corrigen con *Corregir* sin
+que el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
 
 Si el backend dice `no existe el parto` (la fila se borró a mano de `Registros`), la corrección pasa
 a **Revisar** y deja de reintentar. Un **admin** ve el botón **Descartar** en **cualquier registro sin
@@ -169,8 +169,77 @@ admin entra en la tablet con su cuenta (chip → Cambiar de usuario), descarta y
 La fila muestra el último error en rojo y cuántos intentos lleva, para saber por qué no sube antes
 de descartar.
 
-En **Partos cargados**, el chip **Otro día** abre un calendario para ver cualquier fecha, con lo que
-cargó esta tablet y lo que trajo la planilla.
+**Partos cargados** (desde `preparto-v15`) es **una sola tabla con todo lo que hay en la planilla**
+más lo cargado en esta tablet: sin selección de día. Arriba hay un buscador (vaca, caravana del
+ternero o caravana SENASA) y un rango **Desde / Hasta**; los encabezados Fecha, ID Vaca, Hora,
+Cargado, Operario y Estado ordenan al tocarlos (otra vez invierte). Se muestran hasta 300 filas:
+con más, hay que afinar el rango o buscar. Sin señal muestra la última copia bajada y lo local.
+
+## Admins (desde r7)
+
+Los admins son las cuentas listadas en la propiedad del script `ADMINS` (editor de Apps Script →
+Configuración del proyecto → Propiedades del script), separadas por coma. Hoy:
+`andresduhau@admin.com.ar,nvelazquez@admin.com.ar,mperez@admin.com.ar,aperalta@admin.com.ar`
+(Andrés, Nahuel, Mariano Pérez, Agustín Peralta). Se lee en cada request; en la app, el rol se
+fija al entrar, así que un admin nuevo vuelve a entrar una vez. El token compartido de scripts **no**
+es admin para corregir: `verificar.sh` prueba las reglas de operario con él.
+
+Lo que sólo un admin puede hacer, desde **cualquier dispositivo** (su celular o computadora):
+
+- **Corregir cualquier parto de la planilla**, de cualquier fecha, incluidos los que cargó otra
+  tablet. En **Partos cargados** aparece *Corregir* también en las filas de la planilla; al abrirlo
+  se baja completo y queda como copia local ("sombra") desde donde viaja la corrección.
+- **Cambiar cualquier campo**: vaca, fecha (chip *Otra fecha*), hora, tipo, operario, caravanas,
+  raza, notas, además de calostro, peso, tambo y sexo. Sin la ventana del día y sin la regla del
+  peso. Si cambia la fecha o la vaca, el backend recalcula el **ID Parto** en todas las filas del
+  parto. `_log` guarda `editado por … (admin <mail>)` con cada cambio.
+- **Descartar** en la cola (ver arriba) y **Ajustes**.
+
+Ojo: corregir fecha o vaca de un parto que Nahuel ya cargó en DairyComp deja el tilde puesto y el
+dato viejo allá. Hay que corregirlo también en DairyComp.
+
+En **Partos cargados** todos ven la planilla completa; la diferencia del admin es el botón
+*Corregir* en cada fila, también en las que cargó otra tablet, y **Descartar** en lo que no subió.
+
+## Caravana SENASA (desde r7 / v15)
+
+Cada cría viva lleva su **caravana SENASA de 6 dígitos**, en el bloque TERNERO del formulario. Es
+**obligatoria hacia adelante**: la app no guarda sin ella, y el backend la exige a todo parto que
+venga de la app v15 (`formato: 2`). Los partos anteriores quedan con la columna vacía; un operario
+puede completarla el mismo día con *Corregir*, y un admin en cualquier momento. Una cola que haya
+quedado en una tablet con la app vieja entra igual sin caravana: perder un parto del corral es peor
+que una celda vacía. En la planilla es la columna **T** de `Registros` y la **I** de `Datos Carga DC`.
+
+### Migrar la planilla a r7 (una sola vez)
+
+El backend r7 **se niega a escribir** hasta que la hoja tenga la columna (error de servidor, no de
+validación: la tablet encola y drena sola). Desde el editor de Apps Script:
+
+1. `revisarMigracionR7()`: no escribe nada; dice si el encabezado es exactamente el de r6, cuántas
+   filas hay y qué va a hacer.
+2. `migrarR7()`: copia `Registros` a `Registros_backup_r6`, inserta **T = Caravana SENASA** (texto),
+   inserta **I** en `Datos Carga DC` y reconstruye la vista. Segundos. Correr dos veces no hace nada.
+3. `curl "$URL?action=esquema&token=…"` tiene que devolver `ok: true` con 30 columnas.
+
+Avisar a Nahuel antes: cualquier filtro o fórmula por letra de columna sobre las dos hojas queda
+corrido un lugar.
+
+## Cómo se mantiene la sesión en la tablet (desde r7)
+
+Al entrar con Google, el backend entrega una **credencial propia de 30 días** (firmada con un secreto
+que vive en Script Properties, `SESION_SECRETO`). La tablet sincroniza con esa credencial y **no
+vuelve a depender del token de Google**, que dura una hora y cuya renovación silenciosa fallaba en el
+corral: era el motivo del cartel `Sesión vencida` cada hora y de la cola que se acumulaba. Si a la
+credencial le quedan menos de 7 días, el backend la renueva sola en cualquier respuesta: una tablet
+que se usa no vuelve a pedir login. Ajustes → Diagnóstico muestra hasta cuándo vale.
+
+- **Una tablet se perdió o hay que sacarle el acceso a todas:** en el editor de Apps Script correr
+  `rotarSecretoSesion()`. Todas las tablets vuelven a pedir login una vez; la cola no se pierde.
+- **Suspender la cuenta de Google de una tablet** ya no la corta en el acto: su credencial sigue
+  valiendo hasta 30 días. Para cortarla ya, rotar el secreto.
+- Una tablet con sesión anterior a r7 consigue la credencial sola la primera vez que sincroniza con
+  el token de Google vigente; si ese token ya venció, con volver a entrar una vez alcanza.
+- El camino de scripts (`token` compartido) no cambia.
 
 ## Un parto no llegó a la planilla
 
@@ -212,7 +281,7 @@ En orden:
 | Cambió | Qué hacer |
 |---|---|
 | `pwa/*` (pantalla) | Nada: al pushear, GitHub Pages publica solo. **Subir `CACHE` en `pwa/sw.js`** o las tablets siguen con la versión vieja |
-| `apps-script/Codigo.gs` | **Subir `VERSION`** (y `VERSION_ESPERADA` en `verificar.sh`), pegar en el editor y redeployar con el lápiz (ver README) |
+| `apps-script/Codigo.gs` | **Subir `VERSION`** (y `VERSION_ESPERADA` en `verificar.sh`), pegar en el editor y redeployar con el lápiz (ver README). r7 además necesita la propiedad `ADMINS`; el secreto de sesión se crea solo |
 
 ### Publicar r6 sin frenar a los operarios
 

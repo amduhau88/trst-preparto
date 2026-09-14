@@ -67,7 +67,9 @@ volver al paso 1.
   El operario nunca tiene que esperar ni reintentar.
 - El badge de arriba a la derecha dice siempre cómo está: *Sincronizado*,
   *N en espera*, *Sin señal* o *N para revisar*.
-- **Partos cargados** muestra lo cargado hoy, también sin señal.
+- **Partos cargados** muestra toda la planilla más lo de esta tablet, con buscador, rango de fechas
+  y orden por columna; sin señal, la última copia.
+- En cada ternero se carga la **caravana SENASA** (6 dígitos): sin ella el parto no se guarda.
 - Un parto marcado **"Revisar"** tiene un dato que la planilla rechazó; el motivo
   aparece debajo. Reintentar no lo arregla: hay que corregir el dato.
 
@@ -87,7 +89,7 @@ vieja guardada y el cambio no llega nunca.
 | Síntoma | Causa probable |
 |---|---|
 | No aparece "Instalar aplicación" | Se abrió por `http://`, no `https://` |
-| El badge dice **"Sesión vencida"** | Pasaron los 30 días, se revocó la cuenta, o Google no renovó el token de la hora. Tocar el badge y volver a entrar. **Los partos en cola no se pierden.** |
+| El badge dice **"Sesión vencida"** | Pasaron los 30 días sin usar la tablet, se rotó el secreto, o la sesión es anterior a r7 y Google no renovó su token. Tocar el badge y volver a entrar una vez. **Los partos en cola no se pierden.** |
 | Hay que borrar datos del sitio, desinstalar o reinstalar | **Antes**: chip de cuenta (arriba a la derecha) → **Copiar partos sin sincronizar**, y guardar ese texto. Lo ve cualquier usuario. La cola vive en el almacenamiento del navegador y se borra con él. |
 | No deja entrar con una cuenta | No es `@admin.com.ar`. Es lo esperado. |
 | Todos los partos quedan "Revisar" | Falta un valor en `Maestro` (p. ej. el operario que eligieron) |
