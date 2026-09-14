@@ -317,25 +317,38 @@ function fechasPosibles() {
    ayer: el operario veia los partos del dia anterior con el cartel en verde y lo
    leia como que la app perdio los de hoy. */
 let listaFecha = '';
+/* Valor especial del chip de la lista: en vez de un dia, TODO lo que esta sin
+   sincronizar, de cualquier fecha. Un parto trabado de hace una semana no
+   aparecia en ninguna pantalla (Hoy/Ayer no lo alcanzan) y el operario no
+   tenia como verlo ni corregirlo. */
+const LISTA_PENDIENTES = 'pendientes';
+const sinSubir = (r) => r.estado !== 'ok' || !!r.edicion || !!r.cambioSexo || !!r.revisarEdicion;
 
 function pintarFechas() {
   const opciones = fechasPosibles();
   // Si la app quedo abierta toda la noche y cruzo la medianoche, la seleccion
   // vieja ya no corresponde a ningun boton: se reancla en Hoy.
-  if (!opciones.some((o) => o.iso === st.fecha)) st.fecha = opciones[0].iso;
+  // Corrigiendo un parto de otro dia, su fecha se respeta aunque no sea Hoy ni
+  // Ayer: si no, este repintado lo movia a hoy sin que nadie lo pidiera.
+  const delForm = (st.editando && st.fecha && !opciones.some((o) => o.iso === st.fecha))
+    ? [{ etiqueta: 'Del parto', iso: st.fecha }].concat(opciones) : opciones;
+  if (!delForm.some((o) => o.iso === st.fecha)) st.fecha = delForm[0].iso;
 
-  $('cFecha').innerHTML = opciones.map((o) =>
+  $('cFecha').innerHTML = delForm.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === st.fecha ? 'on' : ''}"
              data-chip="fecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
   ).join('');
 
   const cont = $('cListaFecha');
   if (!cont) return;
-  if (!opciones.some((o) => o.iso === listaFecha)) listaFecha = opciones[0].iso;
+  if (listaFecha !== LISTA_PENDIENTES && !opciones.some((o) => o.iso === listaFecha)) listaFecha = opciones[0].iso;
+  const nPend = ultimoPend + ultimoErr;
   cont.innerHTML = opciones.map((o) =>
     `<button type="button" class="chip fecha ${o.iso === listaFecha ? 'on' : ''}"
              data-chip="listaFecha" data-val="${o.iso}">${o.etiqueta}<span class="dia">${aDDMMAAAA(o.iso)}</span></button>`
-  ).join('');
+  ).join('') +
+    `<button type="button" class="chip fecha warn ${listaFecha === LISTA_PENDIENTES ? 'on' : ''}"
+             data-chip="listaFecha" data-val="${LISTA_PENDIENTES}" id="chipPendientes">Sin sincronizar<span class="dia">todos los días · <b id="chipPendN">${nPend}</b></span></button>`;
 }
 
 const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0));
@@ -610,7 +623,7 @@ function elegirChip(chip) {
   if (clave === 'listaFecha') {
     listaFecha = val;
     refrescar();
-    return bajarPartosDelDia(val);
+    return bajarPartosDelDia(val);   // con LISTA_PENDIENTES no baja nada: es todo local
   }
 
   // Calostro de la madre: es del parto, no de ninguna cria.
@@ -1444,6 +1457,8 @@ try {
 } catch (e) { /* copia corrupta: se baja de nuevo */ }
 
 async function bajarPartosDelDia(fecha) {
+  // La vista "Sin sincronizar" es solo lo de esta tablet: no hay nada remoto que traer.
+  if (fecha === LISTA_PENDIENTES) return refrescar();
   if (!cfg.url || !sesion || !navigator.onLine) { remotosViejo = true; return; }
   /* Nunca se fuerza el prompt de Google por una LECTURA: hacerlo revivia el
      falso "sesion vencida" cada hora. Si el token no sirve, se muestra lo
@@ -1487,7 +1502,7 @@ function vistaLocal(r) {
   const pesar = faltaPesar(p);
   const muerto = SEXO_MUERTO.includes(String(p.sexo).charAt(0));
   return {
-    uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento,
+    uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento, fecha: p.fecha_parto,
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
     cargado: cuandoSeCargo(r.creado), muerto, pesar, error: r.error || '',
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
@@ -1528,20 +1543,27 @@ let ultimoErr = 0;
 
 async function refrescar() {
   const todos = await todosLocal();
-  const mios = todos.filter((r) => r.payload.fecha_parto === listaFecha)
-                    .sort((a, b) => b.creado - a.creado);
+  const modoPend = listaFecha === LISTA_PENDIENTES;
+  // "Sin sincronizar": todo lo trabado de esta tablet, de cualquier dia, del
+  // mas viejo al mas nuevo (el mas viejo es el que traba la cola).
+  const mios = modoPend
+    ? todos.filter(sinSubir).sort((a, b) =>
+        String(a.payload.fecha_parto).localeCompare(String(b.payload.fecha_parto)) || a.creado - b.creado)
+    : todos.filter((r) => r.payload.fecha_parto === listaFecha).sort((a, b) => b.creado - a.creado);
   ultimoPend = todos.filter((r) => r.estado === 'pendiente' || r.edicion).length;
   ultimoErr = todos.filter((r) => r.estado === 'error' || r.revisarEdicion).length;
+  const chipN = $('chipPendN');
+  if (chipN) chipN.textContent = ultimoPend + ultimoErr;
 
-  // Lo que esta trabado de OTRO dia no se ve en ninguna pantalla, pero si suma
-  // al badge: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista.
-  const fuera = todos.filter((r) => r.payload.fecha_parto !== listaFecha &&
-    (r.estado === 'pendiente' || r.estado === 'error' || r.edicion || r.revisarEdicion));
+  // Lo que esta trabado de OTRO dia suma al badge pero no se ve en el dia
+  // elegido: es el clasico "dice 3 y no veo nada". Se avisa arriba de la lista
+  // y se manda al chip "Sin sincronizar", que los junta a todos.
+  const fuera = modoPend ? [] : todos.filter((r) => r.payload.fecha_parto !== listaFecha && sinSubir(r));
 
   // El uuid es la llave: un parto que esta en las dos partes gana el local, que
   // es el unico que sabe si tiene una correccion sin subir.
   const mismos = new Set(mios.map((r) => r.uuid));
-  const delDia = mios.map(vistaLocal).concat(
+  const delDia = modoPend ? mios.map(vistaLocal) : mios.map(vistaLocal).concat(
     partosRemotos(listaFecha).filter((f) => !mismos.has(f[0].uuid)).map(vistaRemota));
 
   let h = 0, m = 0, muertos = 0;
@@ -1553,6 +1575,7 @@ async function refrescar() {
   });
 
   $('kTot').textContent = delDia.length;
+  $('kTotL').textContent = modoPend ? 'Sin sincronizar' : 'Partos hoy';
   $('kHM').textContent = h + ' / ' + m;
   $('kPesar').textContent = delDia.filter((v) => v.pesar).length;
   $('kPend').textContent = delDia.filter((v) => v.estado[0] !== 'ok').length;
@@ -1563,10 +1586,10 @@ async function refrescar() {
   if (fuera.length) {
     const dias = [...new Set(fuera.map((r) => aDDMMAAAA(r.payload.fecha_parto)))].join(', ');
     avisoFuera.innerHTML = `Hay <b>${fuera.length}</b> parto${fuera.length > 1 ? 's' : ''}
-      sin sincronizar de otro día (${dias}). Cambiá la fecha de arriba para verlos.`;
+      sin sincronizar de otro día (${dias}). Tocá <b>Sin sincronizar</b>, arriba, para verlos todos.`;
   }
 
-  $('avisoRemotos').classList.toggle('hidden', !remotosViejo);
+  $('avisoRemotos').classList.toggle('hidden', modoPend || !remotosViejo);
 
   $('cabecera').classList.toggle('hidden', !delDia.length);
   $('filas').innerHTML = delDia.length ? delDia.map((v) => {
@@ -1576,7 +1599,7 @@ async function refrescar() {
       <div class="id">${v.id_vaca}</div>
       <div>${cria}${v.pesar ? ' <span class="tag">falta pesar</span>' : ''}
         ${v.error ? `<div class="meta" style="color:var(--danger)">${v.error}</div>` : ''}</div>
-      <div>${v.hora}</div>
+      <div>${modoPend ? `<span class="meta" style="display:block">${aDDMMAAAA(v.fecha || '')}</span>` : ''}${v.hora}</div>
       <div class="ocultar">${v.cargado}</div>
       <div class="ocultar">${v.tipo}</div>
       <div class="ocultar">${v.operario}</div>
@@ -1588,7 +1611,9 @@ async function refrescar() {
         // correccion viaja con el registro local, que en esta tablet no existe.
         : '<span class="tag" style="background:var(--soft);color:var(--ink-3)">otra tablet</span>'}</div>
     </div>`;
-  }).join('') : '<div class="vacio">Todavía no hay partos cargados este día.</div>';
+  }).join('') : `<div class="vacio">${modoPend
+    ? 'No hay partos sin sincronizar. Todo lo cargado ya está en la planilla.'
+    : 'Todavía no hay partos cargados este día.'}</div>`;
 
   pintarBadge();
   pintarPie();
