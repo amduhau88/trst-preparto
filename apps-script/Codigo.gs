@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r7-admin-2026-09-14';
+var VERSION = 'r7-senasa-2026-09-14';
 
 /* Credencial propia de la tablet. El id_token de Google dura una hora y su
    renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
@@ -73,28 +73,44 @@ var COL = {
   lts_ternero: 16,         // Q  /
   tambo: 17,            // R
   rodeo: 18,            // S   la carga Nahuel en 'Datos Carga DC' y se replica
-  notas: 19,            // T
-  sexo_cria: 20,        // U
-  estado_cria: 21,      // V
-  id_parto: 22,         // W
-  cria: 23,             // X
-  uuid: 24,             // Y
+  caravana_senasa: 19,  // T   6 digitos, obligatoria hacia adelante (r7)
+  notas: 20,            // U
+  sexo_cria: 21,        // V
+  estado_cria: 22,      // W
+  id_parto: 23,         // X
+  cria: 24,             // Y
+  uuid: 25,             // Z
   /* Cuando el operario apreto Guardar en la tablet, NO cuando el parto llego a
    * la planilla: un parto cargado sin señal a las 3 de la mañana puede
    * sincronizar a las 9, y lo que interesa es la hora del corral. Tampoco lo
    * mueven pesar, corregir ni cambiar el sexo — esos son pasos posteriores.
    * Es distinto de Fecha Parto (C), que es cuando nacio el ternero. */
-  cargado_en: 25,       // Z
-  dispositivo: 26,      // AA
-  anulada: 27,          // AB
-  cargado_dc: 28        // AC
+  cargado_en: 26,       // AA
+  dispositivo: 27,      // AB
+  anulada: 28,          // AC
+  cargado_dc: 29        // AD
 };
-var ANCHO_FILA = 29;     // A..AC
+var ANCHO_FILA = 30;     // A..AD
 
 /* Encabezado esperado de la fila 1. El backend escribe POR POSICION: si alguien
  * inserta una columna en la planilla, sigue escribiendo donde estaba y corrompe
  * en silencio. Esto es lo que deja detectarlo (?action=esquema + verificar.sh). */
 var ENCABEZADOS = [
+  'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
+  'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
+  'Lts Calostro Madre Produjo',
+  'Origen Calostro', 'ID Vaca Origen Calostro', 'Calidad Calostro Ternero',
+  'Lts Calostro para Ternero',
+  'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Caravana SENASA', 'Notas',
+  'Sexo Cria', 'Estado Cria',
+  'ID Parto', 'Cria', 'UUID', 'Fecha y Hora de Carga', 'Dispositivo', 'Anulada', 'Cargado a DC'
+];
+
+/* El encabezado de r6, tal como quedo en produccion el 27/08. La migracion a r7
+ * inserta UNA columna (Caravana SENASA, antes de Notas) y no toca nada mas; se
+ * compara antes de tocar. */
+var ENCABEZADOS_R6 = [
   'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
   'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
   'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
@@ -144,22 +160,23 @@ var DC = {
   calostro_final: 5,    // el mejorado si se mejoro
   sexo: 6,
   id_ternero: 7,
-  lts_ternero: 8,
-  calidad_ternero: 9,
-  raza: 10,
-  lts_madre: 11,
-  metodo: 12,
-  operario: 13,
-  rodeo: 14,            // lo escribe Nahuel aca
-  cargado: 15,          // checkbox, lo tilda Nahuel aca
-  clave: 16             // oculta: uuid|cria
+  caravana_senasa: 8,   // a la derecha de ID Ternero (r7)
+  lts_ternero: 9,
+  calidad_ternero: 10,
+  raza: 11,
+  lts_madre: 12,
+  metodo: 13,
+  operario: 14,
+  rodeo: 15,            // lo escribe Nahuel aca
+  cargado: 16,          // checkbox, lo tilda Nahuel aca
+  clave: 17             // oculta: uuid|cria
 };
-var DC_ANCHO = 17;
+var DC_ANCHO = 18;
 var DC_METODO = 'Sonda';
 var DC_ENCABEZADOS = [
   'ID Vaca', 'Fecha', 'Sexo + ID Ternero', 'Tipo Parto',
   'Calidad Calostro Madre', 'Calidad Calostro Madre (final)',
-  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Lts Calostro para Ternero',
+  'Sexo, Vivo, Mellizos', 'ID Ternero', 'Caravana SENASA', 'Lts Calostro para Ternero',
   'Calidad Calostro que tomo el ternero', 'Raza', 'Lts Calostro Madre Produjo',
   'Metodo', 'Operario', 'Asignacion Rodeo', 'Cargado a DC', 'clave'
 ];
@@ -179,6 +196,7 @@ var LOCK_MS = 30000;
  * tablet: identifican al animal y los toca Nahuel en la planilla. */
 var EDITABLE_CRIA = {          // por cria: cada fila lleva la suya
   peso: COL.peso,
+  caravana_senasa: COL.caravana_senasa,
   origen_calostro: COL.origen_calostro,
   id_vaca_origen: COL.id_vaca_origen,
   calidad_ternero: COL.calidad_ternero,
@@ -449,7 +467,11 @@ function construirFilas_(ss, p) {
       // Nahuel desde 'Datos Carga DC'. Vacio se lee como "falta asignar", que es
       // el estado real; '---' no sirve porque en G-Q ya significa "cria muerta"
       // y sumarle un segundo sentido lo vuelve ambiguo.
-      str_(p.tambo), '', str_(p.notas),
+      str_(p.tambo), '',
+      // Caravana SENASA (T): '---' en cria muerta como el bloque G-Q; vacia si
+      // el payload no la trae (partos viejos o cola anterior a la app v15).
+      muerto ? VACIO : str_(t.caravana_senasa || ''),
+      str_(p.notas),
       sexoCria_(p, t), muerto ? 'Muerto' : 'Vivo',
       idParto, (i + 1) + '/' + terneros.length, str_(p.uuid), cargadoEn,
       str_(p.dispositivo), '', false
@@ -508,7 +530,7 @@ var FORMATO_CAMPO = {
   origen_calostro: str_, id_vaca_origen: str_, calidad_ternero: str_, tambo: str_,
   // Solo admin. La fecha entra como Date real, igual que en el alta.
   operario: str_, id_vaca: str_, fecha_parto: parseFecha_, hora_nacimiento: str_,
-  tipo_parto: str_, notas: str_, id_ternero: str_, raza: str_
+  tipo_parto: str_, notas: str_, id_ternero: str_, raza: str_, caravana_senasa: str_
 };
 
 /** Misma formula que el alta: yyyyMMdd-vaca-4 del uuid. Se recalcula si un admin cambia fecha o vaca. */
@@ -655,6 +677,7 @@ function editarParto_(p, auth) {
       var cal = t.calostro || {};
       Object.keys(EDITABLE_CRIA).forEach(function (clave) {
         var valor = clave === 'peso' ? t.peso
+                  : clave === 'caravana_senasa' ? t.caravana_senasa
                   : clave === 'origen_calostro' ? cal.origen
                   : clave === 'id_vaca_origen' ? idOrigenEditado_(p, f, cal)
                   : cal[clave];
@@ -711,6 +734,10 @@ function anotarCambio_(cambios, err, listas, f, col, clave, valor, pre) {
     return;
   }
   enLista_(err, listas, clave, valor, pre);
+  if (clave === 'caravana_senasa' && !/^\d{6}$/.test(String(valor).trim())) {
+    err.push(pre + 'caravana SENASA invalida: son 6 digitos, vino "' + valor + '"');
+    return;
+  }
 
   var nuevo = (FORMATO_CAMPO[clave] || str_)(valor);
   if (clave === 'fecha_parto' && !nuevo) { err.push(pre + 'fecha_parto invalida: ' + valor); return; }
@@ -733,7 +760,7 @@ function idOrigenEditado_(p, f, cal) {
 }
 
 function tocaAlgo_(t) {
-  if (t.peso !== undefined) return true;
+  if (t.peso !== undefined || t.caravana_senasa !== undefined) return true;
   var cal = t.calostro || {};
   return Object.keys(cal).some(function (k) { return cal[k] !== undefined; });
 }
@@ -905,6 +932,7 @@ function partoDesdeFilas_(filas, tz) {
     if (muerta) return { id_ternero: '', raza: '', vive: false };
     return {
       id_ternero: str_(d[COL.id_ternero]), raza: str_(d[COL.raza]),
+      caravana_senasa: vacio(d[COL.caravana_senasa]) ? '' : str_(d[COL.caravana_senasa]),
       peso: vacio(d[COL.peso]) ? undefined : num_(d[COL.peso]),
       vive: true,
       calostro: {
@@ -1028,6 +1056,13 @@ function validar_(p, listas) {
     }
     if (t.vive === false) return;                   // cria muerta: va toda en '---'
 
+    /* Caravana SENASA: 6 digitos exactos. Obligatoria desde la app que la pide
+       (formato >= 2). Un payload sin 'formato' es una cola vieja: entra sin
+       caravana, porque perder un parto del corral es peor que una celda vacia. */
+    var caravana = String(t.caravana_senasa === undefined || t.caravana_senasa === null ? '' : t.caravana_senasa).trim();
+    if (Number(p.formato) >= 2 && !caravana) err.push(pre + 'falta la caravana SENASA (6 digitos)');
+    if (caravana && !/^\d{6}$/.test(caravana)) err.push(pre + 'caravana SENASA invalida: son 6 digitos, vino "' + caravana + '"');
+
     enLista_(err, listas, 'raza', t.raza, pre);
     // El peso se carga en un segundo paso, cuando el ternero se pesa de verdad.
     // Vacio es un estado legitimo del alta ("falta pesar"); enLista_ deja pasar
@@ -1141,6 +1176,7 @@ function partosDelDia_(ss, fechaISO, todos) {
       fecha: Utilities.formatDate(f[COL.fecha], tz, 'yyyy-MM-dd'), hora: f[COL.hora],
       tipo_parto: f[COL.tipo_parto], sexo: f[COL.sexo],
       id_ternero: f[COL.id_ternero], raza: f[COL.raza], peso: f[COL.peso],
+      caravana_senasa: f[COL.caravana_senasa],
       calidad_sin_mejorar: f[COL.calidad_sin_mejorar], mejorado: f[COL.mejorado],
       calidad_mejorado: f[COL.calidad_mejorado], lts_madre: f[COL.lts_madre],
       origen_calostro: f[COL.origen_calostro], id_vaca_origen: f[COL.id_vaca_origen],
@@ -1170,7 +1206,7 @@ function hojaRegistros_(ss) {
 }
 
 /* Mensaje unico, para reconocerlo de un vistazo en _log y en la tablet. */
-var SIN_MIGRAR = 'la planilla todavia no esta migrada a r6: correr migrarR6()';
+var SIN_MIGRAR = 'la planilla todavia no esta migrada a r7: correr revisarMigracionR7() y migrarR7()';
 
 /**
  * ¿La hoja tiene el layout que este codigo espera?
@@ -1268,6 +1304,7 @@ function reconstruirDC_(ss) {
       limpio(calostroFinal_(f)),
       f[COL.sexo],
       limpio(id),
+      limpio(f[COL.caravana_senasa]),
       limpio(f[COL.lts_ternero]),
       limpio(f[COL.calidad_ternero]),
       limpio(f[COL.raza]),
@@ -1686,6 +1723,7 @@ function configurarDC() {
   dc.hideColumns(DC.clave + 1);
   dc.getRange(2, DC.id_vaca + 1, n, 1).setNumberFormat('@');
   dc.getRange(2, DC.id_ternero + 1, n, 1).setNumberFormat('@');
+  dc.getRange(2, DC.caravana_senasa + 1, n, 1).setNumberFormat('@');
 
   // Se protege todo salvo las dos columnas que se editan aca.
   try {
@@ -1840,6 +1878,97 @@ function letraCol_(i) {
  * Correrla ANTES de migrarR6(), mirar el Registro de ejecucion, y recien
  * entonces migrar.
  */
+/* ------------------------------------------------------------------ */
+/* Migracion r6 -> r7: una columna nueva, Caravana SENASA               */
+/* ------------------------------------------------------------------ */
+
+function planMigracionR7_(ss) {
+  var log = [];
+  var ok = true;
+  var di = function (m) { log.push(m); };
+  var hoja = hojaRegistros_(ss);
+  if (!hoja) { di('No existe la hoja de registros.'); return { ok: false, log: log }; }
+
+  var real = hoja.getRange(1, 1, 1, ENCABEZADOS_R6.length).getValues()[0].map(str_);
+  if (normalizar_(real[19]) === normalizar_('Caravana SENASA')) {
+    di('La hoja YA tiene "Caravana SENASA" en T: no hay nada que migrar.');
+    return { ok: false, log: log };
+  }
+  var mal = [];
+  ENCABEZADOS_R6.forEach(function (esperado, i) {
+    if (normalizar_(real[i]) !== normalizar_(esperado)) mal.push((i + 1) + ': "' + real[i] + '" (esperaba "' + esperado + '")');
+  });
+  if (mal.length) {
+    ok = false;
+    di('El encabezado de Registros NO es el de r6. Diferencias:');
+    mal.forEach(di);
+  } else {
+    di('Encabezado de Registros: es el de r6, columna por columna.');
+  }
+  if (ss.getSheetByName('Registros_backup_r6')) {
+    ok = false;
+    di('Ya existe "Registros_backup_r6": borralo o renombralo antes de migrar.');
+  }
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (!dc) {
+    di('No existe "' + HOJA_DC + '": se migra solo Registros; despues correr configurarDC().');
+  } else {
+    var h = dc.getRange(1, 1, 1, 9).getValues()[0].map(str_);
+    if (normalizar_(h[7]) !== normalizar_('ID Ternero')) { ok = false; di('En ' + HOJA_DC + ' la columna H no es "ID Ternero": "' + h[7] + '"'); }
+    if (normalizar_(h[8]) === normalizar_('Caravana SENASA')) { ok = false; di(HOJA_DC + ' ya tiene la columna Caravana SENASA.'); }
+  }
+  di('Filas con datos en Registros: ' + Math.max(hoja.getLastRow() - 1, 0));
+  di('Se va a insertar "Caravana SENASA" como columna T (antes de Notas) en Registros' +
+     (dc ? ' y como columna I (despues de ID Ternero) en ' + HOJA_DC : '') + '. El historico queda vacio.');
+  di('Se guarda una copia intacta en "Registros_backup_r6" antes de tocar nada.');
+  return { ok: ok, log: log };
+}
+
+/** Ensayo: dice que haria migrarR7() sin escribir nada. Correrla desde el editor. */
+function revisarMigracionR7() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR7_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  Logger.log(plan.ok ? '>> LISTO para correr migrarR7().' : '>> NO migrar todavia: ver arriba.');
+  return plan.ok;
+}
+
+/**
+ * Inserta la columna Caravana SENASA en Registros (T) y en Datos Carga DC (I).
+ * Mientras esto no corra, el backend r7 se niega a escribir (SIN_MIGRAR) y las
+ * tablets encolan: se puede correr con la app en marcha.
+ */
+function migrarR7() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var plan = planMigracionR7_(ss);
+  plan.log.forEach(function (l) { Logger.log(l); });
+  if (!plan.ok) { Logger.log('>> No se migro nada.'); return; }
+
+  var hoja = hojaRegistros_(ss);
+  hoja.copyTo(ss).setName('Registros_backup_r6');
+  Logger.log('Respaldo guardado en Registros_backup_r6');
+
+  var colT = COL.caravana_senasa + 1;                         // 20, 1-based
+  hoja.insertColumnBefore(colT);
+  hoja.getRange(1, colT).setValue('Caravana SENASA').setFontWeight('bold');
+  // Texto ANTES de que entre el primer valor: Sheets le comeria el 0 inicial.
+  hoja.getRange(2, colT, Math.max(hoja.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (dc) {
+    var colI = DC.caravana_senasa + 1;                        // 9, 1-based
+    dc.insertColumnBefore(colI);
+    dc.getRange(1, colI).setValue('Caravana SENASA').setFontWeight('bold');
+    dc.getRange(2, colI, Math.max(dc.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+    var n = reconstruirDC_(ss);
+    Logger.log('Vista ' + HOJA_DC + ' reconstruida: ' + n + ' filas.');
+  }
+
+  var e = esquema_(ss);
+  Logger.log(e.ok ? 'Migrado a r7: ' + e.columnas + ' columnas, esquema OK. Las tablets drenan solas.'
+                  : 'ATENCION: el esquema no cierra despues de migrar: ' + JSON.stringify(e.diferencias));
+}
+
 function revisarMigracionR6() {
   var ss = SpreadsheetApp.openById(SS_ID);
   var plan = planMigracionR6_(ss);
@@ -2020,8 +2149,8 @@ function migrarR6() {
       v[9], v[10], v[11],                               // J-L calostro madre, igual
       v[13],                                            // N vieja -> M: lts madre
       origen, idOrigen, calTernero, v[14],              // N-Q: lo del ternero
-      v[16], v[17], v[18],                              // Q,R,S viejas -> R,S,T
-      v[19], v[20],                                     // T,U viejas -> U,V
+      v[16], v[17], '', v[18],                          // Q,R,S viejas -> R,S,(T caravana vacia),U
+      v[19], v[20],                                     // T,U viejas -> V,W
       v[21], criaDe_(v, porParto, vistas), v[23], v[24], v[25],
       '', false                                         // AB Anulada, AC Cargado a DC
     ];
@@ -2067,7 +2196,7 @@ function generarToken() {
  */
 function aplicarFormatos_(hoja) {
   var n = hoja.getMaxRows() - 1;
-  var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'id_parto', 'cria', 'uuid'];
+  var texto = ['id_vaca', 'hora', 'id_ternero', 'id_vaca_origen', 'caravana_senasa', 'id_parto', 'cria', 'uuid'];
   texto.forEach(function (k) { hoja.getRange(2, COL[k] + 1, n, 1).setNumberFormat('@'); });
   hoja.getRange(2, COL.fecha + 1, n, 1).setNumberFormat('dd/MM/yyyy');
   hoja.getRange(2, COL.cargado_en + 1, n, 1).setNumberFormat('dd/MM/yyyy HH:mm');

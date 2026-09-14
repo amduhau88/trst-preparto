@@ -24,6 +24,11 @@ function crearHoja(nombre, filas) {
     setFrozenRows() { return this; },
     clear() { this.filas.length = 0; return this; },
     deleteRow(n) { this.filas.splice(n - 1, 1); return this; },
+    // Igual que Sheets: corre a la derecha todo lo que esta desde esa columna.
+    insertColumnBefore(n) {
+      this.filas.forEach((f) => { while (f.length < n - 1) f.push(''); f.splice(n - 1, 0, ''); });
+      return this;
+    },
     insertRowAfter(n) {
       // Igual que Sheets: lo que estaba abajo baja un lugar, con sus valores.
       this.filas.splice(n, 0, []);
@@ -1241,7 +1246,7 @@ libro._hojas[libro._hoja].filas = [HEAD_VIEJO.slice()];      // planilla sin mig
 
 r = post(partoBase({ uuid: 'u-sin-migrar' }));
 check('el alta se rechaza', r.ok === false, JSON.stringify(r));
-check('y dice exactamente que falta', /migrada a r6/.test(r.error), r.error);
+check('y dice exactamente que falta', /migrada a r7/.test(r.error), r.error);
 check('NO como error de validacion: si no, la tablet lo daria por perdido',
       r.error !== 'validacion' && r.detalles === undefined, JSON.stringify(r));
 check('no escribio ninguna fila', formato().length === 0, 'filas=' + formato().length);
@@ -1250,10 +1255,10 @@ check('ni reclamo el uuid en _log', !log().some((l) => l[0] === 'u-sin-migrar'),
 
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-sin-migrar', operario: 'Julio',
            terneros: [{ peso: 40 }] });
-check('corregir tampoco', r.ok === false && /migrada a r6/.test(r.error), JSON.stringify(r));
+check('corregir tampoco', r.ok === false && /migrada a r7/.test(r.error), JSON.stringify(r));
 r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-sin-migrar', op_uuid: 'op-sm',
            operario: 'Julio', sexo: '6 Macho Vivo' });
-check('ni cambiar el sexo', r.ok === false && /migrada a r6/.test(r.error), JSON.stringify(r));
+check('ni cambiar el sexo', r.ok === false && /migrada a r7/.test(r.error), JSON.stringify(r));
 
 // Las lecturas no explotan: devuelven vacio en vez de datos de otras columnas.
 check('partos del dia devuelve vacio, no basura',
@@ -1570,6 +1575,76 @@ check('admin: cambia el sexo y de paso la vaca', r.ok === true, JSON.stringify(r
   const f = formato().filter((x) => x[COL.uuid] === 'u-adm-04' && x[COL.anulada] !== 'Si');
   check('la fila quedo hembra y con la vaca nueva', f.length === 1 && f[0][COL.sexo] === '1 Hembra Viva' && f[0][COL.id_vaca] === '4401',
         JSON.stringify(f.map((x) => [x[COL.sexo], x[COL.id_vaca]])));
+}
+
+console.log('\n28. Caravana SENASA: 6 digitos, obligatoria hacia adelante');
+libro = nuevoLibro();
+const conCaravana = (extra) => partoBase(Object.assign({ formato: 2,
+  terneros: [{ id_ternero: '24543', raza: 'Holando', peso: 42, vive: true, calostro: calostroOk, caravana_senasa: '012345' }] }, extra || {}));
+r = post(conCaravana({ uuid: 'u-sen-01' }));
+check('alta con caravana entra', r.ok === true, JSON.stringify(r));
+check('la caravana queda en T (COL.caravana_senasa) como texto', formato()[0][COL.caravana_senasa] === '012345', JSON.stringify(formato()[0][COL.caravana_senasa]));
+check('y las notas siguen en U', formato()[0][COL.notas] === '' && formato()[0][COL.uuid] === 'u-sen-01');
+r = post(partoBase({ uuid: 'u-sen-02', formato: 2 }));
+check('formato 2 sin caravana -> rechazado y dice cual', r.ok === false && /falta la caravana SENASA \(6 digitos\)/.test(r.detalles.join()), JSON.stringify(r));
+r = post(partoBase({ uuid: 'u-sen-03' }));
+check('cola vieja (sin formato) sin caravana -> entra igual', r.ok === true, JSON.stringify(r));
+check('con T vacia', formato().filter((f) => f[COL.uuid] === 'u-sen-03')[0][COL.caravana_senasa] === '');
+r = post(conCaravana({ uuid: 'u-sen-04', terneros: [{ id_ternero: '1', raza: 'Holando', vive: true, calostro: calostroOk, caravana_senasa: '12345' }] }));
+check('5 digitos -> rechazada', r.ok === false && /caravana SENASA invalida/.test(r.detalles.join()), JSON.stringify(r));
+r = post(conCaravana({ uuid: 'u-sen-05', terneros: [{ id_ternero: '1', raza: 'Holando', vive: true, calostro: calostroOk, caravana_senasa: 'AB1234' }] }));
+check('letras -> rechazada', r.ok === false && /caravana SENASA invalida/.test(r.detalles.join()));
+r = post(partoBase({ uuid: 'u-sen-06', formato: 2, sexo: '7 Macho Muerto', terneros: [] }));
+check('parto muerto no la pide y escribe ---', r.ok === true && formato().filter((f) => f[COL.uuid] === 'u-sen-06')[0][COL.caravana_senasa] === '---');
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-sen-03', operario: 'Julio', terneros: [{ caravana_senasa: '654321' }] });
+check('el operario la completa despues (mismo dia)', r.ok === true && r.cambios === 1 &&
+      formato().filter((f) => f[COL.uuid] === 'u-sen-03')[0][COL.caravana_senasa] === '654321', JSON.stringify(r));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-sen-03', operario: 'Julio', terneros: [{ caravana_senasa: '12' }] });
+check('corregirla a algo que no son 6 digitos -> rechazado', r.ok === false && /caravana SENASA invalida/.test((r.detalles || []).join()));
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-sen-03', operario: 'Julio', terneros: [{ caravana_senasa: '' }] });
+check('vaciarla -> rechazado', r.ok === false, JSON.stringify(r));
+r = post({ id_token: 'bueno', accion: 'parto', uuid: 'u-sen-01' });
+check('accion=parto la devuelve', r.ok === true && r.parto.terneros[0].caravana_senasa === '012345');
+r = post({ id_token: 'bueno', accion: 'partos', todos: true });
+check('partos la devuelve', r.ok === true && r.partos.some((x) => x.caravana_senasa === '012345'));
+{
+  sandbox.reconstruirDC_(libro);
+  const dc = libro._hojas['Datos Carga DC'].filas;
+  check('la vista DC la lleva a la derecha de ID Ternero', dc[0][sandbox.DC.id_ternero] === 'ID Ternero' &&
+        dc[0][sandbox.DC.caravana_senasa] === 'Caravana SENASA' &&
+        dc.slice(1).some((f) => f[sandbox.DC.id_ternero] === '24543' && f[sandbox.DC.caravana_senasa] === '012345'),
+        JSON.stringify(dc.slice(0, 2)));
+}
+
+console.log('\n29. Migracion r6 -> r7: una columna nueva, nada mas se mueve');
+{
+  const HEAD_R6 = sandbox.ENCABEZADOS_R6.slice();
+  const DC_R6 = sandbox.DC_ENCABEZADOS.filter((h) => h !== 'Caravana SENASA');
+  const cargadoR6 = new Date(2026, 8, 1, 8, 30);
+  const filaR6 = ['Julio', '4115', new Date(2026, 8, 1), '07:00', '1 Normal', '6 Macho Vivo',
+    '24543', 'Holando', 42, '26', 'No', '---', 5, 'Propia madre', '4115', '26', 4,
+    '2', 'T4 - 215', 'una nota', 'Macho', 'Vivo', '20260901-4115-umig', '1/1', 'u-mig7-1', cargadoR6, 'tablet', '', false];
+  libro = nuevoLibro();
+  libro._hojas['Registros'].filas = [HEAD_R6.slice(), filaR6.slice()];
+  libro._hojas['Datos Carga DC'].filas = [DC_R6.slice(),
+    ['4115', '01/09/2026', 'M24543', '1 Normal', '26', '26', '6 Macho Vivo', '24543', 4, '26', 'Holando', 5, 'DC', 'Julio', 'T4 - 215', true, 'u-mig7-1|1/1']];
+  check('antes de migrar el backend se niega a escribir',
+        /migrada a r7/.test(post(partoBase({ uuid: 'u-mig7-x' })).error || ''));
+  check('el ensayo dice que esta listo', sandbox.planMigracionR7_(libro).ok === true, sandbox.planMigracionR7_(libro).log.join(' / '));
+  sandbox.migrarR7();
+  const h = libro._hojas['Registros'].filas;
+  check('dejo respaldo', !!libro._hojas['Registros_backup_r6'] && libro._hojas['Registros_backup_r6'].filas[0].length === 29);
+  check('el encabezado es el de r7', h[0].join('|') === HEAD_FORMATO.join('|'), h[0].join('|'));
+  check('la fila tiene 30 columnas con T vacia', h[1].length === 30 && h[1][COL.caravana_senasa] === '');
+  check('las notas y el rodeo quedaron donde corresponde', h[1][COL.notas] === 'una nota' && h[1][COL.rodeo] === 'T4 - 215');
+  // El tilde de DC manda y se replica a Registros al reconstruir la vista: queda true.
+  check('las tecnicas corrieron enteras', h[1][COL.uuid] === 'u-mig7-1' && h[1][COL.cria] === '1/1' && h[1][COL.cargado_dc] === true,
+        JSON.stringify([h[1][COL.uuid], h[1][COL.cria], h[1][COL.cargado_dc]]));
+  const dc = libro._hojas['Datos Carga DC'].filas;
+  check('DC tiene la columna despues de ID Ternero', dc[0].join('|') === sandbox.DC_ENCABEZADOS.join('|'), dc[0].join('|'));
+  check('y el rodeo y el tilde de Nahuel sobrevivieron', dc[1][sandbox.DC.rodeo] === 'T4 - 215' && dc[1][sandbox.DC.cargado] === true, JSON.stringify(dc[1]));
+  check('despues de migrar, escribe', post(partoBase({ uuid: 'u-mig7-y' })).ok === true);
+  check('migrar dos veces no hace nada', sandbox.planMigracionR7_(libro).ok === false);
 }
 
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
