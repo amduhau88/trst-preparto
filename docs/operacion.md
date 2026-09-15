@@ -161,11 +161,13 @@ error queda en rojo debajo del parto en **Partos cargados**, con cuántos intent
 que el formulario les cambie la fecha. Ese texto en rojo es lo primero que hay que leer.
 
 Si el backend dice `no existe el parto` (la fila se borró a mano de `Registros`), la corrección pasa
-a **Revisar** y deja de reintentar. Un **admin** ve el botón **Descartar** en **cualquier registro sin
-sincronizar** (desde `preparto-v14`): un alta pendiente o rechazada se borra de la tablet (nunca entró
-a la planilla; si hace falta se carga de nuevo); una corrección pendiente o en Revisar se limpia sin
-tocar la planilla. Los operarios no lo tienen. Como la cola es de la tablet y no de la cuenta, el
-admin entra en la tablet con su cuenta (chip → Cambiar de usuario), descarta y devuelve la sesión.
+a **Revisar** y deja de reintentar. Un **admin** ve el botón **Rechazar** en **todas las filas** (desde
+`preparto-v16`): si el parto nunca entró a la planilla (pendiente o rechazado), se borra de la tablet;
+si ya está en la planilla, propia o de otra tablet, el backend lo **anula** (`Anulada = Si` en sus
+filas, `_log` con quién): deja de contar, desaparece de la lista y no va a DairyComp. La fila no se
+borra: borrar filas es lo que dejaba fantasmas en las tablets. Los operarios no lo tienen. Como la
+cola es de la tablet y no de la cuenta, el admin entra en la tablet con su cuenta (chip → Cambiar de
+usuario), rechaza y devuelve la sesión.
 La fila muestra el último error en rojo y cuántos intentos lleva, para saber por qué no sube antes
 de descartar.
 
@@ -199,7 +201,7 @@ Ojo: corregir fecha o vaca de un parto que Nahuel ya cargó en DairyComp deja el
 dato viejo allá. Hay que corregirlo también en DairyComp.
 
 En **Partos cargados** todos ven la planilla completa; la diferencia del admin es el botón
-*Corregir* en cada fila, también en las que cargó otra tablet, y **Descartar** en lo que no subió.
+*Corregir* y **Rechazar** en cada fila, también en las que cargó otra tablet.
 
 ## Caravana SENASA (desde r7 / v15)
 

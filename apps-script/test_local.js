@@ -1647,5 +1647,35 @@ console.log('\n29. Migracion r6 -> r7: una columna nueva, nada mas se mueve');
   check('migrar dos veces no hace nada', sandbox.planMigracionR7_(libro).ok === false);
 }
 
+console.log('\n30. Rechazar un parto (admin): se anula, no se borra');
+libro = nuevoLibro();
+post(partoBase({ uuid: 'u-rech-01', id_vaca: '8101', terneros: mellizo, sexo: '8 Otros Gemelos (M+M o M+H)' }));
+post(partoBase({ uuid: 'u-rech-02', id_vaca: '8102' }));
+r = post({ id_token: 'bueno', accion: 'anular_parto', uuid: 'u-rech-01' });
+check('un operario no puede', r.ok === false && /solo un admin/.test(r.error), JSON.stringify(r));
+r = post({ token: TOKEN, accion: 'anular_parto', uuid: 'u-rech-01' });
+check('el token de scripts tampoco', r.ok === false && /solo un admin/.test(r.error));
+r = post({ id_token: 'admin', accion: 'anular_parto', uuid: 'u-rech-01', motivo: 'cargado dos veces' });
+check('el admin lo anula (las 2 filas del mellizo)', r.ok === true && r.anuladas === 2, JSON.stringify(r));
+check('Anulada = Si en las dos filas', formato().filter((f) => f[COL.uuid] === 'u-rech-01').every((f) => f[COL.anulada] === 'Si'));
+check('las filas siguen en la hoja', formato().filter((f) => f[COL.uuid] === 'u-rech-01').length === 2);
+check('_log dice quien', log().some((l) => l[0] === 'u-rech-01' && l[4] === 'anulado por admin' && l[5] === 'andresduhau@admin.com.ar'));
+r = post({ id_token: 'bueno', accion: 'partos', todos: true });
+check('desaparece de la lista', r.partos.every((x) => x.uuid !== 'u-rech-01') && r.partos.some((x) => x.uuid === 'u-rech-02'));
+r = post({ id_token: 'bueno', accion: 'parto', uuid: 'u-rech-01' });
+check('y accion=parto ya no lo encuentra', r.ok === false && /no existe/.test(r.error));
+{
+  sandbox.reconstruirDC_(libro);
+  const dc = libro._hojas['Datos Carga DC'].filas.slice(1);
+  check('tampoco va a Datos Carga DC', dc.every((f) => String(f[sandbox.DC.clave]).indexOf('u-rech-01') === -1) && dc.some((f) => String(f[sandbox.DC.clave]).indexOf('u-rech-02') === 0));
+}
+r = post({ id_token: 'admin', accion: 'anular_parto', uuid: 'u-rech-01' });
+check('rechazarlo otra vez no es error', r.ok === true && r.anuladas === 0 && r.ya_estaba === true, JSON.stringify(r));
+r = post({ id_token: 'admin', accion: 'anular_parto', uuid: 'no-existe' });
+check('inexistente -> no existe el parto', r.ok === false && /no existe/.test(r.error));
+r = post(partoBase({ uuid: 'u-rech-01', id_vaca: '8101', terneros: mellizo, sexo: '8 Otros Gemelos (M+M o M+H)' }));
+check('un reintento del alta original no lo revive (idempotencia por uuid)', r.ok === true && r.duplicado === true &&
+      formato().filter((f) => f[COL.uuid] === 'u-rech-01').length === 2, JSON.stringify(r));
+
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);
