@@ -135,6 +135,15 @@ const api = http.createServer((req, res) => {
     }
     if (p.accion === 'maestro') return responder({ ok: true, listas: LISTAS });
     // Mismo contrato que partosDelDia_: UNA entrada por cria, no por parto.
+    // Rechazar = anular en la planilla. Solo admin, como anularParto_.
+    if (p.accion === 'anular_parto') {
+      if (datos.email !== ADMIN) return responder({ ok: false, error: 'solo un admin rechaza un parto' });
+      const mias = filas.filter((f) => f.uuid === p.uuid);
+      if (!mias.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+      const activas = mias.filter((f) => !f.anulada);
+      activas.forEach((f) => { f.anulada = true; });
+      return responder({ ok: true, uuid: p.uuid, anuladas: activas.length, ya_estaba: !activas.length });
+    }
     if (p.accion === 'partos') {
       const lista = p.todos === true ? filas.filter((f) => !f.anulada)
                                      : filas.filter((f) => f.fecha === p.fecha && !f.anulada);
@@ -1352,7 +1361,7 @@ const visible = (page, sel) => page.evaluate((s) => {
           JSON.stringify(antesDeSalir));
     await page.click('.tab[data-v="list"]');
     await esperar(400);
-    check('el operario NO ve Descartar en un alta pendiente', !(await page.$('[data-descartar]')));
+    check('el operario NO ve Rechazar en un alta pendiente', !(await page.$('[data-rechazar]')));
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
@@ -1526,7 +1535,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     await esperar(500);
     check('se ve en la tabla con la pastilla Revisar y el motivo',
           (await filaDe('6070')).pill === 'Revisar' && /ya no está en la planilla/.test((await filaDe('6070')).txt));
-    check('el operario NO ve Descartar', !(await page.$('[data-descartar]')));
+    check('el operario NO ve Rechazar', !(await page.$('[data-rechazar]')));
 
     console.log('\n12g. Tres errores de servidor seguidos si cortan la tanda');
     caidoHasta = Date.now() + 60000;                  // encolar 4 sin que salga nada
@@ -1614,8 +1623,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.click('.tab[data-v="list"]');
     await esperar(500);
     check('el fantasma sigue ahi', await page.$eval('#filas', (e) => /6070/.test(e.textContent)));
-    check('el admin SI ve Descartar', !!(await page.$('[data-descartar]')));
-    await page.click('[data-descartar]');
+    check('el admin SI ve Rechazar en el fantasma', !!(await page.$(`[data-rechazar="${uuidFantasma}"]`)));
+    await page.click(`[data-rechazar="${uuidFantasma}"]`);
     await esperar(300);
     check('pide confirmacion', await visible(page, '#modalConf'));
     await page.click('#btnConfSi');
@@ -1636,8 +1645,8 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.click('.tab[data-v="list"]');
     await esperar(400);
     const uuid6090 = await page.evaluate(async () => (await todosLocal()).find((r) => r.payload.id_vaca === '6090').uuid);
-    check('el admin ve Descartar en el alta pendiente', !!(await page.$(`[data-descartar="${uuid6090}"]`)));
-    await page.click(`[data-descartar="${uuid6090}"]`);
+    check('el admin ve Rechazar en el alta pendiente', !!(await page.$(`[data-rechazar="${uuid6090}"]`)));
+    await page.click(`[data-rechazar="${uuid6090}"]`);
     await esperar(300);
     check('pide confirmacion y avisa que nunca entro', await visible(page, '#modalConf') &&
           /nunca entró a la planilla/.test(await page.$eval('#confDetalle', (e) => e.textContent)));
@@ -1714,6 +1723,30 @@ const visible = (page, sel) => page.evaluate((s) => {
       const r = (await todosLocal()).find((x) => x.uuid === 'u-hace-un-mes');
       return !!r && r.sombra === true && r.payload.id_vaca === '3132' && r.payload.fecha_parto === '2026-01-21' && r.estado === 'ok';
     }));
+    await page.click('.tab[data-v="config"]');
+    await esperar(300);
+
+    console.log('\n14f. El admin rechaza un parto que ya esta en la planilla');
+    await page.click('.tab[data-v="list"]');
+    await esperar(600);
+    const uuid6071 = await page.evaluate(async () => (await todosLocal()).find((r) => r.payload.id_vaca === '6071').uuid);
+    check('hay Rechazar en un parto sincronizado', !!(await page.$(`[data-rechazar="${uuid6071}"]`)));
+    check('y tambien en uno de otra tablet', !!(await page.$('[data-rechazar="u-viejo-2"]')));
+    await page.click(`[data-rechazar="${uuid6071}"]`);
+    await esperar(300);
+    check('pide confirmacion y explica que se anula', await visible(page, '#modalConf') &&
+          /anula en la planilla/.test(await page.$eval('#confDetalle', (e) => e.textContent)));
+    await page.click('#btnConfSi');
+    await esperar(1500);
+    check('la planilla lo marco anulado', filas.filter((f) => f.uuid === uuid6071).every((f) => f.anulada === true) &&
+          filas.some((f) => f.uuid === uuid6071));
+    check('desaparecio de la tabla y de la tablet', !(await filaDe('6071')) &&
+          !(await page.evaluate(async () => (await todosLocal()).some((r) => r.payload.id_vaca === '6071'))));
+    await page.click('[data-rechazar="u-viejo-2"]');
+    await esperar(300);
+    await page.click('#btnConfSi');
+    await esperar(1500);
+    check('rechazar uno de otra tablet tambien lo anula', filas.filter((f) => f.uuid === 'u-viejo-2').every((f) => f.anulada === true) && !(await filaDe('2020')));
     await page.click('.tab[data-v="config"]');
     await esperar(300);
 

@@ -605,8 +605,8 @@ document.addEventListener('click', (e) => {
 
   const ed = e.target.closest('[data-editar]');
   if (ed) return abrirEdicion(ed.dataset.editar, ed.dataset.pesar === '1');
-  const ds = e.target.closest('[data-descartar]');
-  if (ds) return descartarCambio(ds.dataset.descartar);
+  const rc = e.target.closest('[data-rechazar]');
+  if (rc) return rechazarParto(rc.dataset.rechazar);
   const er = e.target.closest('[data-editar-remoto]');
   if (er) return abrirEdicionRemota(er.dataset.editarRemoto);
   const ord = e.target.closest('[data-orden]');
@@ -1097,56 +1097,55 @@ async function abrirEdicion(uuid, focoPeso) {
   }
 }
 
-/* Sacar de la cola lo que ya no va a subir solo. Solo admin: descartar es
-   decidir que la planilla tiene razon y la tablet no, y eso no lo decide el
-   operario en el corral. La planilla no se toca nunca desde aca. */
-async function descartarCambio(uuid) {
-  if (!(sesion && sesion.admin)) return;
+/* Rechazar un parto. Solo admin. Tres casos, y en los tres la fila desaparece
+   de la tablet:
+   - Todavia no entro a la planilla (pendiente o rechazado): se borra de la tablet.
+   - Ya esta en la planilla (local o de otra tablet): el backend lo ANULA
+     (Anulada = Si), no lo borra: deja de contar, de listarse y de ir a DC, y
+     queda en _log quien lo rechazo. Borrar filas es lo que dejaba fantasmas.
+   - Tenia una correccion sin subir: se anula igual; la correccion se descarta. */
+async function rechazarParto(uuid) {
+  if (!esAdmin()) return;
   const reg = (await todosLocal()).find((r) => r.uuid === uuid);
-  if (!reg) return avisar('Ese parto ya no está en la tablet', true);
-  const vaca = reg.payload.id_vaca;
+  const remoto = !reg ? (partosRemotos(LISTA_TODOS).find((f) => f[0].uuid === uuid) || [null])[0] : null;
+  if (!reg && !remoto) return avisar('Ese parto ya no está', true);
+  const vaca = reg ? reg.payload.id_vaca : remoto.id_vaca;
+  const fecha = aDDMMAAAA((reg ? reg.payload.fecha_parto : remoto.fecha) || '');
 
-  if (reg.estado !== 'ok') {
-    // Un alta pendiente o rechazada nunca entro a la planilla: descartarla es
-    // borrarla de la tablet. Se dice con todas las letras, porque no hay vuelta.
-    const fecha = aDDMMAAAA(reg.payload.fecha_parto || '');
-    const ok = await confirmar('Descartar este parto',
+  if (reg && reg.estado !== 'ok') {
+    // Nunca entro a la planilla: rechazarlo es borrarlo de la tablet.
+    const ok = await confirmar('Rechazar este parto',
       `El parto de la vaca <b>${vaca}</b> del ${fecha} <b>nunca entró a la planilla</b>
        (${reg.estado === 'error' ? 'la planilla lo rechazó' : 'está esperando subir'}${reg.error ? ': ' + reg.error : ''}).
-       Se borra de esta tablet y no se recupera. Si hace falta, se carga de nuevo.`, 'Sí, descartar');
+       Se borra de esta tablet y no se recupera. Si hace falta, se carga de nuevo.`, 'Sí, rechazar');
     if (!ok) return;
     await borrarLocal(uuid);
     await refrescar();
-    return avisar('Parto descartado de la tablet');
+    return avisar('Parto rechazado: se borró de la tablet');
   }
 
-  const ok = await confirmar('Descartar la corrección',
-    `Se descarta la corrección pendiente del parto de la vaca <b>${vaca}</b> en esta tablet.
-     La planilla queda como está.`, 'Sí, descartar');
+  if (!navigator.onLine) return avisar('Sin señal: rechazar un parto necesita conexión con la planilla', true);
+  const ok = await confirmar('Rechazar este parto',
+    `El parto de la vaca <b>${vaca}</b> del ${fecha} se <b>anula en la planilla</b>: deja de contar,
+     desaparece de esta lista y no va a DairyComp. Queda registrado que lo rechazaste vos.
+     ${reg && (reg.edicion || reg.cambioSexo) ? 'La corrección pendiente se descarta.' : ''}
+     No se deshace desde la app.`, 'Sí, rechazar');
   if (!ok) return;
 
-  // Si la planilla ya no tiene el parto (se borro a mano), la copia local es un
-  // fantasma: se va con la correccion. Si lo tiene, se limpia el pendiente y se
-  // avisa que lo que muestra la tablet puede diferir de la planilla.
-  let enPlanilla = null;
-  if (navigator.onLine && sesion && (sesionSirve() || tokenSirve(60000))) {
-    try {
-      const j = await enviar({ accion: 'partos', fecha: reg.payload.fecha_parto });
-      if (j && j.ok) enPlanilla = (j.partos || []).some((f) => f.uuid === uuid);
-    } catch (e) { /* sin respuesta: se conserva la copia local */ }
+  let j;
+  try { j = await enviar({ accion: 'anular_parto', uuid }); } catch (e) { j = null; }
+  if (!j || !j.ok) {
+    if (j && /no existe el parto/i.test(j.error || '')) {
+      // Ya no esta en la planilla: la copia local es un fantasma, se va.
+      if (reg) await borrarLocal(uuid);
+      await bajarPartosDelDia(LISTA_TODOS);
+      return avisar('Ese parto ya no estaba en la planilla: se sacó de la tablet');
+    }
+    return avisar('No se pudo rechazar: ' + ((j && j.error) || 'sin respuesta'), true);
   }
-  if (enPlanilla === false) {
-    await borrarLocal(uuid);
-    await refrescar();
-    return avisar('Ese parto ya no estaba en la planilla: se sacó de la tablet');
-  }
-  reg.revisarEdicion = false;
-  reg.edicion = null;
-  reg.cambioSexo = null;
-  reg.error = '';
-  await guardarLocal(reg);
-  await refrescar();
-  avisar('Corrección descartada. La planilla manda: lo que muestre esta fila puede diferir.');
+  if (reg) await borrarLocal(uuid);
+  await bajarPartosDelDia(LISTA_TODOS);
+  avisar(j.ya_estaba ? 'Ese parto ya estaba anulado' : 'Parto rechazado: anulado en la planilla');
 }
 
 function cancelarEdicion() {
@@ -1706,9 +1705,7 @@ function vistaLocal(r) {
     uuid: r.uuid, mia: true, id_vaca: p.id_vaca, hora: p.hora_nacimiento, fecha: p.fecha_parto,
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
     cargado: cuandoSeCargo(r.creado), cargadoTs: r.creado || 0, muerto, pesar, error: r.error || '',
-    // Todo lo que no esta en la planilla o tiene algo sin subir. Un admin puede
-    // descartarlo: es la salida cuando un registro traba la cola y no hay arreglo.
-    descartable: sinSubir(r),
+    sinSubir: sinSubir(r),
     intentos: r.intentos || 0,
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
       id: t.id_ternero || 's/id', vive: t.vive !== false,
@@ -1845,8 +1842,8 @@ async function refrescar() {
       <div class="ocultar">${v.tipo}</div>
       <div class="ocultar">${v.operario}</div>
       <div><span class="pill ${v.estado[0]}">${v.estado[1]}</span></div>
-      <div>${v.mia && v.descartable && esAdmin()
-          ? `<button class="btn" type="button" style="color:var(--danger)" data-descartar="${v.uuid}">Descartar</button> ` : ''}${boton}</div>
+      <div>${esAdmin()
+          ? `<button class="btn" type="button" style="color:var(--danger)" data-rechazar="${v.uuid}">Rechazar</button> ` : ''}${boton}</div>
     </div>`;
   }).join('') + (lista.length > TOPE_FILAS
     ? `<div class="vacio">Se muestran ${TOPE_FILAS} de ${lista.length}. Afiná el rango de fechas o buscá una vaca.</div>` : '')

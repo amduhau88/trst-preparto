@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r7-senasa-2026-09-14';
+var VERSION = 'r7-rechazar-2026-09-14';
 
 /* Credencial propia de la tablet. El id_token de Google dura una hora y su
    renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
@@ -306,6 +306,11 @@ function doPost(e) {
     // intacta su garantia de no mover nunca un renglon.
     if (payload.accion === 'cambiar_sexo') {
       return cambiarSexo_(payload, auth);
+    }
+
+    // Rechazar un parto: lo anula en la planilla. Solo admin.
+    if (payload.accion === 'anular_parto') {
+      return anularParto_(payload, auth);
     }
 
     if (!payload.uuid) return json_({ ok: false, error: 'falta uuid' });
@@ -757,6 +762,40 @@ function idOrigenEditado_(p, f, cal) {
   var origen = cal.origen === undefined ? f.datos[COL.origen_calostro] : cal.origen;
   if (String(origen) === ORIGEN_PROPIA) return p.id_vaca || f.datos[COL.id_vaca];
   return cal.id_vaca_origen;
+}
+
+/**
+ * Rechazar un parto (admin): marca Anulada = Si en todas sus filas. No se borra
+ * la fila: borrar es lo que deja fantasmas en las tablets (una correccion sobre
+ * algo que ya no existe) y rompe la idempotencia por uuid. Anulado, el parto
+ * deja de contar, de listarse y de ir a Datos Carga DC, y queda quien lo hizo.
+ */
+function anularParto_(p, auth) {
+  if (!p.uuid) return json_({ ok: false, error: 'falta uuid' });
+  if (!(auth.admin && auth.via !== 'token')) {
+    return json_({ ok: false, error: 'solo un admin rechaza un parto' });
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) return json_({ ok: false, error: 'ocupado, reintentar' });
+  try {
+    var ss = SpreadsheetApp.openById(SS_ID);
+    if (!esquemaOk_(ss)) return json_({ ok: false, error: SIN_MIGRAR });
+    var hoja = hojaRegistros_(ss);
+    var todas = filasDeUuid_(hoja, p.uuid);
+    if (!todas.length) return json_({ ok: false, error: 'no existe el parto ' + p.uuid });
+    var activas = filasActivas_(todas);
+    // Ya anulado: es un reintento, no un error.
+    if (!activas.length) return json_({ ok: true, uuid: p.uuid, anuladas: 0, ya_estaba: true });
+
+    activas.forEach(function (f) { hoja.getRange(f.fila, COL.anulada + 1).setValue('Si'); });
+    ss.getSheetByName(HOJA_LOG).appendRow([p.uuid, new Date(),
+      JSON.stringify({ motivo: str_(p.motivo), filas: activas.map(function (f) { return f.fila; }) }),
+      activas.length, 'anulado por admin', auth.email]);
+    actualizarDC_(ss);
+    return json_({ ok: true, uuid: p.uuid, anuladas: activas.length });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function tocaAlgo_(t) {
