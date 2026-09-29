@@ -1080,9 +1080,23 @@ async function abrirEdicionRemota(uuid) {
   return abrirEdicion(uuid, false);
 }
 
+/* Un operario corrige solo lo que se cargo HOY: el dia de carga en la tablet,
+   no la fecha del parto, igual que mira el backend. Lo que todavia no entro a
+   la planilla se corrige siempre: se reescribe aca y sube ya corregido. Un
+   admin corrige cualquier parto de cualquier dia. Regla del 29/09: tres
+   correcciones viejas rechazadas dejaron tres partos nuevos sin subir. */
+function corregible(reg) {
+  if (esAdmin()) return true;
+  if (reg.estado !== 'ok') return true;
+  const cargado = new Date(reg.creado || Date.parse(String(reg.payload.cargado_en || '')));
+  return !isNaN(cargado) && aISO(cargado) === aISO(new Date());
+}
+const SOLO_ADMIN = 'Ese parto se cargó otro día: solo lo corrige un admin';
+
 async function abrirEdicion(uuid, focoPeso) {
   const reg = (await todosLocal()).find((r) => r.uuid === uuid);
   if (!reg) return avisar('Ese parto ya no está en la tablet', true);
+  if (!corregible(reg)) return avisar(SOLO_ADMIN, true);
 
   aEstado(reg.payload);
   pintarFormulario();
@@ -1600,14 +1614,19 @@ async function sincronizar() {
         reg.error = res.error || 'sesion vencida';
         await guardarLocal(reg);
         break;
-      } else if (tipo !== 'alta' && /no existe el parto/i.test((res && res.error) || '')) {
-        // La fila ya no esta en la planilla (se borro a mano): reintentar no la
-        // va a traer de vuelta. Un parto asi trababa la cola entera para
-        // siempre: 112 intentos y los partos de atras con cero.
+      } else if (tipo !== 'alta' && /no existe el parto|cargados hoy/i.test((res && res.error) || '')) {
+        // Dos rechazos que reintentar no arregla: la fila ya no esta en la
+        // planilla (se borro a mano), o se corrigio un parto de otro dia sin
+        // ser admin (un backend anterior a r8 lo contesta como error suelto).
+        // Un parto asi trababa la cola entera: 112 intentos y los de atras
+        // con cero; y tres seguidos (29/09) cortaban la tanda como si el
+        // servidor estuviera caido, con los partos nuevos sin intentar.
         reg.edicion = null;
         reg.cambioSexo = null;
         reg.revisarEdicion = true;
-        reg.error = 'ese parto ya no está en la planilla: la corrección no se puede aplicar';
+        reg.error = /cargados hoy/i.test(res.error)
+          ? 'corrección rechazada: solo se corrigen partos cargados hoy: pedile a un admin'
+          : 'ese parto ya no está en la planilla: la corrección no se puede aplicar';
         await guardarLocal(reg);
         continue;
       } else {
@@ -1706,6 +1725,7 @@ function vistaLocal(r) {
     tipo: p.tipo_parto, sexo: p.sexo, operario: p.operario,
     cargado: cuandoSeCargo(r.creado), cargadoTs: r.creado || 0, muerto, pesar, error: r.error || '',
     sinSubir: sinSubir(r),
+    corregible: corregible(r),
     intentos: r.intentos || 0,
     crias: muerto ? [] : (p.terneros || []).map((t) => ({
       id: t.id_ternero || 's/id', vive: t.vive !== false,
@@ -1821,10 +1841,13 @@ async function refrescar() {
     const cria = v.muerto ? v.sexo
       : v.crias.map((c) => c.id + (c.peso === null ? ' (sin pesar)' : ` (${c.peso} kg)`) +
                            (c.senasa ? ` · S&nbsp;${c.senasa}` : '')).join(' + ');
-    // Un operario solo corrige lo suyo y no toca un parto con cria muerta (no hay
-    // nada editable ahi salvo el sexo). Un admin corrige todo, tambien lo remoto.
+    // Un operario solo corrige lo suyo, cargado hoy, y no toca un parto con cria
+    // muerta (no hay nada editable ahi salvo el sexo). Un admin corrige todo,
+    // de cualquier dia, tambien lo remoto.
     const boton = v.mia
-      ? ((!v.muerto || esAdmin())
+      ? (!v.corregible
+          ? '<span class="tag" style="background:var(--soft);color:var(--ink-3)">solo admin</span>'
+          : (!v.muerto || esAdmin())
           ? `<button class="btn ${v.pesar ? 'primary' : ''}" type="button"
                data-editar="${v.uuid}" data-pesar="${v.pesar ? 1 : 0}">${v.pesar ? 'Pesar' : 'Corregir'}</button>` : '')
       : esAdmin()

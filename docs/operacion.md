@@ -79,7 +79,18 @@ con el que se cargó. Se pueden cambiar **el código de sexo, el peso, el calost
 el tambo**. Lo demás queda a la vista pero bloqueado.
 
 Se corrigen los partos **cargados hoy**, incluso si la fecha del parto es de ayer.
-Un parto cargado ayer ya no se toca desde la tablet: eso lo arreglás en la planilla.
+Un parto cargado ayer ya no se toca desde la tablet: desde `preparto-v17` el botón
+*Corregir* / *Pesar* no aparece y la fila dice **solo admin**. Un admin lo corrige desde
+cualquier tablet, o se arregla en la planilla. Lo que todavía no subió (pendiente o
+rechazado) se corrige siempre, porque se reescribe en la tablet y sube ya corregido.
+
+Si una corrección hecha a tiempo llega al backend al día siguiente (sin señal, sesión
+vencida, tablet apagada), el backend la rechaza con el mismo motivo. Desde `r8` /
+`preparto-v17` esa fila queda en **Revisar** con «solo se corrigen partos cargados hoy:
+pedile a un admin», y la cola sigue: no bloquea los partos de atrás. Hasta `r7` el rechazo
+contaba como servidor caído, y tres seguidos frenaban la tanda con los partos nuevos sin
+intentar (caso del 29/09/2026: 3 correcciones viejas con 386/238/39 intentos, 3 partos del
+día con 0).
 
 **Corregir el código de sexo puede agregar o sacar una cría**, porque el código dice
 cuántas hay. Si agrega, se pide el ID y la raza de la cría nueva. Si saca, la tablet
@@ -250,7 +261,9 @@ En orden:
 1. **¿El badge de la tablet dice "en espera"?** Todavía no subió. Con señal sube solo.
 2. **¿Dice "Sesión vencida"?** Tocar el badge e iniciar sesión de nuevo.
 3. **¿Dice "para revisar"?** El dato fue rechazado. El motivo está en la lista del día
-   y en `_log`. Hay que corregirlo en la tablet.
+   y en `_log`. Hay que corregirlo en la tablet. Si el motivo es «solo se corrigen partos
+   cargados hoy», la corrección se descartó de la tablet: la rehace un admin desde
+   *Corregir* en esa fila.
 4. **¿La tablet dice "Sincronizado" pero no está la fila?** Buscar el uuid en `_log`.
    Si no aparece, nunca llegó: revisar que la URL configurada sea la del deploy activo.
 5. **¿Está en `Registros` pero no en `Datos Carga DC`?** ¿La cría quedó anulada por un

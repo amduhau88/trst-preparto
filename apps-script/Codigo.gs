@@ -16,7 +16,9 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r7-rechazar-2026-09-14';
+var VERSION = 'r8-ventana-hoy-2026-09-29';
+// Un operario corrige solo lo cargado HOY; despues, solo un admin.
+var FUERA_DE_VENTANA = 'solo se corrigen partos cargados hoy: pedile a un admin';
 
 /* Credencial propia de la tablet. El id_token de Google dura una hora y su
    renovacion silenciosa (One Tap) falla seguido en el corral: la cola quedaba
@@ -576,7 +578,9 @@ function editarParto_(p, auth) {
     // cargado esta manana todavia se corrige, y uno cargado ayer ya no.
     // Un admin corrige cualquier parto, de cualquier fecha.
     if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
-      return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
+      // Como 'validacion': reintentar no lo arregla, y la tablet lo marca
+      // para revisar en vez de contarlo como servidor caido y frenar la cola.
+      return json_({ ok: false, error: 'validacion', detalles: [FUERA_DE_VENTANA] });
     }
 
     var terneros = p.terneros || [];
@@ -844,7 +848,9 @@ function cambiarSexo_(p, auth) {
 
     var admin = !!auth.admin && auth.via !== 'token';
     if (!admin && !cargadoHoy_(filas[0].datos[COL.cargado_en], tz)) {
-      return json_({ ok: false, error: 'solo se corrigen partos cargados hoy' });
+      // Como 'validacion': reintentar no lo arregla, y la tablet lo marca
+      // para revisar en vez de contarlo como servidor caido y frenar la cola.
+      return json_({ ok: false, error: 'validacion', detalles: [FUERA_DE_VENTANA] });
     }
     // La identidad solo la cambia un admin; para los demas sale de la fila.
     var idDe = function (clave, col, fmt) {

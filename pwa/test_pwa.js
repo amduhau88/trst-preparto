@@ -83,6 +83,7 @@ let rechazarSesion = false;    // el backend dice "sesion:false" aunque el token
 const sesiones = new Map();    // credencial propia de 30 dias -> { email, exp (segundos) }, como el backend r7
 let colgadoHasta = 0;          // acepta la conexion y NO contesta: el WiFi "presente pero muerto"
 let fallarAltas = false;       // el backend contesta un error de servidor (no de validacion) a cada alta
+let ventanaCerrada = '';       // 'r8': rechaza correcciones como validacion; 'r7': como error suelto (backend viejo)
 
 const LISTAS = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
@@ -220,6 +221,10 @@ const api = http.createServer((req, res) => {
       ediciones.push(p);
       const mias = filas.filter((f) => f.uuid === p.uuid);
       if (!mias.length) return responder({ ok: false, error: 'no existe el parto ' + p.uuid });
+      // Fuera de la ventana del dia (operario). r8 lo contesta como validacion;
+      // r7 lo contestaba como error de servidor y la tablet lo reintentaba.
+      if (ventanaCerrada === 'r8') return responder({ ok: false, error: 'validacion', detalles: ['solo se corrigen partos cargados hoy: pedile a un admin'] });
+      if (ventanaCerrada === 'r7') return responder({ ok: false, error: 'solo se corrigen partos cargados hoy' });
 
       const malas = [];
       let cambios = 0;
@@ -1557,6 +1562,132 @@ const visible = (page, sel) => page.evaluate((s) => {
     c = await esperarSync(page, 20);
     check('con el servidor sano entran los 4', c.pendientes === 0, JSON.stringify(c));
 
+    console.log('\n12i. Un operario no corrige un parto cargado otro dia');
+    /* Regla del 29/09: el dia que cuenta es el de CARGA en la tablet, no la
+       fecha del parto. Un admin corrige cualquiera. */
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await elegirSexo(page, 1);
+    await cargarParto(page, '6091', '8091');
+    c = await esperarSync(page, 15);
+    check('el parto entra', c.pendientes === 0, JSON.stringify(c));
+    const uuidAyer = await page.evaluate(async () => {
+      const r = (await todosLocal()).find((x) => x.payload.id_vaca === '6091');
+      r.creado -= 86400000;                                   // "se cargo ayer"
+      r.payload.cargado_en = new Date(r.creado).toISOString();
+      await guardarLocal(r);
+      return r.uuid;
+    });
+    await page.click('.tab[data-v="list"]');
+    await esperar(900);
+    check('sin boton Corregir y con la marca "solo admin"',
+          !(await page.$(`[data-editar="${uuidAyer}"]`)) && /solo admin/.test((await filaDe('6091')).txt),
+          JSON.stringify(await filaDe('6091')));
+    await page.evaluate((u) => abrirEdicion(u, false), uuidAyer);
+    await esperar(300);
+    check('abrirlo por la fuerza tampoco lo abre',
+          (await page.evaluate(() => st.editando === null)) && !(await visible(page, '#v-form')));
+    check('uno de hoy si tiene Corregir', !!(await page.$('[data-editar]')));
+
+    console.log('\n12j. Tres correcciones viejas rechazadas NO frenan los partos nuevos (caso 29/09)');
+    /* tablet-maternidad: 3 correcciones sobre partos de otros dias, rechazadas
+       386, 238 y 39 veces, y 3 partos del dia con CERO intentos: tres rechazos
+       seguidos contaban como servidor caido y cortaban la tanda. */
+    caidoHasta = Date.now() + 60000;                          // encolar sin que salga nada
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    for (const v of ['6092', '6093', '6094']) await cargarParto(page, v, '8' + v.slice(1));
+    await esperar(400);
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 15);
+    check('los 3 partos entran', c.pendientes === 0, JSON.stringify(c));
+    const uuidsViejos = [];
+    for (const v of ['6092', '6093', '6094']) {
+      // Se corrigen hoy (boton a la vista); el backend los va a tratar como
+      // de otro dia: es lo que pasa cuando la correccion sube al dia siguiente.
+      caidoHasta = Date.now() + 60000;
+      await page.click('.tab[data-v="list"]');
+      await esperar(600);
+      const u = await page.evaluate(async (vaca) => (await todosLocal()).find((x) => x.payload.id_vaca === vaca).uuid, v);
+      uuidsViejos.push(u);
+      await page.click(`[data-editar="${u}"]`);
+      await esperar(400);
+      const tAhora = await page.evaluate(() => st.tambo);
+      await page.evaluate((t) => {
+        [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val !== t).click();
+      }, tAhora);
+      await llenarSenasa(page);
+      await page.click('#btnGuardarEd');
+      await esperar(600);
+    }
+    check('3 correcciones en cola', await page.evaluate(async () => (await todosLocal()).filter((r) => r.edicion).length) === 3);
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await cargarParto(page, '6095', '8095');
+    await cargarParto(page, '6096', '8096');
+    await esperar(400);
+    check('y 2 altas detras', (await contarLocal(page)).pendientes === 2);
+    ventanaCerrada = 'r8';
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 20);
+    check('las 2 altas entran igual', c.pendientes === 0 &&
+          filas.some((f) => f.vaca === '6095') && filas.some((f) => f.vaca === '6096'), JSON.stringify(c));
+    let viejas = await page.evaluate(async (us) => (await todosLocal()).filter((r) => us.includes(r.uuid))
+      .map((r) => ({ revisar: r.revisarEdicion, edicion: r.edicion, error: r.error })), uuidsViejos);
+    check('las 3 correcciones quedan en Revisar, sin reintentar',
+          viejas.length === 3 && viejas.every((x) => x.revisar === true && x.edicion === null && /cargados hoy/.test(x.error)),
+          JSON.stringify(viejas));
+    await page.click('.tab[data-v="list"]');
+    await esperar(600);
+    check('la tabla lo dice', (await filaDe('6092')).pill === 'Revisar' && /pedile a un admin/.test((await filaDe('6092')).txt));
+
+    console.log('\n12k. Con el backend viejo (r7), el mismo rechazo como error suelto tampoco traba');
+    ventanaCerrada = '';
+    caidoHasta = Date.now() + 60000;
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await cargarParto(page, '6097', '8097');
+    await esperar(300);
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 15);
+    check('el parto entra', c.pendientes === 0, JSON.stringify(c));
+    caidoHasta = Date.now() + 60000;
+    await page.click('.tab[data-v="list"]');
+    await esperar(600);
+    const uR7 = await page.evaluate(async () => (await todosLocal()).find((x) => x.payload.id_vaca === '6097').uuid);
+    await page.click(`[data-editar="${uR7}"]`);
+    await esperar(400);
+    await page.evaluate(() => {
+      const t = st.tambo;
+      [...document.querySelectorAll('[data-chip="tambo"]')].find((b) => b.dataset.val !== t).click();
+    });
+    await llenarSenasa(page);
+    await page.click('#btnGuardarEd');
+    await esperar(600);
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await cargarParto(page, '6098', '8098');
+    await esperar(300);
+    ventanaCerrada = 'r7';
+    caidoHasta = 0;
+    await page.evaluate(() => dispatchEvent(new Event('online')));
+    c = await esperarSync(page, 15);
+    check('el alta de atras entra', c.pendientes === 0 && filas.some((f) => f.vaca === '6098'), JSON.stringify(c));
+    const r7 = await page.evaluate(async (u) => {
+      const r = (await todosLocal()).find((x) => x.uuid === u);
+      return { revisar: r.revisarEdicion, edicion: r.edicion, error: r.error };
+    }, uR7);
+    // "Sin reintentar" = el backend vio esa correccion UNA vez (los intentos del
+    // registro tambien cuentan los cortes de red de mientras el servidor estaba caido).
+    check('la correccion queda en Revisar con el motivo, un solo intento',
+          r7.revisar === true && r7.edicion === null && /cargados hoy/.test(r7.error) &&
+          ediciones.filter((e) => e.uuid === uR7).length === 1,
+          JSON.stringify(r7) + ' · intentos al backend: ' + ediciones.filter((e) => e.uuid === uR7).length);
+    ventanaCerrada = '';
+
     console.log('\n12h. Rango de fechas y buscador sobre la tabla');
     filas.push({ uuid: 'u-hace-un-mes', id_vaca: '3131', vaca: '3131', fecha: '2026-01-20',
                  hora: '04:10', tipo_parto: '1 Normal', sexo: '6 Macho Vivo', id_ternero: '7777',
@@ -1619,9 +1750,37 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('ya no pide URL ni token',
           await page.evaluate(() => !document.getElementById('fUrl') && !document.getElementById('fToken')));
 
+    console.log('\n14z. El admin rehace las correcciones rechazadas por la ventana del dia');
+    /* Es el camino de salida del caso 29/09: la fila quedo en Revisar y el
+       operario ya no la puede tocar; el admin la abre, guarda, y sube. */
+    await page.click('.tab[data-v="list"]');
+    await esperar(600);
+    for (const u of uuidsViejos.concat([uR7])) {
+      check('el admin ve Corregir en la fila rechazada', !!(await page.$(`[data-editar="${u}"]`)), u);
+      await page.click(`[data-editar="${u}"]`);
+      await esperar(400);
+      await llenarSenasa(page);
+      await page.click('#btnGuardarEd');
+      let limpia = false;
+      for (let i = 0; i < 30 && !limpia; i++) {
+        await esperar(400);
+        limpia = await page.evaluate(async (x) => {
+          const r = (await todosLocal()).find((y) => y.uuid === x);
+          return !r.edicion && !r.revisarEdicion && r.error === '';
+        }, u);
+      }
+      check('la correccion sube y la fila sale de Revisar', limpia, u);
+      await page.click('.tab[data-v="list"]');
+      await esperar(500);
+    }
+    // Queda solo el fantasma de 12f, que se va en 14a.
+    check('el KPI Sin sincronizar queda en 1 (el fantasma)', (await page.$eval('#kPend', (e) => e.textContent)) === '1',
+          await page.$eval('#kPend', (e) => e.textContent));
+
     console.log('\n14a. El admin descarta la correccion fantasma');
     await page.click('.tab[data-v="list"]');
     await esperar(500);
+    check('el admin SI ve Corregir en el parto cargado ayer', !!(await page.$(`[data-editar="${uuidAyer}"]`)));
     check('el fantasma sigue ahi', await page.$eval('#filas', (e) => /6070/.test(e.textContent)));
     check('el admin SI ve Rechazar en el fantasma', !!(await page.$(`[data-rechazar="${uuidFantasma}"]`)));
     await page.click(`[data-rechazar="${uuidFantasma}"]`);
@@ -1669,7 +1828,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     const primera = () => page.$eval('.listrow', (e) => e.textContent.replace(/\s+/g, ' '));
     check('trae partos de varias fechas, locales y de la planilla',
           await page.$eval('#filas', (e) => /3131/.test(e.textContent) && /2020/.test(e.textContent) && /6071/.test(e.textContent)));
-    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082/.test(await primera()), await primera());
+    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082|609\d/.test(await primera()), await primera());
     await page.click('#cabecera [data-orden="fecha"]');
     await esperar(400);
     check('tocar Fecha invierte: el mas viejo primero', /15\/01\/2026/.test(await primera()), await primera());

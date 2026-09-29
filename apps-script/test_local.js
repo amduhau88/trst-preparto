@@ -758,7 +758,7 @@ post(partoBase({ uuid: 'u-ed-ayer', terneros: [sinPeso],
                  cargado_en: '2026-08-01T10:00:00.000Z' }));
 r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ed-ayer', operario: 'Julio',
            terneros: [{ peso: 40 }] });
-check('un parto cargado otro dia ya no se corrige', r.ok === false && /hoy/.test(r.error),
+check('un parto cargado otro dia ya no se corrige (validacion)', r.ok === false && r.error === 'validacion' && /hoy/.test((r.detalles || []).join()),
       JSON.stringify(r));
 // La ventana mira "Cargado en" (Y), no "Fecha Parto" (C): un parto de ayer
 // cargado esta manana todavia se corrige.
@@ -986,7 +986,7 @@ post(partoBase({ uuid: 'u-sex-ayer', id_vaca: '6666', cargado_en: '2026-08-01T10
 r = post({ token: TOKEN, accion: 'cambiar_sexo', uuid: 'u-sex-ayer', op_uuid: 'op-6',
            operario: 'Julio', sexo: '1 Hembra Viva', calostro: calostroMadre, lts_madre: '5',
            terneros: [{ id_ternero: 'B1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] });
-check('un parto de otro dia ya no se toca', r.ok === false && /hoy/.test(r.error), JSON.stringify(r));
+check('un parto de otro dia ya no se toca (validacion)', r.ok === false && r.error === 'validacion' && /hoy/.test((r.detalles || []).join()), JSON.stringify(r));
 
 // Pasar a cria muerta colapsa a una fila con todo en ---.
 r = cambiar({ op_uuid: 'op-7', sexo: '7 Macho Muerto', terneros: [] });
@@ -1480,9 +1480,9 @@ const edDisp = (extra) => post(Object.assign({ id_token: 'bueno', accion: 'edita
 const edScript = (extra) => post(Object.assign({ token: TOKEN, accion: 'editar', uuid: 'u-adm-01', operario: 'Julio' }, extra));
 
 r = edDisp({ terneros: [{ peso: 44 }, {}] });
-check('operario: fuera de la ventana del dia, rechazado', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+check('operario: fuera de la ventana del dia, rechazado COMO VALIDACION (la tablet no reintenta ni frena la cola)', r.ok === false && r.error === 'validacion' && /cargados hoy/.test((r.detalles || []).join()), JSON.stringify(r));
 r = edScript({ terneros: [{ peso: 44 }, {}] });
-check('token de scripts: tampoco (corrige como operario)', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+check('token de scripts: tampoco (corrige como operario)', r.ok === false && r.error === 'validacion' && /cargados hoy/.test((r.detalles || []).join()), JSON.stringify(r));
 
 r = edAdmin({ fecha_parto: '2026-08-15', id_vaca: '5000' });
 check('admin cambia fecha y vaca aunque el parto sea viejo', r.ok === true && r.cambios >= 2, JSON.stringify(r));
@@ -1568,7 +1568,7 @@ const sexoNuevo = { accion: 'cambiar_sexo', uuid: 'u-adm-04', operario: 'Julio',
                     calostro: calostroMadre, lts_madre: '5',
                     terneros: [{ id_ternero: 'M1', raza: 'Holando', peso: 40, vive: true, calostro: calostroOk }] };
 r = post(Object.assign({ id_token: 'bueno', op_uuid: 'op-adm-1' }, sexoNuevo));
-check('operario: fuera de ventana, rechazado', r.ok === false && /cargados hoy/.test(r.error), JSON.stringify(r));
+check('operario: fuera de ventana, rechazado como validacion', r.ok === false && r.error === 'validacion' && /cargados hoy/.test((r.detalles || []).join()), JSON.stringify(r));
 r = post(Object.assign({ id_token: 'admin', op_uuid: 'op-adm-2', id_vaca: '4401' }, sexoNuevo));
 check('admin: cambia el sexo y de paso la vaca', r.ok === true, JSON.stringify(r));
 {
