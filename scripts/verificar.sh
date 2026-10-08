@@ -110,7 +110,7 @@ JSON
 
 # Version que espera este script. Tiene que coincidir con VERSION en Codigo.gs:
 # si no, lo que esta publicado no es el codigo de este repo.
-VERSION_ESPERADA='r8-ventana-hoy-2026-09-29'
+VERSION_ESPERADA='r9-reintento-rechazado-2026-10-08'
 
 echo
 echo "1. Conectividad"

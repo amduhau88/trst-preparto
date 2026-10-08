@@ -611,6 +611,15 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('los litros de la madre se piden una sola vez',
           await page.$$eval('[data-step^="ltsMadre"]', (b) => b.length) === 2);  // el - y el +
 
+    // 7/10, vaca 1576: la cria muerta se guardaba sin sexo y la planilla la rechazaba.
+    await page.evaluate(() => document.querySelector('[data-caja="vive:0"] [data-val="Muerto"]').click());
+    await esperar(200);
+    check('codigo 8 con la cria muerta sin sexo: no deja guardar',
+          await page.evaluate(() => faltantes(armarPayload()).includes("sexo (ternero 1)")),
+          JSON.stringify(await page.evaluate(() => faltantes(armarPayload()))));
+    await page.evaluate(() => document.querySelector('[data-caja="vive:0"] [data-val="Vivo"]').click());
+    await esperar(200);
+
     // Cargar dos crias distintas, con calostro distinto
     await page.evaluate(() => {
       document.getElementById('fVaca').value = '5514';

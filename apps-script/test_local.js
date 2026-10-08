@@ -1677,5 +1677,25 @@ r = post(partoBase({ uuid: 'u-rech-01', id_vaca: '8101', terneros: mellizo, sexo
 check('un reintento del alta original no lo revive (idempotencia por uuid)', r.ok === true && r.duplicado === true &&
       formato().filter((f) => f[COL.uuid] === 'u-rech-01').length === 2, JSON.stringify(r));
 
+console.log('\nAlta rechazada y reenviada corregida con el mismo uuid (vaca 1576, 7/10)');
+{
+  const gem = (sexo1) => partoBase({ uuid: 'u-1576', id_vaca: '1576', sexo: '8 Otros Gemelos (M+M o M+H)', terneros: [
+    { id_ternero: '', raza: 'Holando', sexo: sexo1, vive: false },
+    mellizo[0]] });
+  r = post(gem(''));
+  check('sin sexo del muerto: rechazado', r.ok === false && r.error === 'validacion', JSON.stringify(r));
+  check('el rechazo queda en _log', log().some((l) => l[0] === 'u-1576' && /^rechazado/.test(l[4])));
+  r = post(gem(''));
+  check('reenviado igual: sigue rechazado, no duplicado', r.ok === false && r.error === 'validacion', JSON.stringify(r));
+  r = post(gem('Macho'));
+  check('corregido con el mismo uuid: escribe', r.ok === true && !r.duplicado && r.filas_escritas === 2, JSON.stringify(r));
+  check('2 filas en Registros', formato().filter((f) => f[COL.uuid] === 'u-1576').length === 2);
+  r = post(gem('Macho'));
+  check('otra vez: ahora si es duplicado', r.ok === true && r.duplicado === true &&
+        formato().filter((f) => f[COL.uuid] === 'u-1576').length === 2, JSON.stringify(r));
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-1576', operario: 'Julio', notas: 'ok' });
+  check('y despues se puede corregir', r.ok === true, JSON.stringify(r));
+}
+
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
 process.exit(fallos ? 1 : 0);

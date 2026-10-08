@@ -927,10 +927,12 @@ function faltantes(p) {
     const varias = st.terneros.length > 1;
     st.terneros.forEach((t, i) => {
       const cual = varias ? ` (ternero ${i + 1})` : '';
+      // El sexo va antes que el corte: con el 8 la planilla lo pide tambien
+      // para la cria muerta (7/10, vaca 1576: se guardo sin el y la rechazo).
+      if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
       if (!t.vive) return;                       // cria muerta: no lleva datos
       if (!String(t.id_ternero).trim()) f.push('ID de ternero' + cual);
       if (!/^\d{6}$/.test(String(t.caravana_senasa || '').trim())) f.push('caravana SENASA de 6 dígitos' + cual);
-      if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
       if (!t.cal.lts_ternero) f.push('litros para el ternero' + cual);
       if (t.cal.origen === ORIGEN_OTRA) {
         if (!String(t.cal.id_origen).trim()) f.push('de qué vaca salió el calostro' + cual);
@@ -1249,8 +1251,10 @@ function faltantesEdicion(reg) {
   const quien = $('fOperario').value;
 
   st.terneros.forEach((t, i) => {
-    if (!t.vive) return;
     const cual = st.terneros.length > 1 ? ` (ternero ${i + 1})` : '';
+    // Como en el alta: con el 8 el sexo va tambien para la cria muerta.
+    if (sexoAmbiguo() && !t.sexo) f.push('sexo' + cual);
+    if (!t.vive) return;
     const pesoAntes = reg.payload.terneros[i] ? reg.payload.terneros[i].peso : undefined;
     const cambiaPeso = t.peso !== null && String(t.peso) !== String(pesoAntes);
     if (cambiaPeso && quien !== autor && !esAdmin()) {

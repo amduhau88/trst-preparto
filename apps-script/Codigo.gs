@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r8-ventana-hoy-2026-09-29';
+var VERSION = 'r9-reintento-rechazado-2026-10-08';
 // Un operario corrige solo lo cargado HOY; despues, solo un admin.
 var FUERA_DE_VENTANA = 'solo se corrigen partos cargados hoy: pedile a un admin';
 
@@ -326,7 +326,11 @@ function doPost(e) {
 
       // Idempotencia: si el uuid ya entro, no se escribe de nuevo.
       // Es lo que hace segura la cola de reintentos de la tablet.
-      if (buscarUuid_(log, payload.uuid)) {
+      // Un alta RECHAZADA no entro: la tablet la corrige y la reenvia con el
+      // mismo uuid, y eso tiene que escribir (7/10, vaca 1576: el rechazo
+      // reservaba el uuid, el reenvio volvia duplicado sin filas y la tablet
+      // lo daba por subido).
+      if (uuidEscrito_(log, payload.uuid)) {
         return json_({ ok: true, duplicado: true, uuid: payload.uuid });
       }
 
@@ -1500,6 +1504,22 @@ function consultaCalostro_(ss, vaca) {
 }
 
 /** Busca el uuid en la columna A de _log. TextFinder evita traer toda la hoja. */
+/**
+ * Si el alta de este uuid ya llego a la planilla. Cuenta cualquier renglon de
+ * _log que no sea un rechazo ('recibido' incluido: escritura a medias, no se
+ * repite); un uuid con solo rechazos todavia no escribio nada.
+ */
+function uuidEscrito_(log, uuid) {
+  if (log.getLastRow() < 2) return false;
+  var hits = log.getRange(2, 1, log.getLastRow() - 1, 1)
+                .createTextFinder(uuid).matchEntireCell(true).findAll();
+  for (var i = 0; i < hits.length; i++) {
+    var res = String(log.getRange(hits[i].getRow(), 5).getValue());
+    if (res.indexOf('rechazado') !== 0) return true;
+  }
+  return false;
+}
+
 function buscarUuid_(log, uuid) {
   if (log.getLastRow() < 2) return false;
   var hit = log.getRange(2, 1, log.getLastRow() - 1, 1)
