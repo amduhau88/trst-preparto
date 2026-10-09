@@ -78,6 +78,7 @@ Responder en español, corto:
 - Nunca borrar filas de `Registros` para «arreglar»: un parto se saca con *Rechazar* (`Anulada = Si`).
 - Leer la planilla solo con el script o con gws vía `subprocess` de Python: los rangos llevan `!`.
 - No concluir «el parto nunca salió de la tablet» sin haber pedido el volcado y la captura.
+- Si se edita esta SKILL.md, copiarla a `~/trst-tools/preparto/claude-skill/SKILL.md` y commitear: esa copia es el respaldo versionado.
 - Si hay dudas sobre qué hace el backend, la fuente es `apps-script/Codigo.gs` del repo, siempre que el ping confirme que la versión publicada es la misma.
 
 ## Dependencies
