@@ -12,7 +12,6 @@ const SEXO_MUERTO = ['4', '7'];
 const SEXO_MELLIZO = ['2', '8'];
 // Opciones de texto nuevas (sin codigo numerico): van en Maestro tal cual.
 const TIPO_ABORTO = 'Aborto en Preparto';
-const SEXO_GEMELOS_MUERTOS = 'Gemelos Muertos';
 const CORRAL_RECHAZOS = '19 - Rechazos';
 // Solo con Aborto en Preparto: una cria o dos, sexo sin determinar. Son textos, no codigos.
 // Con aborto, una cria muerta cuyo sexo no se cargo queda asi en Sexo Cria.
@@ -215,7 +214,7 @@ const LISTAS_BASE = {
   calidad_mejorado: [VACIO].concat(rango(26, 35)),
   lts_madre: rango(0, 20),
   lts_ternero: rango(2, 6),
-  tambo: ['1', '2', '3', '4', CORRAL_RECHAZOS],
+  tambo: ['1', '2', '3', '4'],
   rodeo: []
 };
 
@@ -379,8 +378,7 @@ function pintarFechas() {
 }
 
 const esAborto = () => st.tipo_parto === TIPO_ABORTO;
-const esGemelosMuertos = () => st.sexo === SEXO_GEMELOS_MUERTOS;
-const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0)) || esGemelosMuertos();
+const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0));
 // Sin calostro ni datos de cria: parto muerto o aborto.
 const partoSinCalostro = () => esMuerto() || esAborto();
 const esMellizo = () => SEXO_MELLIZO.includes(String(st.sexo).charAt(0));
@@ -427,9 +425,9 @@ function pintarFormulario() {
   // Con aborto no hay sexo general: el bloque lo reemplaza el de ternero(s) muertos.
   $('bloqueSexo').classList.toggle('hidden', esAborto());
   chips($('cSexo'), 'sexo', listas.sexo, st.sexo, { numerar: true, claseDe: malo });
-  // El corral de rechazos aparece solo con el aborto.
-  chips($('cTambo'), 'tambo', listas.tambo.filter((v) => v !== CORRAL_RECHAZOS || esAborto()),
-        st.tambo, { ancho: true });
+  // El destino 19 - Rechazos no esta en Maestro: se ofrece solo con el aborto.
+  const tambos = listas.tambo.filter((v) => v !== CORRAL_RECHAZOS).concat(esAborto() ? [CORRAL_RECHAZOS] : []);
+  chips($('cTambo'), 'tambo', tambos, st.tambo, { ancho: true });
 
   pintarSteppers();
   pintarTerneros();

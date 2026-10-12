@@ -349,8 +349,7 @@ Ninguna bloquea el uso. Si algún día aparecen en la práctica:
 
 Orden de despliegue. Es una ventana corta: no cargar partos entre el paso 2 y el 3.
 
-1. **Maestro** (a mano en la planilla): agregar `Aborto en Preparto` en `Tipo Parto`, `Gemelos Muertos`
-   en `SEXO, VIVO, MELLIZOS` y `19 - Rechazos` en `Tambo Vaca`. Sin número.
+1. **Maestro** (a mano en la planilla): agregar `Aborto en Preparto` en `Tipo Parto` y `19 - Rechazos` en `Tambo Vaca`. Sin número.
 2. **Simular la columna nueva**: en el editor de Apps Script, `migrarCalostroMejoradoR10(false)` (solo
    muestra el plan). Si el plan está bien: `migrarCalostroMejoradoR10(true)`. Copia `Registros` a
    `Registros_backup_r9` e inserta **N = Calostro Mejorado** (copia de K).
@@ -362,6 +361,5 @@ Orden de despliegue. Es una ventana corta: no cargar partos entre el paso 2 y el
 
 Notas:
 - Un aborto guarda Estado Cria `Muerto`; lo distingue el Tipo Parto. La raza es lo único de la cría que se guarda.
-- `Gemelos Muertos` genera dos filas (1/2 y 2/2) con el bloque de la cría en `---`.
 - `19 - Rechazos` solo se acepta con `Aborto en Preparto`; el backend lo rechaza en otro caso.
 - Una cría muerta no lleva calostro ni litros de la madre, y la tablet ya no los manda al corregirla.

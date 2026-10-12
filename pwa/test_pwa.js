@@ -100,7 +100,7 @@ const LISTAS = {
   mejorado: ['Si', 'No'], calidad_mejorado: ['---'].concat(Array.from({ length: 10 }, (_, i) => String(26 + i))),
   lts_madre: Array.from({ length: 21 }, (_, i) => String(i)),
   lts_ternero: ['2', '3', '4', '5', '6'],
-  tambo: ['1', '2', '3', '4', '19 - Rechazos'], rodeo: ['21', '23', '26', '201', '202']
+  tambo: ['1', '2', '3', '4'], rodeo: ['19 - Rechazos', '21', '23', '26', '201', '202']
 };
 
 const api = http.createServer((req, res) => {
@@ -473,7 +473,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     check('AJUSTES OCULTO para la cuenta de dispositivo',
           !(await visible(page, '.tab[data-v="config"]')));
     check('bajo las listas del Maestro',
-          await page.evaluate(() => JSON.parse(localStorage.getItem('listas') || '{}').rodeo?.length === 5));
+          await page.evaluate(() => JSON.parse(localStorage.getItem('listas') || '{}').rodeo?.length === 6));
 
     console.log('\n3. Marca, titulo y fecha');
     check('titulo en Title Case',

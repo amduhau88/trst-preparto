@@ -42,10 +42,8 @@ var HOJA_LOG = '_log';
 
 var VACIO = '---';
 var SEXO_MUERTO = ['4', '7'];
-/* Opciones de texto nuevas (sin codigo numerico): el aborto en preparto y los
- * gemelos muertos. Van en Maestro tal cual. */
+/* Opcion de texto nueva (sin codigo numerico): el aborto en preparto. Va en Maestro tal cual. */
 var TIPO_ABORTO = 'Aborto en Preparto';
-var SEXO_GEMELOS_MUERTOS = 'Gemelos Muertos';
 var CORRAL_RECHAZOS = '19 - Rechazos';
 // Con aborto, una cria muerta cuyo sexo no se cargo queda asi en Sexo Cria.
 var SEXO_CRIA_DESCONOCIDO = 'Desconocido';
@@ -463,15 +461,13 @@ function construirFilas_(ss, p) {
   var madre = calostroMadre_(p);
   var ltsMadre = ltsMadre_(p);
 
-  // Un parto muerto da una fila por cria muerta: dos para "Gemelos Muertos" y
-  // "2 crias", una en el resto. Con aborto, la raza (si se cargo) viaja en la fila.
+  // Un parto muerto (4 o 7) da una fila; con aborto, una por cria cargada (1 o 2).
   var terneros;
   if (aborto) {
     // Aborto: una fila por cria muerta que cargo la tablet (1 o 2), con su raza.
     terneros = p.terneros && p.terneros.length ? p.terneros : [null];
   } else if (partoMuerto) {
-    var nMuertas = esGemelosMuertos_(p.sexo) ? 2 : 1;
-    terneros = rango_(nMuertas).map(function (i) { return (p.terneros || [])[i] || null; });
+    terneros = [(p.terneros || [])[0] || null];
   } else {
     terneros = p.terneros && p.terneros.length ? p.terneros : [null];
   }
@@ -669,7 +665,8 @@ function editarParto_(p, auth) {
       } else if (String(p.tambo) === '') {
         anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
       } else {
-        enLista_(err, listas, 'tambo', p.tambo, pre);
+        // 19 - Rechazos no esta en Tambo Vaca de Maestro: lo valida la regla de aborto.
+        if (String(p.tambo) !== CORRAL_RECHAZOS) enLista_(err, listas, 'tambo', p.tambo, pre);
         var dest = destinoColumnas_(p.tambo);
         if (str_(f.datos[COL.tambo]) !== dest.tambo) {
           cambios.push({ fila: f.fila, col: COL.tambo, campo: 'tambo', de: f.datos[COL.tambo], a: dest.tambo });
@@ -1163,7 +1160,7 @@ function validar_(p, listas) {
   enLista_(err, listas, 'tipo_parto', p.tipo_parto);
   if (!aborto || (p.sexo && p.sexo !== VACIO)) enLista_(err, listas, 'sexo', p.sexo);
   enLista_(err, listas, 'hora_nacimiento', p.hora_nacimiento);
-  enLista_(err, listas, 'tambo', p.tambo);
+  if (String(p.tambo) !== CORRAL_RECHAZOS) enLista_(err, listas, 'tambo', p.tambo);
   // El rodeo ya no viaja desde la tablet: no se valida ni se escribe.
 
   // El corral de rechazos existe solo para el aborto: en un parto normal no
@@ -1848,11 +1845,7 @@ function parseFecha_(v) {
 }
 
 function esMuerto_(sexo) {
-  return SEXO_MUERTO.indexOf(String(sexo).charAt(0)) !== -1 || esGemelosMuertos_(sexo);
-}
-
-function esGemelosMuertos_(sexo) {
-  return String(sexo) === SEXO_GEMELOS_MUERTOS;
+  return SEXO_MUERTO.indexOf(String(sexo).charAt(0)) !== -1;
 }
 
 function esMellizo_(sexo) {

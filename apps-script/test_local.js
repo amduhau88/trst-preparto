@@ -133,7 +133,7 @@ function maestroReal() {
     0: ['Julio', 'Griselda', 'Martin', 'Trini'],
     3: ['1 Normal', '2 Asistido', '4 Cesarea', 'Aborto en Preparto'],
     4: ['1 Hembra Viva', '2 Hembras Gemelas Vivas', '4 Hembra Muerta', '6 Macho Vivo',
-        '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)', 'Gemelos Muertos'],
+        '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)'],
     6: ['Holando', 'Angus'],
     7: rango(25, 60),
     8: horas(),
@@ -144,8 +144,8 @@ function maestroReal() {
     12: ['Si/No'],
     13: rango(0, 20),
     14: rango(2, 6),
-    16: ['1', '2', '3', '4', '19 - Rechazos'],
-    17: []   // Rodeo: VACIA en la planilla real
+    16: ['1', '2', '3', '4'],
+    17: ['19 - Rechazos']   // Rodeo: VACIA en la planilla real
   };
 
   const alto = Math.max(...Object.values(cols).map((c) => c.length)) + 1;
@@ -395,7 +395,7 @@ r = get({ action: 'maestro', token: TOKEN });
 check('maestro con token', r.ok === true && r.listas.operario.length === 4);
 check('Si/No se expande', JSON.stringify(r.listas.mejorado) === '["Si","No"]',
       JSON.stringify(r.listas.mejorado));
-check('rodeo vacio', r.listas.rodeo.length === 0);
+check('rodeo: solo 19 - Rechazos (lo que hay en Maestro)', JSON.stringify(r.listas.rodeo) === '["19 - Rechazos"]', JSON.stringify(r.listas.rodeo));
 check('maestro sin token rechaza', get({ action: 'maestro' }).ok === false);
 r = get({ action: 'partos', token: TOKEN, fecha: '2026-08-12' });
 check('partos del dia', r.ok === true && r.partos.length === 5, 'n=' + (r.partos || []).length);
@@ -1746,7 +1746,7 @@ console.log('\nAlta rechazada y reenviada corregida con el mismo uuid (vaca 1576
   check('y despues se puede corregir', r.ok === true, JSON.stringify(r));
 }
 
-console.log('\n31. Aborto en Preparto, Gemelos Muertos y Calostro Mejorado (r10)');
+console.log('\n31. Aborto en Preparto y Calostro Mejorado (r10)');
 {
   libro = nuevoLibro();
   const filasDe = (u) => formato().filter((f) => f[COL.uuid] === u);
@@ -1802,14 +1802,6 @@ console.log('\n31. Aborto en Preparto, Gemelos Muertos y Calostro Mejorado (r10)
 
   r = post(partoBase({ uuid: 'u-corral-1', tambo: '19 - Rechazos' }));
   check('el corral solo entra con aborto', r.ok === false && /Aborto/.test((r.detalles || []).join()), JSON.stringify(r));
-
-  r = post(partoBase({ uuid: 'u-gem-1', sexo: 'Gemelos Muertos', tipo_parto: '1 Normal', terneros: [], calostro: undefined, lts_madre: undefined }));
-  check('gemelos muertos entra', r.ok === true, JSON.stringify(r));
-  f = filasDe('u-gem-1');
-  check('gemelos muertos: 2 filas', f.length === 2, 'filas=' + f.length);
-  check('gemelos muertos: 1/2 y 2/2', f[0][COL.cria] === '1/2' && f[1][COL.cria] === '2/2', f.map((x) => x[COL.cria]).join(','));
-  check('gemelos muertos: G a R en ---', f.every((x) => x.slice(COL.id_ternero, COL.lts_ternero + 1).every((v) => v === '---')));
-  check('gemelos muertos: ambas Muerto', f.every((x) => x[COL.estado_cria] === 'Muerto'));
 
   r = post(partoBase({ uuid: 'u-cal-1', calostro: { calidad_sin_mejorar: '26', mejorado: 'Si', calidad_mejorado: '30' } }));
   check('calostro mejorado entra', r.ok === true, JSON.stringify(r));

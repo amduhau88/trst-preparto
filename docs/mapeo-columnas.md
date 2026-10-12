@@ -18,7 +18,7 @@ La vista que usa Nahuel para cargar en DairyComp es **`Datos Carga DC`**, no és
 | C | Fecha Parto | Fecha de parto | Fecha real, `dd/MM/yyyy` | precargada con el día |
 | D | Hora Nacimiento | Hora de nacimiento | `00:00`–`23:30`, cada 30 min | `Maestro!I` |
 | E | Tipo Parto | Tipo de parto | 1 Normal · 2 Asistido · 4 Cesarea · Aborto en Preparto (texto) | `Maestro!D` |
-| F | Sexo, Vivo, Mellizos | Sexo / vivo / mellizos | 1 · 2 · 4 · 6 · 7 · 8 · Gemelos Muertos. **Con Aborto en Preparto esta columna va en `---`**: el aborto se carga en el bloque «Ternero(s) muertos» | `Maestro!E` |
+| F | Sexo, Vivo, Mellizos | Sexo / vivo / mellizos | 1 · 2 · 4 · 6 · 7 · 8. **Con Aborto en Preparto esta columna va en `---`**: el aborto se carga en el bloque «Ternero(s) muertos» | `Maestro!E` |
 | G | ID Ternero | ID Ternero | Número (texto); `---` si nació muerto | libre |
 | H | Raza | Raza | Holando · Angus | `Maestro!G` |
 | I | Peso Ternero (Kg) | Peso (2º paso) | 25 a 60; **vacía** hasta que se pesa | `Maestro!H` |
@@ -111,11 +111,10 @@ desde N en adelante corre un lugar. En `Datos Carga DC` la columna **N (Método)
 - **Lo de la madre (J–N) es del parto**; lo del ternero (O–R) es de cada cría.
 - **Aborto en Preparto**: bloque propio «Ternero(s) muertos». Cantidad de crías (1 o 2) y, por cría, **raza obligatoria** y sexo opcional (Macho / Hembra; sin elegir queda `Desconocido`). Una fila por cría, con `Estado Cria = Muerto`; G, I y J–R van en `---`, salvo la raza en H.
 - **Otros gemelos (8) con las dos crias muertas** es válido: cada cría lleva su sexo (M+M o M+H), va en `Muerto`, y el calostro de la madre (J–N) **se conserva** en las dos filas. Si solo una cría muere, la muerta sigue con G–R en `---`.
-- **Cría muerta** (sexo `4` o `7`, `Gemelos Muertos`, o marcada muerta en un parto doble): **G a R** van
-  en `---`, pero V y W siguen registrando **qué era y que nació muerta**. `Gemelos Muertos` genera
-  **dos** filas (1/2 y 2/2), como un parto doble.
+- **Cría muerta** (sexo `4` o `7`, o marcada muerta en un parto doble): **G a R** van
+  en `---`, pero V y W siguen registrando **qué era y que nació muerta**. 
 - **Aborto en Preparto** (tipo de parto): una fila por cría muerta. El sexo es opcional y solo puede ser
-  muerto (4, 7 o Gemelos Muertos); `1`, `2`, `6` y `8` no se aceptan. La raza es opcional y es lo único
+  muerto (4 o 7); `1`, `2`, `6` y `8` no se aceptan. La raza es opcional y es lo único
   que se guarda de la cría (H); el resto de G a R va en `---`. No hay calostro. Tambo puede ser
   `19 - Rechazos`, que solo se acepta con aborto.
 - **`Mejorado = No`** ⇒ L en `---`. `Mejorado = Si` ⇒ L obligatoria.
