@@ -5,7 +5,7 @@
  * El Google Sheet ES la base de datos; acá no hay estado propio.
  *
  * Hojas:
- *   Registros       — los partos. A-T lo que se lee y se carga, U-AC tecnicas
+ *   Registros       — los partos. A-S lo que se lee y se carga, T-AE tecnicas
  *   Datos Carga DC  — vista en el orden en que Nahuel carga en DairyComp
  *   Maestro         — listas de valores (editables sin redeploy)
  *   _log            — auditoria append-only + control de duplicados
@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r9-reintento-rechazado-2026-10-08';
+var VERSION = 'r10-aborto-gemelos-muertos-2026-10-12';
 // Un operario corrige solo lo cargado HOY; despues, solo un admin.
 var FUERA_DE_VENTANA = 'solo se corrigen partos cargados hoy: pedile a un admin';
 
@@ -42,6 +42,13 @@ var HOJA_LOG = '_log';
 
 var VACIO = '---';
 var SEXO_MUERTO = ['4', '7'];
+/* Opciones de texto nuevas (sin codigo numerico): el aborto en preparto y los
+ * gemelos muertos. Van en Maestro tal cual. */
+var TIPO_ABORTO = 'Aborto en Preparto';
+var SEXO_GEMELOS_MUERTOS = 'Gemelos Muertos';
+var CORRAL_RECHAZOS = '19 - Rechazos';
+// Con aborto, una cria muerta cuyo sexo no se cargo queda asi en Sexo Cria.
+var SEXO_CRIA_DESCONOCIDO = 'Desconocido';
 var SEXO_MELLIZO = ['2', '8'];
 // El codigo del parto ya dice el sexo, salvo el 8 (M+M o M+H), que es ambiguo:
 // ahi el sexo de cada cria hay que cargarlo.
@@ -52,9 +59,10 @@ var SEXO_POR_CODIGO = { '1': 'Hembra', '2': 'Hembra', '4': 'Hembra', '6': 'Macho
  * partosDelDia_ y slices en las pruebas, y reordenar obligaba a tocar los
  * cuatro a la vez sin que nada avisara si se olvidaba uno.
  *
- * Bloques: A-I el parto y la cria, J-M el calostro DE LA MADRE (es del parto y
- * se repite igual en las dos filas de un mellizo), N-Q el calostro QUE TOMO EL
- * TERNERO (es de cada cria), R-T destino y notas, U-V la cria, W-AC tecnicas. */
+ * Bloques: A-I el parto y la cria, J-N el calostro DE LA MADRE (es del parto y
+ * se repite igual en las dos filas de un mellizo; N es copia de K para la
+ * planilla), O-R el calostro QUE TOMO EL TERNERO (es de cada cria), S-V destino
+ * y notas, W-X la cria, Y-AE tecnicas. */
 var COL = {
   operario: 0,          // A
   id_vaca: 1,           // B
@@ -69,30 +77,31 @@ var COL = {
   mejorado: 10,            // K   |  calostro de la madre: del PARTO
   calidad_mejorado: 11,    // L   |
   lts_madre: 12,           // M  /
-  origen_calostro: 13,     // N  \
-  id_vaca_origen: 14,      // O   |  calostro que tomo el ternero: de la CRIA
-  calidad_ternero: 15,     // P   |
-  lts_ternero: 16,         // Q  /
-  tambo: 17,            // R
-  rodeo: 18,            // S   la carga Nahuel en 'Datos Carga DC' y se replica
-  caravana_senasa: 19,  // T   6 digitos, obligatoria hacia adelante (r7)
-  notas: 20,            // U
-  sexo_cria: 21,        // V
-  estado_cria: 22,      // W
-  id_parto: 23,         // X
-  cria: 24,             // Y
-  uuid: 25,             // Z
+  calostro_mejorado: 13,  // N  copia de Mejorado (K), solo en la planilla: la tablet no la carga
+  origen_calostro: 14,  // O  \
+  id_vaca_origen: 15,   // P   |  calostro que tomo el ternero: de la CRIA
+  calidad_ternero: 16,  // Q   |
+  lts_ternero: 17,      // R  /
+  tambo: 18,            // S
+  rodeo: 19,            // T   la carga Nahuel en 'Datos Carga DC' y se replica
+  caravana_senasa: 20,  // U   6 digitos, obligatoria hacia adelante (r7)
+  notas: 21,            // V
+  sexo_cria: 22,        // W
+  estado_cria: 23,      // X
+  id_parto: 24,         // Y
+  cria: 25,             // Z
+  uuid: 26,             // AA
   /* Cuando el operario apreto Guardar en la tablet, NO cuando el parto llego a
    * la planilla: un parto cargado sin señal a las 3 de la mañana puede
    * sincronizar a las 9, y lo que interesa es la hora del corral. Tampoco lo
    * mueven pesar, corregir ni cambiar el sexo — esos son pasos posteriores.
    * Es distinto de Fecha Parto (C), que es cuando nacio el ternero. */
-  cargado_en: 26,       // AA
-  dispositivo: 27,      // AB
-  anulada: 28,          // AC
-  cargado_dc: 29        // AD
+  cargado_en: 27,       // AB
+  dispositivo: 28,      // AC
+  anulada: 29,          // AD
+  cargado_dc: 30        // AE
 };
-var ANCHO_FILA = 30;     // A..AD
+var ANCHO_FILA = 31;     // A..AE
 
 /* Encabezado esperado de la fila 1. El backend escribe POR POSICION: si alguien
  * inserta una columna en la planilla, sigue escribiendo donde estaba y corrompe
@@ -101,7 +110,7 @@ var ENCABEZADOS = [
   'Operario', 'ID Vaca', 'Fecha Parto', 'Hora Nacimiento', 'Tipo Parto',
   'Sexo, Vivo, Mellizos', 'ID Ternero', 'Raza', 'Peso Ternero (Kg)',
   'Calidad Calostro Sin Mejorar', 'Mejorado', 'Calidad de Calostro Mejorado',
-  'Lts Calostro Madre Produjo',
+  'Lts Calostro Madre Produjo', 'Calostro Mejorado',
   'Origen Calostro', 'ID Vaca Origen Calostro', 'Calidad Calostro Ternero',
   'Lts Calostro para Ternero',
   'Tambo Vaca', 'Asignacion Rodeo Vaca', 'Caravana SENASA', 'Notas',
@@ -137,9 +146,9 @@ var ENCABEZADOS_R5 = [
   'Sexo Cria', 'Estado Cria', 'ID Parto', 'Cria', 'UUID', 'Cargado en', 'Dispositivo'
 ];
 
-// De G a Q va todo en '---' cuando la cria nacio muerta, igual que se hacia a mano.
+// De G a R va todo en '---' cuando la cria nacio muerta, igual que se hacia a mano.
 var BLOQUE_CRIA_DESDE = COL.id_ternero;      // G
-var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // Q
+var BLOQUE_CRIA_HASTA = COL.lts_ternero;     // R
 
 /* '0' Brix quiere decir "no se midio / no hubo calostro". No es un numero mas:
  * si no hubo calostro, no hay nada que mejorar. */
@@ -205,7 +214,7 @@ var EDITABLE_CRIA = {          // por cria: cada fila lleva la suya
   lts_ternero: COL.lts_ternero
 };
 /* Del parto: se repiten iguales en todas sus filas. Los cuatro primeros son el
- * calostro de la madre y viven DENTRO del bloque G-Q, asi que en una cria
+ * calostro de la madre y viven DENTRO del bloque G-R, asi que en una cria
  * muerta no se pueden escribir: dejarian un valor suelto entre los '---'. */
 var EDITABLE_PARTO_EN_BLOQUE = {
   calidad_sin_mejorar: COL.calidad_sin_mejorar,
@@ -222,7 +231,7 @@ var EDITABLE_ADMIN_PARTO = {
   operario: COL.operario, id_vaca: COL.id_vaca, fecha_parto: COL.fecha,
   hora_nacimiento: COL.hora, tipo_parto: COL.tipo_parto, notas: COL.notas
 };
-var EDITABLE_ADMIN_CRIA = { id_ternero: COL.id_ternero, raza: COL.raza };   // dentro del bloque G-Q
+var EDITABLE_ADMIN_CRIA = { id_ternero: COL.id_ternero, raza: COL.raza };   // dentro del bloque G-R
 
 // Identidad: solo entran cuentas de Google del dominio, emitidas para ESTA app.
 var CLIENT_ID = '55795987692-qi482a0cjf657a1884dn3tl88mc0t2e9.apps.googleusercontent.com';
@@ -437,7 +446,7 @@ function calostroMadre_(p) {
  * Un parto -> una fila POR TERNERO. Parto simple = 1 fila. Mellizos = 2 filas
  * con el mismo ID Parto y Cria 1/2 y 2/2.
  *
- * Cada cria lleva SU sexo, SU estado y SU calostro suministrado (N-Q): con el
+ * Cada cria lleva SU sexo, SU estado y SU calostro suministrado (O-R): con el
  * codigo 8 (M+M o M+H) no habia forma de saber que fue cada una, ni de anotar
  * que a cada ternero se le dio un calostro distinto. Lo que produjo la madre
  * (J-M) es del parto y se repite igual en las dos filas.
@@ -445,7 +454,8 @@ function calostroMadre_(p) {
 function construirFilas_(ss, p) {
   var tz = ss.getSpreadsheetTimeZone();
   var fecha = parseFecha_(p.fecha_parto);
-  var partoMuerto = esMuerto_(p.sexo);
+  var aborto = esAborto_(p.tipo_parto);
+  var partoMuerto = esMuerto_(p.sexo) || aborto;
   var idParto = idParto_(tz, fecha, p.id_vaca, p.uuid);
   // La marca de carga viene de la tablet, del momento en que se apreto Guardar.
   // Solo se pone la del servidor si el payload no la trae (formato muy viejo).
@@ -453,33 +463,64 @@ function construirFilas_(ss, p) {
   var madre = calostroMadre_(p);
   var ltsMadre = ltsMadre_(p);
 
-  var terneros = partoMuerto ? [null] : (p.terneros && p.terneros.length ? p.terneros : [null]);
+  // Un parto muerto da una fila por cria muerta: dos para "Gemelos Muertos" y
+  // "2 crias", una en el resto. Con aborto, la raza (si se cargo) viaja en la fila.
+  var terneros;
+  if (aborto) {
+    // Aborto: una fila por cria muerta que cargo la tablet (1 o 2), con su raza.
+    terneros = p.terneros && p.terneros.length ? p.terneros : [null];
+  } else if (partoMuerto) {
+    var nMuertas = esGemelosMuertos_(p.sexo) ? 2 : 1;
+    terneros = rango_(nMuertas).map(function (i) { return (p.terneros || [])[i] || null; });
+  } else {
+    terneros = p.terneros && p.terneros.length ? p.terneros : [null];
+  }
+
+  // Un mellizo con una cria viva y otra muerta sigue como siempre: la muerta va toda en ---.
+  var todasMuertas = !partoMuerto && terneros.every(function (t) { return t && t.vive === false; });
 
   return terneros.map(function (t, i) {
     var muerto = partoMuerto || !t || t.vive === false;
     var cal = (t && t.calostro) || {};
 
-    // Cria muerta: el formato lleva '---' de G a Q, igual que se hacia a mano.
-    var bloque = muerto
-      ? repetir_(VACIO, BLOQUE_CRIA_HASTA - BLOQUE_CRIA_DESDE + 1)
-      : [
-          str_(t.id_ternero), str_(t.raza), num_(t.peso),
-          str_(madre.calidad_sin_mejorar), str_(madre.mejorado),
-          str_(madre.calidad_mejorado || VACIO), num_(ltsMadre),
-          str_(origenCalostro_(p, cal)), str_(idOrigen_(p, cal)),
-          str_(calidadTernero_(madre, cal)), num_(cal.lts_ternero)
-        ];
+    // Cria muerta: el formato lleva '---' de G a R, igual que se hacia a mano.
+    // La unica excepcion es la raza en un aborto, que se carga aunque la cria
+    // no tenga nada mas.
+    var bloque;
+    if (muerto) {
+      bloque = repetir_(VACIO, BLOQUE_CRIA_HASTA - BLOQUE_CRIA_DESDE + 1);
+      if (aborto && t && t.raza) bloque[COL.raza - BLOQUE_CRIA_DESDE] = str_(t.raza);
+      // Con el codigo 8 las dos crias pueden nacer muertas, pero el calostro sigue
+      // siendo de la madre (la vaca lo produjo): se guarda en las dos filas.
+      if (!partoMuerto && todasMuertas) {
+        var enBloque = function (k) { return COL[k] - BLOQUE_CRIA_DESDE; };
+        bloque[enBloque('calidad_sin_mejorar')] = str_(madre.calidad_sin_mejorar);
+        bloque[enBloque('mejorado')] = str_(madre.mejorado);
+        bloque[enBloque('calidad_mejorado')] = str_(madre.calidad_mejorado || VACIO);
+        bloque[enBloque('lts_madre')] = num_(ltsMadre);
+        bloque[enBloque('calostro_mejorado')] = str_(madre.mejorado);
+      }
+    } else {
+      bloque = [
+        str_(t.id_ternero), str_(t.raza), num_(t.peso),
+        str_(madre.calidad_sin_mejorar), str_(madre.mejorado),
+        str_(madre.calidad_mejorado || VACIO), num_(ltsMadre),
+        str_(madre.mejorado),   // copia de K: la planilla lo muestra junto al calostro del ternero
+        str_(origenCalostro_(p, cal)), str_(idOrigen_(p, cal)),
+        str_(calidadTernero_(madre, cal)), num_(cal.lts_ternero)
+      ];
+    }
 
     return [
       str_(p.operario), str_(p.id_vaca), fecha, str_(p.hora_nacimiento),
       str_(p.tipo_parto), str_(p.sexo)
     ].concat(bloque).concat([
-      // El rodeo no se carga en la tablet: la columna S queda vacia y la escribe
+      // El rodeo no se carga en la tablet: la columna T queda vacia y la escribe
       // Nahuel desde 'Datos Carga DC'. Vacio se lee como "falta asignar", que es
-      // el estado real; '---' no sirve porque en G-Q ya significa "cria muerta"
+      // el estado real; '---' no sirve porque en G-R ya significa "cria muerta"
       // y sumarle un segundo sentido lo vuelve ambiguo.
-      str_(p.tambo), '',
-      // Caravana SENASA (T): '---' en cria muerta como el bloque G-Q; vacia si
+      destinoColumnas_(p.tambo).tambo, destinoColumnas_(p.tambo).rodeo,
+      // Caravana SENASA (U): '---' en cria muerta como el bloque G-R; vacia si
       // el payload no la trae (partos viejos o cola anterior a la app v15).
       muerto ? VACIO : str_(t.caravana_senasa || ''),
       str_(p.notas),
@@ -495,6 +536,12 @@ function criaDe_(v, porParto, vistas) {
   var u = str_(v[23]);
   vistas[u] = (vistas[u] || 0) + 1;
   return vistas[u] + '/' + (porParto[u] || 1);
+}
+
+function rango_(n) {
+  var out = [];
+  for (var i = 0; i < n; i++) out.push(i);
+  return out;
 }
 
 function repetir_(v, n) {
@@ -597,14 +644,43 @@ function editarParto_(p, auth) {
     var err = [];
     var cambios = [];
 
+    // Un admin puede llevar el parto a cualquier fecha pasada, pero no a una
+    // futura: nacer mañana no es una correccion, es un error de tipeo.
+    if (admin && p.fecha_parto !== undefined && parseFecha_(p.fecha_parto)) {
+      var hoyCero = new Date(); hoyCero.setHours(0, 0, 0, 0);
+      if (parseFecha_(p.fecha_parto) > hoyCero) {
+        err.push('fecha_parto en el futuro: ' + p.fecha_parto);
+      }
+    }
+
     filas.forEach(function (f, i) {
       var pre = filas.length > 1 ? 'cria ' + (i + 1) + ': ' : '';
-      // Una cria muerta lleva '---' de G a Q, igual que se hacia a mano.
+      // Una cria muerta lleva '---' de G a R, igual que se hacia a mano.
       var muerta = String(f.datos[COL.estado_cria]) === 'Muerto';
       var madre = calostroMadre_(p);
 
       // El tambo (R) es del parto y esta fuera de ese bloque: se corrige siempre.
-      anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
+      // El corral de rechazos tambien se corrige con la regla del alta: solo un aborto.
+      if (String(p.tambo) === CORRAL_RECHAZOS && !esAborto_(f.datos[COL.tipo_parto])) {
+        err.push(pre + '"' + CORRAL_RECHAZOS + '" solo con ' + TIPO_ABORTO);
+      }
+      if (p.tambo === undefined || p.tambo === null) {
+        // No vino destino: no se toca.
+      } else if (String(p.tambo) === '') {
+        anotarCambio_(cambios, err, listas, f, EDITABLE_PARTO.tambo, 'tambo', p.tambo, '');
+      } else {
+        enLista_(err, listas, 'tambo', p.tambo, pre);
+        var dest = destinoColumnas_(p.tambo);
+        if (str_(f.datos[COL.tambo]) !== dest.tambo) {
+          cambios.push({ fila: f.fila, col: COL.tambo, campo: 'tambo', de: f.datos[COL.tambo], a: dest.tambo });
+        }
+        // Rodeo solo se toca al entrar o salir del 19 - Rechazos: lo de Nahuel queda.
+        var rodeoAhora = str_(f.datos[COL.rodeo]);
+        if (dest.rodeo !== rodeoAhora && (dest.rodeo === CORRAL_RECHAZOS || rodeoAhora === CORRAL_RECHAZOS)) {
+          cambios.push({ fila: f.fila, col: COL.rodeo, campo: 'rodeo', de: f.datos[COL.rodeo], a: dest.rodeo,
+                         clave: str_(f.datos[COL.uuid]) + '|' + str_(f.datos[COL.cria]) });
+        }
+      }
 
       // Identidad del parto: solo admin. Para un operario se ignora lo que
       // venga (la tablet manda operario e id_vaca siempre), salvo que intente
@@ -620,15 +696,19 @@ function editarParto_(p, auth) {
       });
 
       // El calostro de la madre tambien es del parto, pero vive DENTRO del
-      // bloque G-Q. Escribirlo en una fila de cria muerta dejaria valores
+      // bloque G-R. Escribirlo en una fila de cria muerta dejaria valores
       // sueltos en el medio de los '---'.
       var deMadre = { lts_madre: p.lts_madre };
       Object.keys(EDITABLE_PARTO_EN_BLOQUE).forEach(function (clave) {
         if (clave !== 'lts_madre') deMadre[clave] = madre[clave];
       });
-      if (muerta) {
+      // Un parto muerto (4, 7, Gemelos) o un aborto no tiene calostro: va todo en ---.
+      // Con el codigo 8 el calostro es de la madre aunque las crias esten muertas.
+      var sinMadre = esMuerto_(f.datos[COL.sexo]) || esAborto_(f.datos[COL.tipo_parto]) ||
+                     (muerta && !filas.every(function (x) { return String(x.datos[COL.estado_cria]) === 'Muerto'; }));
+      if (sinMadre) {
         if (Object.keys(deMadre).some(function (k) { return deMadre[k] !== undefined; })) {
-          err.push(pre + 'cria muerta: de G a Q va todo en ' + VACIO);
+          err.push(pre + 'cria muerta: de G a R va todo en ' + VACIO);
         }
       } else {
         Object.keys(EDITABLE_PARTO_EN_BLOQUE).forEach(function (clave) {
@@ -706,7 +786,15 @@ function editarParto_(p, auth) {
     }
     if (!cambios.length) return json_({ ok: true, uuid: p.uuid, cambios: 0 });
 
-    // Fecha o vaca nuevas: el ID Parto (W) se recalcula en todas las filas del uuid.
+    // La copia de Mejorado (N) va siempre con la K: es el mismo dato, la planilla
+    // lo muestra en dos lugares.
+    cambios.filter(function (c) { return c.campo === 'mejorado'; }).forEach(function (c) {
+      cambios.push({ fila: c.fila, col: COL.calostro_mejorado, campo: 'calostro_mejorado',
+                     de: filas.filter(function (f) { return f.fila === c.fila; })[0].datos[COL.calostro_mejorado],
+                     a: c.a });
+    });
+
+    // Fecha o vaca nuevas: el ID Parto (Y) se recalcula en todas las filas del uuid.
     var cambiaId = cambios.some(function (c) { return c.campo === 'fecha_parto' || c.campo === 'id_vaca'; });
     if (cambiaId) {
       var fechaFinal = parseFecha_(p.fecha_parto) || filas[0].datos[COL.fecha];
@@ -723,6 +811,8 @@ function editarParto_(p, auth) {
     // tambien el rodeo que Nahuel carga a mano en la columna R.
     cambios.forEach(function (c) {
       hoja.getRange(c.fila, c.col + 1, 1, 1).setValues([[c.a]]);
+      // El rodeo que vale en Datos Carga DC manda sobre Registros: se actualiza tambien alli.
+      if (c.campo === 'rodeo') rodeoEnVista_(ss, c.clave, c.a);
     });
 
     log.appendRow([p.uuid, new Date(), JSON.stringify(cambios), cambios.length,
@@ -825,7 +915,7 @@ function tocaAlgo_(t) {
  * agregue otra cria seria un desastre silencioso.
  *
  * Una cria que sobra NO se borra: se anula. Borrar es irreversible y esto se
- * hace con el animal delante. La fila queda con G-Q en '---' y Anulada = Si,
+ * hace con el animal delante. La fila queda con G-R en '---' y Anulada = Si,
  * fuera de la vista de DairyComp, y su contenido anterior entero en _log.
  * Si el parto vuelve a ser doble, esa misma fila se reutiliza.
  */
@@ -881,7 +971,7 @@ function cambiarSexo_(p, auth) {
         calidad_mejorado: str_(base[COL.calidad_mejorado])
       },
       terneros: p.terneros || [],
-      tambo: p.tambo !== undefined ? str_(p.tambo) : str_(base[COL.tambo]),
+      tambo: p.tambo !== undefined ? str_(p.tambo) : tamboDe_(base),
       notas: (admin && p.notas !== undefined) ? str_(p.notas) : str_(base[COL.notas]),
       cargado_en: base[COL.cargado_en],
       dispositivo: str_(base[COL.dispositivo])
@@ -973,12 +1063,17 @@ function sonMismaFecha_(a, b, tz) {
 function partoDesdeFilas_(filas, tz) {
   var ordenadas = filas.slice().sort(function (a, b) { return a.fila - b.fila; });
   var base = ordenadas[0].datos;
-  var partoMuerto = esMuerto_(base[COL.sexo]);
+  // Un aborto con sexo muerto trae sus crias (con la raza): no es parto sin crias.
+  var partoMuerto = esMuerto_(base[COL.sexo]) && !esAborto_(base[COL.tipo_parto]);
   var vacio = function (v) { return v === '' || v === null || v === undefined || String(v) === VACIO; };
   var terneros = partoMuerto ? [] : ordenadas.map(function (f) {
     var d = f.datos;
     var muerta = String(d[COL.estado_cria]) === 'Muerto';
-    if (muerta) return { id_ternero: '', raza: '', vive: false };
+    if (muerta) return {
+      id_ternero: '', raza: vacio(d[COL.raza]) ? '' : str_(d[COL.raza]),
+      sexo: vacio(d[COL.sexo_cria]) || str_(d[COL.sexo_cria]) === SEXO_CRIA_DESCONOCIDO ? '' : str_(d[COL.sexo_cria]),
+      vive: false
+    };
     return {
       id_ternero: str_(d[COL.id_ternero]), raza: str_(d[COL.raza]),
       caravana_senasa: vacio(d[COL.caravana_senasa]) ? '' : str_(d[COL.caravana_senasa]),
@@ -1005,7 +1100,7 @@ function partoDesdeFilas_(filas, tz) {
       calidad_mejorado: vacio(m[COL.calidad_mejorado]) ? VACIO : str_(m[COL.calidad_mejorado])
     },
     terneros: terneros,
-    tambo: str_(base[COL.tambo]), rodeo: str_(base[COL.rodeo]), notas: str_(base[COL.notas]),
+    tambo: tamboDe_(base), rodeo: str_(base[COL.rodeo]), notas: str_(base[COL.notas]),
     cargado_en: base[COL.cargado_en] instanceof Date ? base[COL.cargado_en].toISOString() : str_(base[COL.cargado_en]),
     dispositivo: str_(base[COL.dispositivo]),
     id_parto: str_(base[COL.id_parto])
@@ -1038,6 +1133,8 @@ function ltsMadre_(p) {
 
 /** El sexo de la cria: el que se cargo, o el que ya implica el codigo del parto. */
 function sexoCria_(p, t) {
+  // Con aborto el sexo de la cria es opcional: lo que cargo la tablet, o Desconocido.
+  if (esAborto_(p.tipo_parto)) return t && t.sexo ? String(t.sexo) : SEXO_CRIA_DESCONOCIDO;
   if (t && t.sexo) return String(t.sexo);
   return SEXO_POR_CODIGO[String(p.sexo).charAt(0)] || '';
 }
@@ -1052,8 +1149,10 @@ function sexoCria_(p, t) {
  */
 function validar_(p, listas) {
   var err = [];
+  var aborto = esAborto_(p.tipo_parto);
 
-  ['operario', 'id_vaca', 'fecha_parto', 'tipo_parto', 'sexo'].forEach(function (campo) {
+  // Con aborto el sexo es opcional: el aborto puede no traer sexo ('---').
+  ['operario', 'id_vaca', 'fecha_parto', 'tipo_parto'].concat(aborto ? [] : ['sexo']).forEach(function (campo) {
     if (!p[campo]) err.push('falta ' + campo);
   });
   if (err.length) return err;
@@ -1062,10 +1161,33 @@ function validar_(p, listas) {
 
   enLista_(err, listas, 'operario', p.operario);
   enLista_(err, listas, 'tipo_parto', p.tipo_parto);
-  enLista_(err, listas, 'sexo', p.sexo);
+  if (!aborto || (p.sexo && p.sexo !== VACIO)) enLista_(err, listas, 'sexo', p.sexo);
   enLista_(err, listas, 'hora_nacimiento', p.hora_nacimiento);
   enLista_(err, listas, 'tambo', p.tambo);
   // El rodeo ya no viaja desde la tablet: no se valida ni se escribe.
+
+  // El corral de rechazos existe solo para el aborto: en un parto normal no
+  // tiene sentido, y en la planilla quedaria una vaca de rechazo con un ternero.
+  if (String(p.tambo) === CORRAL_RECHAZOS && !aborto) {
+    err.push('"' + CORRAL_RECHAZOS + '" solo se elige con ' + TIPO_ABORTO);
+  }
+  if (aborto) {
+    // Aborto: una o dos crias muertas. Cada una lleva raza (obligatoria) y sexo
+    // (opcional, Macho o Hembra). El sexo general del parto no se pide.
+    var crias = p.terneros || [];
+    if (crias.length < 1 || crias.length > 2) {
+      err.push('con ' + TIPO_ABORTO + ' cargá 1 o 2 crías (vinieron ' + crias.length + ')');
+    }
+    crias.forEach(function (t, i) {
+      var pre = 'cria ' + (i + 1) + ': ';
+      if (!t || !String(t.raza || '').trim()) err.push(pre + 'falta la raza');
+      else enLista_(err, listas, 'raza', t.raza, pre);
+      if (t && t.sexo && ['Macho', 'Hembra'].indexOf(String(t.sexo)) === -1) {
+        err.push(pre + 'sexo invalido: "' + t.sexo + '"');
+      }
+    });
+    return err;
+  }
 
   if (esMuerto_(p.sexo)) return err;
 
@@ -1148,8 +1270,9 @@ function validar_(p, listas) {
     }
   }
 
-  // Mellizos donde las dos crias nacieron muertas: el codigo del parto no lo refleja.
-  if (terneros.length && terneros.every(function (t) { return t.vive === false; })) {
+  // Dos crias muertas: solo el codigo 8 lo admite (cada cria dice su sexo, M+M o M+H).
+  // Con los codigos de vivas (1, 2, 6) el codigo ya dice que habia una viva.
+  if (terneros.length && !ambiguo && terneros.every(function (t) { return t.vive === false; })) {
     err.push('todas las crias marcadas muertas: usar el codigo de parto correspondiente');
   }
 
@@ -1315,6 +1438,11 @@ function reconstruirDC_(ss) {
 
   var datos = hoja.getLastRow() > 1
     ? hoja.getRange(2, 1, hoja.getLastRow() - 1, ANCHO_FILA).getValues() : [];
+  // Partos donde hay al menos una cria viva: su calostro de la madre se ve en todas las filas.
+  var conViva = {};
+  datos.forEach(function (f) {
+    if (String(f[COL.estado_cria]) !== 'Muerto') conViva[str_(f[COL.uuid])] = true;
+  });
 
   var salida = [];
   var replicar = [];
@@ -1343,21 +1471,29 @@ function reconstruirDC_(ss) {
     var id = str_(f[COL.id_ternero]);
     var inicial = DC_INICIAL[str_(f[COL.sexo_cria])] || '';
     var limpio = function (v) { return muerta || str_(v) === VACIO ? '' : v; };
+    // El calostro de la madre es del parto: en un codigo 8 con crias muertas se ve igual.
+    // Sin calostro: parto muerto o aborto, o una cria muerta de un parto que tiene otra viva.
+    var conMadre = !(esMuerto_(f[COL.sexo]) || esAborto_(f[COL.tipo_parto]) ||
+                     (muerta && conViva[str_(f[COL.uuid])] === true));
+    var limpioMadre = function (v) { return conMadre ? (str_(v) === VACIO ? '' : v) : limpio(v); };
+    // En un aborto la raza (si se cargo) es lo unico de la cria que sobrevive a '---'.
+    var razaDC = esAborto_(f[COL.tipo_parto]) ? (str_(f[COL.raza]) === VACIO ? '' : f[COL.raza])
+                                              : limpio(f[COL.raza]);
 
     salida.push([
       f[COL.id_vaca],
       f[COL.fecha] instanceof Date ? Utilities.formatDate(f[COL.fecha], tz, 'dd/MM/yyyy') : '',
       inicial + (id === VACIO ? '' : id),
       f[COL.tipo_parto],
-      limpio(f[COL.calidad_sin_mejorar]),
-      limpio(calostroFinal_(f)),
+      limpioMadre(f[COL.calidad_sin_mejorar]),
+      limpioMadre(calostroFinal_(f)),
       f[COL.sexo],
       limpio(id),
       limpio(f[COL.caravana_senasa]),
       limpio(f[COL.lts_ternero]),
       limpio(f[COL.calidad_ternero]),
-      limpio(f[COL.raza]),
-      limpio(f[COL.lts_madre]),
+      razaDC,
+      limpioMadre(f[COL.lts_madre]),
       DC_METODO,
       f[COL.operario],
       rodeo,
@@ -1712,11 +1848,40 @@ function parseFecha_(v) {
 }
 
 function esMuerto_(sexo) {
-  return SEXO_MUERTO.indexOf(String(sexo).charAt(0)) !== -1;
+  return SEXO_MUERTO.indexOf(String(sexo).charAt(0)) !== -1 || esGemelosMuertos_(sexo);
+}
+
+function esGemelosMuertos_(sexo) {
+  return String(sexo) === SEXO_GEMELOS_MUERTOS;
 }
 
 function esMellizo_(sexo) {
   return SEXO_MELLIZO.indexOf(String(sexo).charAt(0)) !== -1;
+}
+
+/* El destino va a Tambo Vaca, salvo 19 - Rechazos: no es un tambo, va en Asignacion Rodeo. */
+function destinoColumnas_(destino) {
+  var t = str_(destino);
+  return t === CORRAL_RECHAZOS ? { tambo: '', rodeo: CORRAL_RECHAZOS } : { tambo: t, rodeo: '' };
+}
+
+/* Datos Carga DC: el rodeo de la fila (por clave uuid|cria) se pisa con el de la vista. */
+function rodeoEnVista_(ss, clave, valor) {
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (!dc || dc.getLastRow() < 2) return;
+  var claves = dc.getRange(2, DC.clave + 1, dc.getLastRow() - 1, 1).getValues();
+  for (var i = 0; i < claves.length; i++) {
+    if (str_(claves[i][0]) === clave) { dc.getRange(i + 2, DC.rodeo + 1).setValue(valor); return; }
+  }
+}
+
+/* El destino tal como lo ve la tablet: el 19 - Rechazos esta en Rodeo, no en Tambo. */
+function tamboDe_(datos) {
+  return str_(datos[COL.rodeo]) === CORRAL_RECHAZOS ? CORRAL_RECHAZOS : str_(datos[COL.tambo]);
+}
+
+function esAborto_(tipo) {
+  return String(tipo) === TIPO_ABORTO;
 }
 
 function normalizar_(s) {
@@ -1786,6 +1951,7 @@ function configurarDC() {
   dc.getRange(2, DC.cargado + 1, n, 1)
     .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
   dc.hideColumns(DC.clave + 1);
+  dc.hideColumns(DC.metodo + 1);   // Sonda: siempre es lo mismo, no lo mira nadie
   dc.getRange(2, DC.id_vaca + 1, n, 1).setNumberFormat('@');
   dc.getRange(2, DC.id_ternero + 1, n, 1).setNumberFormat('@');
   dc.getRange(2, DC.caravana_senasa + 1, n, 1).setNumberFormat('@');
@@ -1939,6 +2105,83 @@ function letraCol_(i) {
 }
 
 /**
+ * Inserta «Calostro Mejorado» en N (columna 14) de una hoja con el layout de
+ * antes de r10. Es una copia de K (Mejorado): '---' donde la cria esta muerta.
+ * estadoIdx es la posicion (base 0) de Estado Cria en esa hoja, que cambia de
+ * una version a otra. Va SIEMPRE antes de insertar la caravana de r7.
+ */
+function insertarCalostroMejorado_(hoja, estadoIdx) {
+  var n = hoja.getLastRow() - 1;
+  var valores = n > 0 ? hoja.getRange(2, 1, n, hoja.getLastColumn()).getValues().map(function (f) {
+    return [String(f[estadoIdx]) === 'Muerto' ? VACIO : str_(f[10])];
+  }) : [];
+  var col = COL.calostro_mejorado + 1;
+  hoja.insertColumnBefore(col);
+  hoja.getRange(1, col).setValue('Calostro Mejorado').setFontWeight('bold');
+  if (valores.length) hoja.getRange(2, col, valores.length, 1).setValues(valores);
+}
+
+/**
+ * r10: inserta «Calostro Mejorado» entre M (Lts Calostro Madre) y N (Origen
+ * Calostro). La columna nueva es una copia de «Mejorado» (K), para leerla junto
+ * al calostro del ternero. Sin cambiar nada de lo que ya hay.
+ *
+ * Por defecto NO escribe: devuelve el plan. Para aplicarlo, migrarCalostroMejoradoR10(true).
+ * Antes de tocar nada copia la hoja a 'Registros_backup_r9'. Despues hay que
+ * publicar el Codigo.gs de r10 SIN demora: entre la insercion y el deploy, el
+ * codigo viejo escribiria por posicion sobre columnas corridas.
+ */
+function migrarCalostroMejoradoR10(aplicar) {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var hoja = hojaRegistros_(ss);
+  var log = [];
+  var di = function (m) { log.push(m); };
+  if (!hoja) { di('No existe la hoja de registros.'); return { ok: false, log: log }; }
+
+  var ANCHO_R9 = 30;
+  var N_NUEVA = COL.calostro_mejorado + 1;   // columna 14 (N) en 1-based
+
+  if (hoja.getLastColumn() !== ANCHO_R9) {
+    di('La hoja tiene ' + hoja.getLastColumn() + ' columnas y r9 tiene ' + ANCHO_R9 + '. No se migra.');
+    return { ok: false, log: log };
+  }
+  var real = hoja.getRange(1, 1, 1, ANCHO_R9).getValues()[0].map(str_);
+  if (normalizar_(real[13]) !== normalizar_('Origen Calostro') || normalizar_(real[10]) !== normalizar_('Mejorado')) {
+    di('El encabezado no es el de r9 (K=Mejorado, N=Origen Calostro). No se migra.');
+    return { ok: false, log: log };
+  }
+  if (ss.getSheetByName('Registros_backup_r9')) {
+    di('Ya existe la hoja Registros_backup_r9. La borro o la renombras antes de volver a correr.');
+    return { ok: false, log: log };
+  }
+
+  var filasN = hoja.getLastRow() - 1;
+  di('Filas con datos: ' + filasN + '. Columna nueva en N (' + N_NUEVA + '): copia de K, "---" en crias muertas.');
+  di('Encabezado nuevo: "Calostro Mejorado" en N; el resto se corre una columna.');
+  if (!aplicar) {
+    di('DRY-RUN: no se escribio nada. Para aplicar: migrarCalostroMejoradoR10(true)');
+    return { ok: true, aplicado: false, log: log };
+  }
+
+  hoja.copyTo(ss).setName('Registros_backup_r9');
+  insertarCalostroMejorado_(hoja, 22);   // Estado Cria (W) en r9
+  di('Aplicado. Backup en Registros_backup_r9. Ahora: publicar el Codigo.gs de r10 y correr actualizarDC_.');
+  return { ok: true, aplicado: true, log: log };
+}
+
+/**
+ * Oculta la columna Metodo de 'Datos Carga DC' en la hoja que ya existe.
+ * configurarDC la oculta al crearla; esto es para la hoja actual. Se corre a mano, una vez.
+ */
+function ocultarMetodoDC() {
+  var ss = SpreadsheetApp.openById(SS_ID);
+  var dc = ss.getSheetByName(HOJA_DC);
+  if (!dc) throw new Error('no existe la pestaña ' + HOJA_DC);
+  dc.hideColumns(DC.metodo + 1);
+  Logger.log('Oculta la columna ' + (DC.metodo + 1) + ' (' + DC_ENCABEZADOS[DC.metodo] + ')');
+}
+
+/**
  * Ensayo de la migracion: NO escribe nada. Dice exactamente que va a pasar.
  * Correrla ANTES de migrarR6(), mirar el Registro de ejecucion, y recien
  * entonces migrar.
@@ -2013,7 +2256,11 @@ function migrarR7() {
   hoja.copyTo(ss).setName('Registros_backup_r6');
   Logger.log('Respaldo guardado en Registros_backup_r6');
 
-  var colT = COL.caravana_senasa + 1;                         // 20, 1-based
+  // Calostro Mejorado (r10) va ANTES que la caravana: con las dos, el layout
+  // queda igual al actual. Estado Cria en r6 es la columna 22 (indice 21).
+  insertarCalostroMejorado_(hoja, 21);
+
+  var colT = COL.caravana_senasa + 1;                         // 21, 1-based
   hoja.insertColumnBefore(colT);
   hoja.getRange(1, colT).setValue('Caravana SENASA').setFontWeight('bold');
   // Texto ANTES de que entre el primer valor: Sheets le comeria el 0 inicial.
@@ -2213,7 +2460,8 @@ function migrarR6() {
       v[6], v[7], v[8],                                 // G-I igual
       v[9], v[10], v[11],                               // J-L calostro madre, igual
       v[13],                                            // N vieja -> M: lts madre
-      origen, idOrigen, calTernero, v[14],              // N-Q: lo del ternero
+      muerta ? VACIO : str_(v[10]),                     // N nueva: copia de Mejorado (K)
+      origen, idOrigen, calTernero, v[14],              // O-R: lo del ternero
       v[16], v[17], '', v[18],                          // Q,R,S viejas -> R,S,(T caravana vacia),U
       v[19], v[20],                                     // T,U viejas -> V,W
       v[21], criaDe_(v, porParto, vistas), v[23], v[24], v[25],

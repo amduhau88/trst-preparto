@@ -87,7 +87,7 @@ let ventanaCerrada = '';       // 'r8': rechaza correcciones como validacion; 'r
 
 const LISTAS = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
-  tipo_parto: ['1 Normal', '2 Asistido', '4 Cesarea'],
+  tipo_parto: ['1 Normal', '2 Asistido', '4 Cesarea', 'Aborto en Preparto'],
   sexo: ['1 Hembra Viva', '2 Hembras Gemelas Vivas', '4 Hembra Muerta', '6 Macho Vivo',
          '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)'],
   raza: ['Holando', 'Angus'],
@@ -100,7 +100,7 @@ const LISTAS = {
   mejorado: ['Si', 'No'], calidad_mejorado: ['---'].concat(Array.from({ length: 10 }, (_, i) => String(26 + i))),
   lts_madre: Array.from({ length: 21 }, (_, i) => String(i)),
   lts_ternero: ['2', '3', '4', '5', '6'],
-  tambo: ['1', '2', '3', '4'], rodeo: ['21', '23', '26', '201', '202']
+  tambo: ['1', '2', '3', '4', '19 - Rechazos'], rodeo: ['21', '23', '26', '201', '202']
 };
 
 const api = http.createServer((req, res) => {
@@ -1731,6 +1731,106 @@ const visible = (page, sel) => page.evaluate((s) => {
     await page.click('.tab[data-v="form"]');
     await esperar(200);
 
+    console.log('\n12l. Aborto en Preparto: bloque TERNERO(S) MUERTOS (cantidad, raza, sexo)');
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await page.click('[data-chip="tipo_parto"][data-val="1 Normal"]');
+    await esperar(200);
+    check('sin aborto, no hay bloque de ternero(s) muertos', await page.$eval('#cardAborto', (e) => e.classList.contains('hidden')));
+    check('sin aborto, sigue Sexo / vivo / mellizos con sus 6 opciones',
+          (await visible(page, '#bloqueSexo')) && (await page.$$('[data-chip="sexo"]')).length === 6);
+    check('sin aborto, el corral de rechazos no aparece',
+          (await page.$('[data-chip="tambo"][data-val="19 - Rechazos"]')) === null);
+
+    await page.click('[data-chip="tipo_parto"][data-val="Aborto en Preparto"]');
+    await esperar(300);
+    check('con aborto desaparece Sexo / vivo / mellizos', !(await visible(page, '#bloqueSexo')));
+    check('con aborto desaparece la tarjeta Ternero', !(await visible(page, '#cardTernero')));
+    check('con aborto aparece Ternero(s) muertos', await visible(page, '#cardAborto'));
+    const cantidad = await page.$$eval('#cAbortoN [data-chip="abortoN"]', (els) => els.map((e) => e.dataset.val));
+    check('cantidad de crias: 1 cria o 2 crias', JSON.stringify(cantidad) === JSON.stringify(['1 cria', '2 crias']), JSON.stringify(cantidad));
+    check('por defecto, 1 cria', (await page.$$('#cAbortoN [data-val="1 cria"].on')).length === 1);
+    check('una sola cria en el bloque', (await page.$$('#abortoCrias .subcard')).length === 1);
+    check('la raza no viene preseleccionada', (await page.$$('#abRaza0 .chip.on')).length === 0);
+    check('calostro de la madre apagado', await page.$eval('#cardCalostroMadre', (e) => e.classList.contains('off')));
+    check('calostro del ternero apagado', await page.$eval('#cardCalostroTernero', (e) => e.classList.contains('off')));
+
+    await page.evaluate(() => {
+      document.getElementById('fVaca').value = '9911';
+      document.querySelector('[data-chip="tambo"][data-val="19 - Rechazos"]').click();
+    });
+    await page.click('#btnGuardar');
+    await esperar(400);
+    check('sin raza no guarda', !(await visible(page, '#modalOk')) &&
+          /raza/.test(await page.$eval('#toast', (e) => e.textContent)), await page.$eval('#toast', (e) => e.textContent));
+
+    await page.click('#abRaza0 [data-val="Holando"]');
+    await page.click('#abSexo0 [data-val="Macho"]');
+    await page.click('#btnGuardar');
+    await esperar(400);
+    await cerrarCartel(page);
+    const pa = await leerPayload(page, '9911');
+    check('aborto con una cria guarda con sexo ---', pa && pa.sexo === '---' && pa.tipo_parto === 'Aborto en Preparto', JSON.stringify(pa));
+    check('la cria viaja muerta, con su raza y su sexo',
+          pa && pa.terneros.length === 1 && pa.terneros[0].vive === false &&
+          pa.terneros[0].raza === 'Holando' && pa.terneros[0].sexo === 'Macho', JSON.stringify(pa && pa.terneros));
+    check('sin calostro ni litros de la madre', pa && pa.lts_madre === undefined && pa.calostro === undefined);
+    check('y el corral viaja', pa && pa.tambo === '19 - Rechazos', pa && pa.tambo);
+
+    await page.click('[data-chip="tipo_parto"][data-val="Aborto en Preparto"]');
+    await esperar(200);
+    await page.evaluate(() => { document.getElementById('fVaca').value = '9912'; });
+    await page.click('[data-chip="abortoN"][data-val="2 crias"]');
+    await esperar(300);
+    check('con 2 crias aparece Cria 2', (await page.$$('#abortoCrias .subcard')).length === 2);
+    await page.click('#abRaza0 [data-val="Holando"]');
+    await page.click('#abRaza1 [data-val="Angus"]');
+    await page.click('#abSexo1 [data-val="Hembra"]');
+    await page.evaluate(() => document.querySelector('[data-chip="tambo"][data-val="19 - Rechazos"]').click());
+    await page.click('#btnGuardar');
+    await esperar(400);
+    await cerrarCartel(page);
+    const pa2 = await leerPayload(page, '9912');
+    check('con 2 crias guarda dos crias, cada una con raza y sexo opcional',
+          pa2 && pa2.terneros.length === 2 && pa2.terneros[0].raza === 'Holando' && pa2.terneros[0].sexo === '' &&
+          pa2.terneros[1].raza === 'Angus' && pa2.terneros[1].sexo === 'Hembra' &&
+          pa2.terneros.every((t) => t.vive === false), JSON.stringify(pa2 && pa2.terneros));
+
+    await page.click('[data-chip="tipo_parto"][data-val="1 Normal"]');
+    await esperar(300);
+    check('al volver a Normal vuelve Sexo / vivo / mellizos', await visible(page, '#bloqueSexo'));
+    check('y la tarjeta Ternero', await visible(page, '#cardTernero'));
+    check('y el ternero de siempre (vivo) sin quedar muerto',
+          (await page.$$('#terneros [data-ternero]')).length === 1 && (await page.$$('#cardAborto:not(.hidden)')).length === 0);
+    await page.click('[data-chip="sexo"][data-val="6 Macho Vivo"]');
+    await esperar(200);
+
+    console.log('\n12m. Otros gemelos (8) con las dos crias muertas: se carga y se guarda');
+    await page.click('.tab[data-v="form"]');
+    await esperar(200);
+    await elegirSexo(page, 8);
+    await esperar(300);
+    await page.evaluate(() => { document.getElementById('fVaca').value = '5577'; });
+    await page.click('[data-caja="vive:0"] [data-val="Muerto"]');
+    await page.click('[data-caja="vive:1"] [data-val="Muerto"]');
+    await page.click('[data-caja="sexoc:0"] [data-val="Macho"]');
+    await page.click('[data-caja="sexoc:1"] [data-val="Hembra"]');
+    await page.click('[data-chip="tambo"][data-val="1"]');
+    await esperar(300);
+    await page.click('#btnGuardar');
+    await esperar(500);
+    check('con las dos crias muertas guarda (no pide una viva)', await visible(page, '#modalOk'),
+          await page.$eval('#toast', (e) => e.textContent).catch(() => ''));
+    await cerrarCartel(page);
+    const g8 = await leerPayload(page, '5577');
+    check('el payload trae las dos crias muertas con su sexo',
+          g8 && g8.terneros.length === 2 && g8.terneros.every((t) => t.vive === false) &&
+          g8.terneros[0].sexo === 'Macho' && g8.terneros[1].sexo === 'Hembra', JSON.stringify(g8 && g8.terneros));
+    check('y lleva el calostro de la madre (es del parto)', g8 && g8.calostro && g8.calostro.calidad_sin_mejorar !== undefined,
+          JSON.stringify(g8 && g8.calostro));
+    await elegirSexo(page, 6);
+    await esperar(200);
+
     console.log('\n13. Salida de emergencia: 2 segundos sobre el logo');
     await page.evaluate(() => {
       const l = document.querySelector('.logo');
@@ -1837,7 +1937,7 @@ const visible = (page, sel) => page.evaluate((s) => {
     const primera = () => page.$eval('.listrow', (e) => e.textContent.replace(/\s+/g, ' '));
     check('trae partos de varias fechas, locales y de la planilla',
           await page.$eval('#filas', (e) => /3131/.test(e.textContent) && /2020/.test(e.textContent) && /6071/.test(e.textContent)));
-    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082|609\d/.test(await primera()), await primera());
+    check('arranca del mas nuevo al mas viejo', /6071|6072|6081|6084|6083|6082|609\d|991\d|557\d/.test(await primera()), await primera());
     await page.click('#cabecera [data-orden="fecha"]');
     await esperar(400);
     check('tocar Fecha invierte: el mas viejo primero', /15\/01\/2026/.test(await primera()), await primera());

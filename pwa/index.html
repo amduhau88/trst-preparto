@@ -108,6 +108,7 @@
   .malo{border-color:var(--danger) !important;box-shadow:0 0 0 3px var(--danger-soft) !important}
 
   .chips{display:flex;flex-wrap:wrap;gap:8px}
+  /* Aborto: las cuatro opciones de sexo en una sola linea. */
   .chip{font-family:inherit;font-size:14px;font-weight:600;color:var(--ink-2);background:#fff;
     border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-height:48px;cursor:pointer;
     display:flex;align-items:center;gap:8px;text-align:left}
@@ -324,19 +325,28 @@
       <h2>El parto</h2>
       <div class="lab">Tipo de parto <span class="req">*</span></div>
       <div class="chips" id="cTipo"></div>
-      <div class="lab" style="margin-top:16px">Sexo / vivo / mellizos <span class="req">*</span></div>
-      <div class="chips" id="cSexo"></div>
-      <div id="notaMuerto" class="note dead hidden" style="margin-top:12px">
-        Cría muerta: se apagan los bloques de ternero y calostro, y esas columnas van con <b>“---”</b>.
-      </div>
-      <div id="notaMellizo" class="note hidden" style="margin-top:12px">
-        Parto doble: cargá <b>las dos crías</b>. Se guardan como dos renglones con el mismo parto.
+      <div id="bloqueSexo">
+        <div class="lab" style="margin-top:16px">Sexo / vivo / mellizos <span class="req">*</span></div>
+        <div class="chips" id="cSexo"></div>
+        <div id="notaMuerto" class="note dead hidden" style="margin-top:12px">
+          Cría muerta: se apagan los bloques de ternero y calostro, y esas columnas van con <b>“---”</b>.
+        </div>
+        <div id="notaMellizo" class="note hidden" style="margin-top:12px">
+          Parto doble: cargá <b>las dos crías</b>. Se guardan como dos renglones con el mismo parto.
+        </div>
       </div>
     </div>
 
     <div class="card" id="cardTernero">
       <h2>Ternero</h2>
       <div id="terneros"></div>
+    </div>
+
+    <div class="card hidden" id="cardAborto">
+      <h2>Ternero(s) muertos</h2>
+      <div class="lab">Cantidad de crías</div>
+      <div class="chips" id="cAbortoN"></div>
+      <div id="abortoCrias" style="margin-top:12px"></div>
     </div>
 
     <div class="card" id="cardCalostroMadre">

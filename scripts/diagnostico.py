@@ -22,7 +22,7 @@ SS_ID = '12da8wxy4tJVLHuJZp-MKlornbi2U11ISWEsgglencE8'
 PAGES = 'https://amduhau88.github.io/trst-preparto/pwa/'
 GWS = str(Path.home() / 'bin' / 'gws')
 # Columnas de Registros (ver COL en Codigo.gs)
-C_OPER, C_VACA, C_FECHA, C_SEXO, C_IDPARTO, C_CRIA, C_UUID, C_CARGADO, C_DISP, C_ANUL = 0, 1, 2, 5, 23, 24, 25, 26, 27, 28
+C_OPER, C_VACA, C_FECHA, C_SEXO, C_IDPARTO, C_CRIA, C_UUID, C_CARGADO, C_DISP, C_ANUL = 0, 1, 2, 5, 24, 25, 26, 27, 28, 29
 
 
 def h(t):
@@ -111,7 +111,7 @@ def main():
     print('CACHE del repo: ' + (m.group(1) if m else '?') + ' (la tablet muestra la suya en Diagnóstico)')
 
     h('3. Planilla')
-    reg = leer('Registros!A1:AD5000')[1:]
+    reg = leer('Registros!A1:AE5000')[1:]
     log = leer('_log!A1:F10000')[1:]
     print(f'Registros: {len(reg)} filas · _log: {len(log)} filas')
     if log:
@@ -168,7 +168,7 @@ def main():
                     p = sin_token(col(r, 2))
                     if isinstance(p, dict) and str(p.get('id_vaca', '')) == a.vaca:
                         uu.add(u)
-            otros = [r for r in reg if a.vaca in (col(r, 14),)]
+            otros = [r for r in reg if a.vaca in (col(r, 15),)]   # ID Vaca Origen Calostro (P)
             if otros:
                 print(f'(aparece como origen de calostro en {len(otros)} filas de otras vacas)')
         if not uu:

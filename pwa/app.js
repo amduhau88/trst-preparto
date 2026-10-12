@@ -10,6 +10,13 @@ const $ = (id) => document.getElementById(id);
 const VACIO = '---';
 const SEXO_MUERTO = ['4', '7'];
 const SEXO_MELLIZO = ['2', '8'];
+// Opciones de texto nuevas (sin codigo numerico): van en Maestro tal cual.
+const TIPO_ABORTO = 'Aborto en Preparto';
+const SEXO_GEMELOS_MUERTOS = 'Gemelos Muertos';
+const CORRAL_RECHAZOS = '19 - Rechazos';
+// Solo con Aborto en Preparto: una cria o dos, sexo sin determinar. Son textos, no codigos.
+// Con aborto, una cria muerta cuyo sexo no se cargo queda asi en Sexo Cria.
+const SEXO_CRIA_DESCONOCIDO = 'Desconocido';
 const ORIGEN_PROPIA = 'Propia madre';
 const ORIGEN_OTRA = 'Otra vaca';
 // 0 Brix = no se midio / no hubo calostro. No es un numero mas.
@@ -195,7 +202,7 @@ const horas = () => Array.from({ length: 48 }, (_, i) =>
    reemplaza por lo que diga la planilla, que es la fuente de verdad. */
 const LISTAS_BASE = {
   operario: ['Julio', 'Griselda', 'Martin', 'Trini'],
-  tipo_parto: ['1 Normal', '2 Asistido', '4 Cesarea'],
+  tipo_parto: ['1 Normal', '2 Asistido', '4 Cesarea', TIPO_ABORTO],
   sexo: ['1 Hembra Viva', '2 Hembras Gemelas Vivas', '4 Hembra Muerta', '6 Macho Vivo',
          '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)'],
   raza: ['Holando', 'Angus'],
@@ -208,7 +215,7 @@ const LISTAS_BASE = {
   calidad_mejorado: [VACIO].concat(rango(26, 35)),
   lts_madre: rango(0, 20),
   lts_ternero: rango(2, 6),
-  tambo: ['1', '2', '3', '4'],
+  tambo: ['1', '2', '3', '4', CORRAL_RECHAZOS],
   rodeo: []
 };
 
@@ -261,7 +268,7 @@ const borrarLocal = (uuid) => tx('readwrite', (s) => s.delete(uuid));
 /* Cada ternero lleva lo suyo: sexo, si nacio vivo, y su propio calostro.
    Los litros que produjo la madre son del parto, no de la cria. */
 const st = {
-  fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: [],
+  fecha: '', tipo_parto: '', sexo: '', lts_madre: null, tambo: '', terneros: [], abortoCrias: 1,
   // Lo que produjo la madre es del PARTO: una vaca produjo un calostro, no uno
   // por cria. Cargarlo por cria dejaba escribir dos calidades distintas para la
   // misma madre en un mellizo.
@@ -284,9 +291,9 @@ const sinCalostro = () => !st.cal.brixExc && Number(st.cal.brix) === SIN_CALOSTR
 /* El peso arranca en null, no en el medio de la lista: el ternero se pesa mas
    tarde, y un numero puesto por la app es indistinguible de uno medido. Null se
    pinta como "—" y viaja como columna I vacia: "falta pesar". */
-function nuevoTernero() {
+function nuevoTernero(razaInicial) {
   return {
-    id_ternero: '', raza: (listas.raza || [''])[0], peso: null,
+    id_ternero: '', raza: razaInicial === undefined ? (listas.raza || [''])[0] : razaInicial, peso: null,
     caravana_senasa: '',              // 6 digitos, obligatoria desde v15
     sexo: '', vive: true,
     cal: {
@@ -303,7 +310,7 @@ function nuevoTernero() {
 function etiquetaCria(t, i) {
   const partes = [];
   if (t.id_ternero) partes.push(t.id_ternero);
-  const sx = t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '';
+  const sx = t.sexo || sexoPorCodigo(st.sexo);
   if (sx) partes.push(sx);
   if (!t.vive) partes.push('muerto');
   return partes.length ? partes.join(' · ') : 'Ternero ' + (i + 1) + ' — sin datos';
@@ -311,6 +318,7 @@ function etiquetaCria(t, i) {
 
 // El codigo del parto ya dice el sexo, salvo el 8 (M+M o M+H), que es ambiguo.
 const SEXO_POR_CODIGO = { 1: 'Hembra', 2: 'Hembra', 4: 'Hembra', 6: 'Macho', 7: 'Macho' };
+const sexoPorCodigo = (sexo) => SEXO_POR_CODIGO[String(sexo).charAt(0)] || '';
 const sexoAmbiguo = () => String(st.sexo).charAt(0) === '8';
 
 /* ---------- fecha: solo Hoy o Ayer ---------- */
@@ -370,7 +378,11 @@ function pintarFechas() {
 
 }
 
-const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0));
+const esAborto = () => st.tipo_parto === TIPO_ABORTO;
+const esGemelosMuertos = () => st.sexo === SEXO_GEMELOS_MUERTOS;
+const esMuerto = () => SEXO_MUERTO.includes(String(st.sexo).charAt(0)) || esGemelosMuertos();
+// Sin calostro ni datos de cria: parto muerto o aborto.
+const partoSinCalostro = () => esMuerto() || esAborto();
 const esMellizo = () => SEXO_MELLIZO.includes(String(st.sexo).charAt(0));
 const medio = (k) => { const n = numeros(k); return n.length ? n[Math.floor(n.length / 2)] : 0; };
 
@@ -394,15 +406,30 @@ function opciones(sel, valores, elegido) {
     `<option ${v === elegido ? 'selected' : ''}>${v}</option>`).join('');
 }
 
+/* Lo que depende del tipo de parto: el sexo y el corral de rechazos. Se llama
+   cada vez que cambia el tipo, y al pintar, por si el parto venia cargado. */
+function sanearPorTipo() {
+  // Con aborto no hay sexo general: lo reemplazan las crias muertas del bloque propio.
+  if (esAborto()) st.sexo = '';
+  // Un aborto guardado trae '---': fuera de aborto eso no es un sexo, hay que elegir uno.
+  if (!esAborto() && st.sexo === VACIO) st.sexo = '';
+  if (st.tambo === CORRAL_RECHAZOS && !esAborto()) st.tambo = '';
+}
+
 function pintarFormulario() {
   pintarFechas();
   opciones($('fOperario'), listas.operario, $('fOperario').value);
   opciones($('fHora'), listas.hora_nacimiento, $('fHora').value || '07:00');
 
-  const malo = (v) => /muert/i.test(v) ? 'bad' : (/cesarea|asistido/i.test(v) ? 'warn' : '');
+  sanearPorTipo();
+  const malo = (v) => /muert|aborto/i.test(v) ? 'bad' : (/cesarea|asistido/i.test(v) ? 'warn' : '');
   chips($('cTipo'), 'tipo_parto', listas.tipo_parto, st.tipo_parto, { numerar: true, claseDe: malo });
+  // Con aborto no hay sexo general: el bloque lo reemplaza el de ternero(s) muertos.
+  $('bloqueSexo').classList.toggle('hidden', esAborto());
   chips($('cSexo'), 'sexo', listas.sexo, st.sexo, { numerar: true, claseDe: malo });
-  chips($('cTambo'), 'tambo', listas.tambo, st.tambo, { ancho: true });
+  // El corral de rechazos aparece solo con el aborto.
+  chips($('cTambo'), 'tambo', listas.tambo.filter((v) => v !== CORRAL_RECHAZOS || esAborto()),
+        st.tambo, { ancho: true });
 
   pintarSteppers();
   pintarTerneros();
@@ -437,7 +464,44 @@ function pintarCalostroMadre() {
 /** "—" mientras no se pesó. Un numero puesto de oficio no se distingue de uno medido. */
 const pesoTxt = (v) => (v === null || v === undefined || v === '' ? '—' : `${v}<span>kg</span>`);
 
+/* Aborto: bloque propio «Ternero(s) muertos». Cantidad de crias (1 o 2) y, por cria,
+   raza (obligatoria) y sexo (opcional). Reemplaza «Sexo / vivo / mellizos» y la tarjeta Ternero. */
+function pintarAborto() {
+  const n = st.abortoCrias === 2 ? 2 : 1;
+  while (st.terneros.length < n) st.terneros.push(nuevoTernero(''));
+  st.terneros.length = n;
+  st.terneros.forEach((t) => { t.vive = false; });
+
+  $('cardTernero').classList.add('hidden');
+  $('cardAborto').classList.remove('hidden');
+  $('cardCalostroMadre').classList.add('off');
+  $('cardCalostroTernero').classList.add('off');
+  $('notaMuerto').classList.add('hidden');
+  $('notaMellizo').classList.add('hidden');
+
+  chips($('cAbortoN'), 'abortoN', ['1 cria', '2 crias'], n === 2 ? '2 crias' : '1 cria', { ancho: true });
+  $('abortoCrias').innerHTML = st.terneros.map((t, i) => `
+    <div class="subcard" style="${i === 0 ? 'margin-top:0' : ''}">
+      <h3><span class="dot"></span>${n > 1 ? 'Cría ' + (i + 1) : 'Cría'}</h3>
+      <div class="grid g2">
+        <div><div class="lab">Raza <span class="req">*</span></div><div class="chips" id="abRaza${i}"></div></div>
+        <div><div class="lab">Sexo <span class="quien sin">opcional</span></div><div class="chips" id="abSexo${i}"></div></div>
+      </div>
+    </div>`).join('');
+  // Con ids propios: data-caja se repite con el bloque normal (oculto) y caja() tomaria ese.
+  st.terneros.forEach((t, i) => {
+    chips($('abRaza' + i), 'raza:' + i, listas.raza, t.raza, { ancho: true });
+    chips($('abSexo' + i), 'sexoc:' + i, ['Hembra', 'Macho'], t.sexo || '', { ancho: true });
+  });
+  pintarCalostroMadre();
+  pintarCalostros();
+}
+
 function pintarTerneros() {
+  if (esAborto()) return pintarAborto();
+  $('cardTernero').classList.remove('hidden');
+  $('cardAborto').classList.add('hidden');
+  // Sin aborto, un parto muerto no lleva crias en la tablet: la planilla las crea igual.
   const n = esMuerto() ? 0 : (esMellizo() ? 2 : 1);
   while (st.terneros.length < n) st.terneros.push(nuevoTernero());
   st.terneros.length = n;
@@ -660,7 +724,7 @@ function elegirChip(chip) {
     const c = t.cal;
 
     if (campo === 'raza') { t.raza = val; return pintarCalostros(); }
-    if (campo === 'sexoc') { t.sexo = val; return pintarTerneros(); }
+    if (campo === 'sexoc') { t.sexo = esAborto() && t.sexo === val ? '' : val; return pintarTerneros(); }
     if (campo === 'vive') { t.vive = val === 'Vivo'; return pintarTerneros(); }
     if (campo === 'origen') {
       c.origen = val;
@@ -670,6 +734,11 @@ function elegirChip(chip) {
     }
     if (campo === 'ltsTernero') { c.lts_ternero = val; return; }
     return;
+  }
+
+  if (clave === 'abortoN') {
+    st.abortoCrias = val === '2 crias' ? 2 : 1;
+    return pintarTerneros();
   }
 
   if (clave === 'listaFecha') {
@@ -698,6 +767,14 @@ function elegirChip(chip) {
   }
 
   st[clave] = val;
+  if (clave === 'tipo_parto') {
+    // Cambiar a aborto (o salir) cambia sexo, cria y calostro: se repinta todo.
+    // La raza en aborto es opcional: no se preselecciona. Al salir, vuelve la default.
+    if (esAborto()) st.terneros.forEach((t) => { t.raza = ''; t.sexo = ''; });
+    else st.terneros.forEach((t) => { t.vive = true; if (!t.raza) t.raza = (listas.raza || [''])[0]; });
+    pintarFormulario();
+    if (st.editando) pintarModoEdicion();
+  }
   if (clave === 'sexo') { pintarTerneros(); if (st.editando) pintarModoEdicion(); }
 }
 
@@ -862,7 +939,8 @@ function armarPayload() {
     fecha_parto: st.fecha,
     hora_nacimiento: $('fHora').value,
     tipo_parto: st.tipo_parto,
-    sexo: st.sexo,
+    // Con aborto el sexo puede no existir: en la planilla queda '---'.
+    sexo: esAborto() ? VACIO : st.sexo,
     terneros: [],
     tambo: st.tambo,
     notas: $('fNotas').value.trim(),
@@ -872,7 +950,13 @@ function armarPayload() {
     formato: 2
   };
 
-  if (!esMuerto()) {
+  if (esAborto()) {
+    // Crias muertas: raza (obligatoria) y sexo (opcional, si se eligio).
+    p.terneros = st.terneros.slice(0, st.abortoCrias === 2 ? 2 : 1).map((t) => ({
+      id_ternero: '', caravana_senasa: '', raza: t.raza || '', sexo: t.sexo || '', vive: false
+    }));
+  }
+  if (!partoSinCalostro()) {
     p.lts_madre = String(st.lts_madre);           // del parto, no de la cria
     // Lo que produjo la madre: una vaca, un calostro.
     p.calostro = {
@@ -885,7 +969,7 @@ function armarPayload() {
         id_ternero: String(t.id_ternero).trim(),
         caravana_senasa: String(t.caravana_senasa || '').trim(),
         raza: t.raza,
-        sexo: t.sexo || SEXO_POR_CODIGO[String(st.sexo).charAt(0)] || '',
+        sexo: t.sexo || sexoPorCodigo(st.sexo),
         vive: t.vive
       };
       // Sin pesar: el peso no viaja y la columna I queda vacia. Mandar '' o 0
@@ -918,7 +1002,12 @@ function faltantes(p) {
   if (!p.fecha_parto) f.push('fecha');
   if (!p.tipo_parto) f.push('tipo de parto');
   if (!p.sexo) f.push('sexo');
-  if (!esMuerto()) {
+  if (esAborto()) {
+    st.terneros.forEach((t, i) => {
+      if (!t.raza) f.push('raza' + (st.terneros.length > 1 ? ` (cría ${i + 1})` : ''));
+    });
+  }
+  if (!partoSinCalostro()) {
     if (st.lts_madre === null) f.push('litros de la madre');
     if (st.cal.brix === null && !st.cal.brixExc) f.push('calidad del calostro de la madre');
     if (st.cal.mejorado === 'Si' && (st.cal.mej === VACIO || !st.cal.mej)) {
@@ -941,7 +1030,8 @@ function faltantes(p) {
         if (!String(t.cal.brix).trim()) f.push('los Brix del calostro que tomó' + cual);
       }
     });
-    if (st.terneros.length && st.terneros.every((t) => !t.vive)) {
+    // Con el codigo 8 las dos crias pueden nacer muertas (el sexo de cada una ya se pidio arriba).
+    if (!sexoAmbiguo() && st.terneros.length && st.terneros.every((t) => !t.vive)) {
       f.push('al menos una cría viva, o cambiá el código del parto');
     }
   }
@@ -1014,6 +1104,7 @@ function aEstado(p) {
   st.tipo_parto = p.tipo_parto;
   st.sexo = p.sexo;
   st.sexoOriginal = p.sexo;
+  st.abortoCrias = (p.terneros || []).length === 2 ? 2 : 1;
   st.tambo = p.tambo || '';
   st.lts_madre = p.lts_madre === undefined || p.lts_madre === '' ? null : +p.lts_madre;
 
@@ -1043,7 +1134,7 @@ function aEstado(p) {
     return {
       id_ternero: t.id_ternero || '',
       caravana_senasa: t.caravana_senasa && String(t.caravana_senasa) !== VACIO ? String(t.caravana_senasa) : '',
-      raza: t.raza || (listas.raza || [''])[0],
+      raza: t.raza !== undefined ? (t.raza || '') : (listas.raza || [''])[0],
       peso: t.peso === undefined || t.peso === '' ? null : +t.peso,
       sexo: t.sexo || '',
       vive: t.vive !== false,
@@ -1215,19 +1306,16 @@ function identidadAdmin() {
 }
 
 function armarEdicion() {
-  return Object.assign(esAdmin() ? identidadAdmin() : {}, {
+  // Un parto muerto o un aborto no tiene calostro ni litros de la madre: mandarlos
+  // hace que el backend rechace la correccion (las crias muertas van todas en ---).
+  const sinCal = partoSinCalostro();
+  const base = Object.assign(esAdmin() ? identidadAdmin() : {}, {
     accion: 'editar',
     uuid: st.editando,
     operario: $('fOperario').value,
     tambo: st.tambo,
-    lts_madre: st.lts_madre === null ? undefined : String(st.lts_madre),
+    lts_madre: sinCal || st.lts_madre === null ? undefined : String(st.lts_madre),
     id_vaca: $('fVaca').value.trim(),
-    // El calostro de la madre es del parto: va una vez, no una por cria.
-    calostro: {
-      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
-      mejorado: st.cal.mejorado,
-      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
-    },
     terneros: st.terneros.map((t) => {
       if (!t.vive) return {};                      // cria muerta: no lleva nada
       const cria = { calostro: calostroDeLaCria(t.cal) };
@@ -1238,6 +1326,15 @@ function armarEdicion() {
       return cria;
     })
   });
+  // El calostro de la madre es del parto: va una vez, no una por cria.
+  if (!sinCal) {
+    base.calostro = {
+      calidad_sin_mejorar: st.cal.brixExc || String(st.cal.brix),
+      mejorado: st.cal.mejorado,
+      calidad_mejorado: st.cal.mejorado === 'Si' ? String(st.cal.mej) : VACIO
+    };
+  }
+  return base;
 }
 
 /**
@@ -1468,7 +1565,10 @@ function limpiar() {
   $('fVaca').value = '';
   $('fNotas').value = '';
   st.cal = nuevoCalostroMadre();
-  st.terneros = st.terneros.map(() => nuevoTernero());
+  st.terneros = st.terneros.map(() => nuevoTernero(esAborto() ? '' : undefined));
+  // Una correccion puede haber dejado el destino vacio (el operario no lo carga):
+  // un alta nueva arranca con la primera opcion, para que el admin no quede trabado.
+  if (!st.tambo) st.tambo = (listas.tambo || [''])[0];
   pintarFormulario();
   $('body').scrollTop = 0;
   $('fVaca').focus();

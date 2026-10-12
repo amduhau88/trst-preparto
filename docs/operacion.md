@@ -232,7 +232,7 @@ validación: la tablet encola y drena sola). Desde el editor de Apps Script:
    filas hay y qué va a hacer.
 2. `migrarR7()`: copia `Registros` a `Registros_backup_r6`, inserta **T = Caravana SENASA** (texto),
    inserta **I** en `Datos Carga DC` y reconstruye la vista. Segundos. Correr dos veces no hace nada.
-3. `curl "$URL?action=esquema&token=…"` tiene que devolver `ok: true` con 30 columnas.
+3. `curl "$URL?action=esquema&token=…"` tiene que devolver `ok: true` con 31 columnas.
 
 Avisar a Nahuel antes: cualquier filtro o fórmula por letra de columna sobre las dos hojas queda
 corrido un lugar.
@@ -344,3 +344,24 @@ Ninguna bloquea el uso. Si algún día aparecen en la práctica:
 - Dónde vive **`campo`** como tipo de parto (hoy aparece en la columna MELLIZOS del histórico)
 - Validar que el **ID de vaca exista**: requiere cruzar contra el padrón de DairyComp
 - Si **mastitis / sangre / campo** deberían bloquear `Mejorado = Si`, como ya lo hace el `0`
+
+## Cambios r10 (09/10/2026): aborto, gemelos muertos, Calostro Mejorado
+
+Orden de despliegue. Es una ventana corta: no cargar partos entre el paso 2 y el 3.
+
+1. **Maestro** (a mano en la planilla): agregar `Aborto en Preparto` en `Tipo Parto`, `Gemelos Muertos`
+   en `SEXO, VIVO, MELLIZOS` y `19 - Rechazos` en `Tambo Vaca`. Sin número.
+2. **Simular la columna nueva**: en el editor de Apps Script, `migrarCalostroMejoradoR10(false)` (solo
+   muestra el plan). Si el plan está bien: `migrarCalostroMejoradoR10(true)`. Copia `Registros` a
+   `Registros_backup_r9` e inserta **N = Calostro Mejorado** (copia de K).
+3. **Publicar el `Codigo.gs` de r10** (nueva implementación, misma URL). Después
+   `scripts/verificar.sh "$URL"` tiene que dar `version publicada: r10-…`.
+4. `ocultarMetodoDC()`: oculta la columna N (Método) de `Datos Carga DC`. Y `actualizarDC_` (o cualquier
+   carga) para que la vista se rehaga con el layout nuevo.
+5. **PWA**: push a `main` (Pages). El service worker nuevo es `preparto-v19`; las tablets lo toman al recargar.
+
+Notas:
+- Un aborto guarda Estado Cria `Muerto`; lo distingue el Tipo Parto. La raza es lo único de la cría que se guarda.
+- `Gemelos Muertos` genera dos filas (1/2 y 2/2) con el bloque de la cría en `---`.
+- `19 - Rechazos` solo se acepta con `Aborto en Preparto`; el backend lo rechaza en otro caso.
+- Una cría muerta no lleva calostro ni litros de la madre, y la tablet ya no los manda al corregirla.

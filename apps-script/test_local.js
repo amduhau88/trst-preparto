@@ -131,9 +131,9 @@ function maestroReal() {
 
   const cols = {
     0: ['Julio', 'Griselda', 'Martin', 'Trini'],
-    3: ['1 Normal', '2 Asistido', '4 Cesarea'],
+    3: ['1 Normal', '2 Asistido', '4 Cesarea', 'Aborto en Preparto'],
     4: ['1 Hembra Viva', '2 Hembras Gemelas Vivas', '4 Hembra Muerta', '6 Macho Vivo',
-        '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)'],
+        '7 Macho Muerto', '8 Otros Gemelos (M+M o M+H)', 'Gemelos Muertos'],
     6: ['Holando', 'Angus'],
     7: rango(25, 60),
     8: horas(),
@@ -144,7 +144,7 @@ function maestroReal() {
     12: ['Si/No'],
     13: rango(0, 20),
     14: rango(2, 6),
-    16: ['1', '2', '3', '4'],
+    16: ['1', '2', '3', '4', '19 - Rechazos'],
     17: []   // Rodeo: VACIA en la planilla real
   };
 
@@ -477,8 +477,55 @@ check('exige el sexo cuando el codigo es ambiguo',
 g = gemelos({}, { sexo: 'Macho o Hembra' });
 check('rechaza un sexo invalido',
       g.ok === false && /sexo invalido/.test((g.detalles || []).join()), JSON.stringify(g));
-g = gemelos({}, { vive: false }, { vive: false });
-check('rechaza las dos muertas con codigo de vivas',
+// El codigo 8 admite las dos crias muertas: cada una lleva su sexo (M+M o M+H).
+g = gemelos({ uuid: 'u-8-muertas' }, { vive: false, sexo: 'Macho' }, { vive: false, sexo: 'Hembra' });
+check('el codigo 8 entra con las dos crias muertas', g.ok === true, JSON.stringify(g));
+{
+  const f8 = formato().filter((x) => x[COL.uuid] === 'u-8-muertas');
+  check('dos filas, 1/2 y 2/2, las dos Muerto', f8.length === 2 &&
+        f8.every((x) => x[COL.estado_cria] === 'Muerto') && f8[0][COL.cria] === '1/2' && f8[1][COL.cria] === '2/2',
+        JSON.stringify(f8.map((x) => [x[COL.cria], x[COL.estado_cria]])));
+  check('cada cria conserva su sexo (Macho, Hembra)', f8[0][COL.sexo_cria] === 'Macho' && f8[1][COL.sexo_cria] === 'Hembra',
+        JSON.stringify(f8.map((x) => x[COL.sexo_cria])));
+  check('el calostro de la madre se conserva en las dos filas',
+        f8.every((x) => x[COL.calidad_sin_mejorar] === '26' && x[COL.mejorado] === 'No' && x[COL.lts_madre] === 5 &&
+                        x[COL.calostro_mejorado] === 'No'),
+        JSON.stringify(f8.map((x) => [x[COL.calidad_sin_mejorar], x[COL.lts_madre]])));
+  check('el ternero (ID, raza, peso, caravana, calostro de la cria) va en ---',
+        f8.every((x) => x[COL.id_ternero] === '---' && x[COL.raza] === '---' && x[COL.peso] === '---' &&
+                        x[COL.caravana_senasa] === '---' && x[COL.origen_calostro] === '---' &&
+                        x[COL.lts_ternero] === '---'),
+        JSON.stringify(f8.map((x) => x.slice(COL.id_ternero, COL.lts_ternero + 1))));
+}
+// Corregir el calostro de la madre en ese parto: la planilla lo acepta (es de la madre).
+r = post({ token: TOKEN, accion: 'editar', uuid: 'u-8-muertas', operario: 'Julio', id_vaca: '5514',
+           calostro: { calidad_sin_mejorar: '30', mejorado: 'No', calidad_mejorado: '---' }, lts_madre: '7',
+           terneros: [{}, {}] });
+check('corregir el calostro de la madre en el 8 con crias muertas entra', r.ok === true, JSON.stringify(r));
+{
+  const f8 = formato().filter((x) => x[COL.uuid] === 'u-8-muertas');
+  check('y queda en las dos filas', f8.every((x) => x[COL.calidad_sin_mejorar] === '30' && x[COL.lts_madre] === 7),
+        JSON.stringify(f8.map((x) => [x[COL.calidad_sin_mejorar], x[COL.lts_madre]])));
+}
+sandbox.reconstruirDC_(libro);
+{
+  const dc = libro._hojas['Datos Carga DC'].filas.slice(1);
+  const fila = dc.find((x) => x[sandbox.DC.clave] === 'u-8-muertas|1/2');
+  check('la vista DC muestra el calostro de la madre del 8 con crias muertas',
+        fila && fila[sandbox.DC.calostro_madre] === '30', JSON.stringify(fila));
+}
+// Un mellizo con una cria viva y otra muerta sigue igual: la muerta va toda en ---.
+g = gemelos({ uuid: 'u-mix-8' }, { vive: false, sexo: 'Macho' });
+check('un 8 con una sola cria muerta sigue entrando', g.ok === true, JSON.stringify(g));
+{
+  const fm = formato().filter((x) => x[COL.uuid] === 'u-mix-8');
+  check('la cria muerta del mellizo mixto va en --- en el calostro', fm[0][COL.estado_cria] === 'Muerto' &&
+        fm[0][COL.calidad_sin_mejorar] === '---', JSON.stringify(fm[0] && fm[0][COL.calidad_sin_mejorar]));
+}
+
+// El codigo 2 (hembras vivas) no admite crias muertas: ahi la cria viva es lo que dice el codigo.
+g = gemelos({ sexo: '2 Hembras Gemelas Vivas' }, { vive: false, sexo: 'Hembra' }, { vive: false, sexo: 'Hembra' });
+check('el codigo 2 sigue rechazando las dos muertas',
       g.ok === false && /todas las crias/.test((g.detalles || []).join()), JSON.stringify(g));
 
 console.log('\n8d-bis. El codigo del parto y el sexo tienen que coincidir');
@@ -1635,7 +1682,9 @@ console.log('\n29. Migracion r6 -> r7: una columna nueva, nada mas se mueve');
   const h = libro._hojas['Registros'].filas;
   check('dejo respaldo', !!libro._hojas['Registros_backup_r6'] && libro._hojas['Registros_backup_r6'].filas[0].length === 29);
   check('el encabezado es el de r7', h[0].join('|') === HEAD_FORMATO.join('|'), h[0].join('|'));
-  check('la fila tiene 30 columnas con T vacia', h[1].length === 30 && h[1][COL.caravana_senasa] === '');
+  check('la fila tiene 31 columnas (r10) con la caravana vacia', h[1].length === 31 && h[1][COL.caravana_senasa] === '');
+  check('Calostro Mejorado (N) es copia de Mejorado (K)', h[1][COL.calostro_mejorado] === 'No' && h[1][COL.mejorado] === 'No',
+        JSON.stringify([h[1][COL.mejorado], h[1][COL.calostro_mejorado]]));
   check('las notas y el rodeo quedaron donde corresponde', h[1][COL.notas] === 'una nota' && h[1][COL.rodeo] === 'T4 - 215');
   // El tilde de DC manda y se replica a Registros al reconstruir la vista: queda true.
   check('las tecnicas corrieron enteras', h[1][COL.uuid] === 'u-mig7-1' && h[1][COL.cria] === '1/1' && h[1][COL.cargado_dc] === true,
@@ -1695,6 +1744,131 @@ console.log('\nAlta rechazada y reenviada corregida con el mismo uuid (vaca 1576
         formato().filter((f) => f[COL.uuid] === 'u-1576').length === 2, JSON.stringify(r));
   r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-1576', operario: 'Julio', notas: 'ok' });
   check('y despues se puede corregir', r.ok === true, JSON.stringify(r));
+}
+
+console.log('\n31. Aborto en Preparto, Gemelos Muertos y Calostro Mejorado (r10)');
+{
+  libro = nuevoLibro();
+  const filasDe = (u) => formato().filter((f) => f[COL.uuid] === u);
+  const aborto = (extra) => partoBase(Object.assign({
+    tipo_parto: 'Aborto en Preparto', sexo: '---', tambo: '19 - Rechazos',
+    calostro: undefined, lts_madre: undefined,
+    terneros: [{ raza: 'Holando', vive: false }]
+  }, extra));
+
+  let r = post(aborto({ uuid: 'u-ab-1' }));
+  check('aborto con una cria y su raza entra', r.ok === true, JSON.stringify(r));
+  let f = filasDe('u-ab-1');
+  check('aborto: una fila, Muerto, raza en H', f.length === 1 && f[0][COL.estado_cria] === 'Muerto' && f[0][COL.raza] === 'Holando',
+        JSON.stringify(f[0] && f[0].slice(COL.raza, COL.estado_cria + 1)));
+  check('aborto sin sexo: Sexo Cria = Desconocido', f[0][COL.sexo_cria] === 'Desconocido', f[0][COL.sexo_cria]);
+  check('aborto: ID, peso, caravana y calostro de la cria en ---',
+        [COL.id_ternero, COL.peso, COL.caravana_senasa, COL.origen_calostro, COL.lts_ternero].every((c) => f[0][c] === '---'));
+  check('aborto: Sexo, Vivo, Mellizos (F) en ---', f[0][COL.sexo] === '---', f[0][COL.sexo]);
+  check('aborto: 19 - Rechazos va en Asignacion Rodeo', f[0][COL.rodeo] === '19 - Rechazos', f[0][COL.rodeo]);
+  check('aborto: Tambo Vaca queda vacia', f[0][COL.tambo] === '', JSON.stringify(f[0][COL.tambo]));
+  check('aborto: Calostro Mejorado en ---', f[0][COL.calostro_mejorado] === '---');
+
+  r = post(aborto({ uuid: 'u-ab-2', terneros: [{ raza: 'Angus', sexo: 'Hembra', vive: false }] }));
+  check('aborto con sexo de la cria (Hembra) entra', r.ok === true, JSON.stringify(r));
+  check('sexo de la cria: Hembra', filasDe('u-ab-2')[0][COL.sexo_cria] === 'Hembra', filasDe('u-ab-2')[0][COL.sexo_cria]);
+
+  r = post(aborto({ uuid: 'u-ab-dos', terneros: [{ raza: 'Holando', vive: false }, { raza: 'Angus', sexo: 'Macho', vive: false }] }));
+  check('aborto con dos crias entra', r.ok === true, JSON.stringify(r));
+  f = filasDe('u-ab-dos');
+  check('dos filas 1/2 y 2/2, cada una con su raza y sexo',
+        f.length === 2 && f[0][COL.cria] === '1/2' && f[1][COL.cria] === '2/2' &&
+        f[0][COL.raza] === 'Holando' && f[1][COL.raza] === 'Angus' &&
+        f[0][COL.sexo_cria] === 'Desconocido' && f[1][COL.sexo_cria] === 'Macho' &&
+        f.every((x) => x[COL.estado_cria] === 'Muerto'),
+        JSON.stringify(f.map((x) => [x[COL.cria], x[COL.raza], x[COL.sexo_cria]])));
+
+  // Al abrir el aborto para corregirlo, la tablet recibe la raza y el sexo de cada cria
+  // (Desconocido vuelve vacio para que el selector no lo muestre como un sexo elegido).
+  r = post({ token: TOKEN, accion: 'parto', uuid: 'u-ab-dos' });
+  check('el aborto guardado vuelve con raza y sexo por cria',
+        r.ok === true && r.parto.terneros.length === 2 && r.parto.terneros[0].raza === 'Holando' &&
+        r.parto.terneros[0].sexo === '' && r.parto.terneros[1].sexo === 'Macho',
+        JSON.stringify(r.parto && r.parto.terneros));
+
+  r = post(aborto({ uuid: 'u-ab-sin-raza', terneros: [{ vive: false }] }));
+  check('aborto sin raza se rechaza', r.ok === false && /falta la raza/.test((r.detalles || []).join()), JSON.stringify(r));
+  r = post(aborto({ uuid: 'u-ab-cero', terneros: [] }));
+  check('aborto sin crias se rechaza', r.ok === false && /1 o 2/.test((r.detalles || []).join()), JSON.stringify(r));
+  r = post(aborto({ uuid: 'u-ab-tres', terneros: [{ raza: 'Holando' }, { raza: 'Holando' }, { raza: 'Holando' }] }));
+  check('aborto con tres crias se rechaza', r.ok === false, JSON.stringify(r));
+  r = post(aborto({ uuid: 'u-ab-sexo-mal', terneros: [{ raza: 'Holando', sexo: 'Desconocido', vive: false }] }));
+  check('un sexo que no es Macho ni Hembra se rechaza en el aborto', r.ok === false, JSON.stringify(r));
+
+  r = post(partoBase({ uuid: 'u-corral-1', tambo: '19 - Rechazos' }));
+  check('el corral solo entra con aborto', r.ok === false && /Aborto/.test((r.detalles || []).join()), JSON.stringify(r));
+
+  r = post(partoBase({ uuid: 'u-gem-1', sexo: 'Gemelos Muertos', tipo_parto: '1 Normal', terneros: [], calostro: undefined, lts_madre: undefined }));
+  check('gemelos muertos entra', r.ok === true, JSON.stringify(r));
+  f = filasDe('u-gem-1');
+  check('gemelos muertos: 2 filas', f.length === 2, 'filas=' + f.length);
+  check('gemelos muertos: 1/2 y 2/2', f[0][COL.cria] === '1/2' && f[1][COL.cria] === '2/2', f.map((x) => x[COL.cria]).join(','));
+  check('gemelos muertos: G a R en ---', f.every((x) => x.slice(COL.id_ternero, COL.lts_ternero + 1).every((v) => v === '---')));
+  check('gemelos muertos: ambas Muerto', f.every((x) => x[COL.estado_cria] === 'Muerto'));
+
+  r = post(partoBase({ uuid: 'u-cal-1', calostro: { calidad_sin_mejorar: '26', mejorado: 'Si', calidad_mejorado: '30' } }));
+  check('calostro mejorado entra', r.ok === true, JSON.stringify(r));
+  f = filasDe('u-cal-1');
+  check('N es copia de K (Si)', f[0][COL.mejorado] === 'Si' && f[0][COL.calostro_mejorado] === 'Si',
+        JSON.stringify([f[0][COL.mejorado], f[0][COL.calostro_mejorado]]));
+  r = post(partoBase({ uuid: 'u-cal-2', calostro: { calidad_sin_mejorar: '26', mejorado: 'No', calidad_mejorado: '---' } }));
+  f = filasDe('u-cal-2');
+  check('N es copia de K (No)', f[0][COL.calostro_mejorado] === 'No', f[0][COL.calostro_mejorado]);
+
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-cal-2', operario: 'Julio',
+             calostro: { calidad_sin_mejorar: '26', mejorado: 'Si', calidad_mejorado: '31' } });
+  check('admin cambia Mejorado y N lo sigue', r.ok === true && filasDe('u-cal-2')[0][COL.calostro_mejorado] === 'Si',
+        JSON.stringify(r));
+
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-cal-2', operario: 'Julio', fecha_parto: '2099-01-01' });
+  check('admin no puede llevar la fecha a el futuro', r.ok === false && /futuro/.test((r.detalles || []).join()), JSON.stringify(r));
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-cal-2', operario: 'Julio', fecha_parto: '2024-03-05' });
+  check('admin si puede llevarla a una fecha pasada', r.ok === true, JSON.stringify(r));
+  check('y el ID Parto sale de la nueva fecha', filasDe('u-cal-2')[0][COL.id_parto].indexOf('20240305') === 0,
+        filasDe('u-cal-2')[0][COL.id_parto]);
+
+  // Corregir un aborto desde la tablet: la PWA no manda calostro ni litros de la madre.
+  r = post({ token: TOKEN, accion: 'editar', uuid: 'u-ab-2', operario: 'Julio', id_vaca: '4115',
+             tambo: '19 - Rechazos', terneros: [{}] });
+  check('la correccion de un aborto sin calostro entra', r.ok === true, JSON.stringify(r));
+
+  // Corregir el destino del aborto: sale de Rodeo y entra un tambo.
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-ab-2', operario: 'Julio', tambo: '2' });
+  check('el admin cambia el destino a un tambo', r.ok === true && filasDe('u-ab-2')[0][COL.tambo] === '2' &&
+        filasDe('u-ab-2')[0][COL.rodeo] === '', JSON.stringify(filasDe('u-ab-2').map((x) => [x[COL.tambo], x[COL.rodeo]])));
+  r = post({ id_token: 'admin', accion: 'editar', uuid: 'u-ab-2', operario: 'Julio', tambo: '19 - Rechazos' });
+  check('y vuelve a 19 - Rechazos en Rodeo', r.ok === true && filasDe('u-ab-2')[0][COL.tambo] === '' &&
+        filasDe('u-ab-2')[0][COL.rodeo] === '19 - Rechazos', JSON.stringify(filasDe('u-ab-2').map((x) => [x[COL.tambo], x[COL.rodeo]])));
+  // La tablet sigue viendo el destino de rechazos al abrir el parto.
+  r = post({ token: TOKEN, accion: 'parto', uuid: 'u-ab-2' });
+  check('al abrir el parto la tablet ve tambo 19 - Rechazos', r.ok === true && r.parto.tambo === '19 - Rechazos', JSON.stringify(r.parto && r.parto.tambo));
+
+  sandbox.reconstruirDC_(libro);
+  const dc = libro._hojas['Datos Carga DC'].filas.slice(1);
+  const fila = dc.find((x) => x[sandbox.DC.clave] === 'u-ab-2|1/1');
+  check('DC conserva la raza del aborto', fila && fila[sandbox.DC.raza] === 'Angus', JSON.stringify(fila));
+  check('DC muestra el 19 - Rechazos en Asignacion Rodeo', fila && fila[sandbox.DC.rodeo] === '19 - Rechazos', JSON.stringify(fila && fila[sandbox.DC.rodeo]));
+}
+
+
+console.log('\n32. Destino: el operario lo carga, 19 - Rechazos solo con aborto');
+{
+  libro = nuevoLibro();
+  const filasDe = (u) => formato().filter((f) => f[COL.uuid] === u);
+
+  let r;
+
+  // El destino lo carga el operario (1, 2, 3, 4 o 19 - Rechazos solo con aborto).
+  r = post(partoBase({ uuid: 'u-con-destino', tambo: '3' }));
+  check('el alta con destino entra', r.ok === true && filasDe('u-con-destino')[0][COL.tambo] === '3', JSON.stringify(r));
+
+  r = post(partoBase({ uuid: 'u-con-destino-2', tambo: '19 - Rechazos' }));
+  check('19 - Rechazos sin aborto se rechaza', r.ok === false && /Aborto/.test((r.detalles || []).join()), JSON.stringify(r));
 }
 
 console.log('\n' + (fallos ? `${fallos} PRUEBAS FALLARON` : 'todas las pruebas pasaron'));
