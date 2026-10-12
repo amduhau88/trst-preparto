@@ -363,3 +363,11 @@ Notas:
 - Un aborto guarda Estado Cria `Muerto`; lo distingue el Tipo Parto. La raza es lo único de la cría que se guarda.
 - `19 - Rechazos` solo se acepta con `Aborto en Preparto`; el backend lo rechaza en otro caso.
 - Una cría muerta no lleva calostro ni litros de la madre, y la tablet ya no los manda al corregirla.
+
+## Registro del deploy r10 (12/10/2026)
+
+- Planilla: columna N «Calostro Mejorado» insertada con `migrarCalostroR10Aplicar` (backup `Registros_backup_r9`). 429 filas, 31 columnas.
+- Apps Script: nueva versión de la implementación con la misma URL; ping → `r10-aborto-gemelos-muertos-2026-10-12`.
+- Datos Carga DC: `ocultarMetodoDC()` y `reconstruirDCporReloj()` ejecutados. 428 filas (no anuladas).
+- PWA: push a `main` (commit `5eeafde`). Pages publica `preparto-v19`.
+- Pendiente: `scripts/verificar.sh` (escribe partos de prueba; borrarlos después).
