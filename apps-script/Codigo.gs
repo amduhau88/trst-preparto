@@ -2125,6 +2125,13 @@ function insertarCalostroMejorado_(hoja, estadoIdx) {
  * codigo viejo escribiria por posicion sobre columnas corridas.
  */
 function migrarCalostroMejoradoR10(aplicar) {
+  var res = migrarCalostroMejoradoR10_(aplicar);
+  // El editor solo muestra el registro (Logger): el plan tiene que salir ahi.
+  res.log.forEach(function (l) { Logger.log(l); });
+  return res;
+}
+
+function migrarCalostroMejoradoR10_(aplicar) {
   var ss = SpreadsheetApp.openById(SS_ID);
   var hoja = hojaRegistros_(ss);
   var log = [];
