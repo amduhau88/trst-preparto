@@ -511,6 +511,9 @@ sandbox.reconstruirDC_(libro);
 {
   const dc = libro._hojas['Datos Carga DC'].filas.slice(1);
   const fila = dc.find((x) => x[sandbox.DC.clave] === 'u-8-muertas|1/2');
+  check('la vista DC muestra Calostro Mejorado (copia de la planilla)',
+        fila && fila[sandbox.DC.calostro_mejorado] === 'No' && sandbox.DC_ENCABEZADOS[sandbox.DC.calostro_mejorado] === 'Calostro Mejorado',
+        JSON.stringify(fila && fila[sandbox.DC.calostro_mejorado]));
   check('la vista DC muestra el calostro de la madre del 8 con crias muertas',
         fila && fila[sandbox.DC.calostro_madre] === '30', JSON.stringify(fila));
 }
@@ -1666,6 +1669,7 @@ check('partos la devuelve', r.ok === true && r.partos.some((x) => x.caravana_sen
 console.log('\n29. Migracion r6 -> r7: una columna nueva, nada mas se mueve');
 {
   const HEAD_R6 = sandbox.ENCABEZADOS_R6.slice();
+  // La vista antes de r7: con Calostro Mejorado (r10) y sin la caravana.
   const DC_R6 = sandbox.DC_ENCABEZADOS.filter((h) => h !== 'Caravana SENASA');
   const cargadoR6 = new Date(2026, 8, 1, 8, 30);
   const filaR6 = ['Julio', '4115', new Date(2026, 8, 1), '07:00', '1 Normal', '6 Macho Vivo',
@@ -1674,7 +1678,7 @@ console.log('\n29. Migracion r6 -> r7: una columna nueva, nada mas se mueve');
   libro = nuevoLibro();
   libro._hojas['Registros'].filas = [HEAD_R6.slice(), filaR6.slice()];
   libro._hojas['Datos Carga DC'].filas = [DC_R6.slice(),
-    ['4115', '01/09/2026', 'M24543', '1 Normal', '26', '26', '6 Macho Vivo', '24543', 4, '26', 'Holando', 5, 'DC', 'Julio', 'T4 - 215', true, 'u-mig7-1|1/1']];
+    ['4115', '01/09/2026', 'M24543', '1 Normal', '26', '26', '6 Macho Vivo', '24543', 4, '26', 'Holando', 5, 'DC', 'No', 'Julio', 'T4 - 215', true, 'u-mig7-1|1/1']];
   check('antes de migrar el backend se niega a escribir',
         /migrada a r7/.test(post(partoBase({ uuid: 'u-mig7-x' })).error || ''));
   check('el ensayo dice que esta listo', sandbox.planMigracionR7_(libro).ok === true, sandbox.planMigracionR7_(libro).log.join(' / '));

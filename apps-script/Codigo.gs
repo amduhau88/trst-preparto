@@ -175,19 +175,20 @@ var DC = {
   raza: 11,
   lts_madre: 12,
   metodo: 13,
-  operario: 14,
-  rodeo: 15,            // lo escribe Nahuel aca
-  cargado: 16,          // checkbox, lo tilda Nahuel aca
-  clave: 17             // oculta: uuid|cria
+  calostro_mejorado: 14, // copia de Calostro Mejorado de Registros (r10)
+  operario: 15,
+  rodeo: 16,            // lo escribe Nahuel aca
+  cargado: 17,          // checkbox, lo tilda Nahuel aca
+  clave: 18             // oculta: uuid|cria
 };
-var DC_ANCHO = 18;
+var DC_ANCHO = 19;
 var DC_METODO = 'Sonda';
 var DC_ENCABEZADOS = [
   'ID Vaca', 'Fecha', 'Sexo + ID Ternero', 'Tipo Parto',
   'Calidad Calostro Madre', 'Calidad Calostro Madre (final)',
   'Sexo, Vivo, Mellizos', 'ID Ternero', 'Caravana SENASA', 'Lts Calostro para Ternero',
   'Calidad Calostro que tomo el ternero', 'Raza', 'Lts Calostro Madre Produjo',
-  'Metodo', 'Operario', 'Asignacion Rodeo', 'Cargado a DC', 'clave'
+  'Metodo', 'Calostro Mejorado', 'Operario', 'Asignacion Rodeo', 'Cargado a DC', 'clave'
 ];
 var DC_INICIAL = { 'Hembra': 'H', 'Macho': 'M' };
 
@@ -1492,6 +1493,7 @@ function reconstruirDC_(ss) {
       razaDC,
       limpioMadre(f[COL.lts_madre]),
       DC_METODO,
+      limpioMadre(f[COL.calostro_mejorado]),
       f[COL.operario],
       rodeo,
       cargado,
@@ -1518,6 +1520,21 @@ function calostroFinal_(f) {
   var mejor = str_(f[COL.calidad_mejorado]);
   return (String(f[COL.mejorado]) === 'Si' && mejor && mejor !== VACIO)
     ? mejor : f[COL.calidad_sin_mejorar];
+}
+
+/* Para correr en el editor, una sola vez, DESPUES de guardar el codigo nuevo y ANTES
+   de la nueva version de la implementacion: inserta la columna O (Calostro Mejorado)
+   en Datos Carga DC, corriendo Operario, Asignacion Rodeo, Cargado a DC y clave. */
+function insertarCalostroEnDC() {
+  var dc = SpreadsheetApp.openById(SS_ID).getSheetByName(HOJA_DC);
+  if (!dc) throw new Error('no existe la pestaña ' + HOJA_DC);
+  if (String(dc.getRange(1, DC.calostro_mejorado + 1).getValue()) === 'Calostro Mejorado') {
+    Logger.log('Ya estaba: la columna O de ' + HOJA_DC + ' es Calostro Mejorado. No se toca nada.');
+    return;
+  }
+  dc.insertColumnBefore(DC.calostro_mejorado + 1);
+  dc.getRange(1, DC.calostro_mejorado + 1).setValue('Calostro Mejorado').setFontWeight('bold');
+  Logger.log('Insertada la columna ' + (DC.calostro_mejorado + 1) + ' en ' + HOJA_DC + '. Ahora: nueva version y reconstruirDCporReloj().');
 }
 
 /** Se llama despues de escribir; que falle no puede tumbar la carga del parto. */
