@@ -2131,6 +2131,10 @@ function migrarCalostroMejoradoR10(aplicar) {
   return res;
 }
 
+/* Para el editor: el desplegable de Apps Script no pasa argumentos. */
+function migrarCalostroR10Plan() { return migrarCalostroMejoradoR10(false); }   // solo muestra el plan
+function migrarCalostroR10Aplicar() { return migrarCalostroMejoradoR10(true); }  // inserta la columna N (con backup)
+
 function migrarCalostroMejoradoR10_(aplicar) {
   var ss = SpreadsheetApp.openById(SS_ID);
   var hoja = hojaRegistros_(ss);
