@@ -392,5 +392,5 @@ pasaban a TRUE/FALSE y se destildaban 384 «Cargado a DC»**.
 - `reconstruirDCporReloj()` desde el editor: 446 filas, todas de 19 columnas; 0 rodeos y 0 tildes de
   `Registros` cambiados; vista = `Registros` en rodeo y tilde (384 tildados).
 - Lección: **un cambio de layout de la vista se publica en la misma pasada que la columna**. Si
-  queda a medias, no publicar sin el chequeo de forma: el ensayo contra una copia de la planilla
-  (`gws` con `UNFORMATTED_VALUE` + el sandbox de `test_local.js`) muestra el daño antes de hacerlo.
+  queda a medias, no publicar sin el chequeo de forma: `python3 scripts/ensayo_dc.py [--git REV]`
+  (ensayo sobre una copia de la planilla en el sandbox de `test_local.js`) muestra el daño antes de hacerlo.
