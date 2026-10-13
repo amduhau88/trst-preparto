@@ -371,3 +371,26 @@ Notas:
 - Datos Carga DC: `ocultarMetodoDC()` y `reconstruirDCporReloj()` ejecutados. 428 filas (no anuladas).
 - PWA: push a `main` (commit `5eeafde`). Pages publica `preparto-v19`.
 - Pendiente: `scripts/verificar.sh` (escribe partos de prueba; borrarlos después).
+
+## Registro del deploy r10-dc-calostro (13/10/2026)
+
+El commit `f83c799` (Calostro Mejorado en la columna O de `Datos Carga DC`) quedó a medias el 12/10:
+`insertarCalostroEnDC()` corrió y el encabezado pasó a 19 columnas, pero no se hizo la versión nueva.
+El `/exec` siguió reconstruyendo la vista con 18: cada dato quedó una columna a la izquierda de su
+encabezado (operario bajo «Calostro Mejorado», rodeo bajo «Metodo», el tilde bajo «Asignacion Rodeo»,
+la clave bajo «Cargado a DC»). `Registros` no se dañó.
+
+Publicar `f83c799` tal cual habría sido peor: leída con el layout nuevo, la vista vieja pone el tilde
+donde se busca el rodeo. Ensayo sobre una copia de la planilla real: **428 rodeos de `Registros`
+pasaban a TRUE/FALSE y se destildaban 384 «Cargado a DC»**.
+
+- Fix: `filaDCok_()` — la reconstrucción y el `onEdit` solo leen rodeo y tilde de una fila con la
+  forma del layout del código (clave `uuid|n/m`, tilde booleano). Si no, manda `Registros`. La
+  reconstrucción reescribe además la fila 1 con `DC_ENCABEZADOS`: encabezado y datos los escribe el
+  mismo código. Test `18f2` (falla sin el chequeo).
+- Apps Script: versión nueva de la misma implementación; ping → `r10-dc-calostro-2026-10-13`.
+- `reconstruirDCporReloj()` desde el editor: 446 filas, todas de 19 columnas; 0 rodeos y 0 tildes de
+  `Registros` cambiados; vista = `Registros` en rodeo y tilde (384 tildados).
+- Lección: **un cambio de layout de la vista se publica en la misma pasada que la columna**. Si
+  queda a medias, no publicar sin el chequeo de forma: el ensayo contra una copia de la planilla
+  (`gws` con `UNFORMATTED_VALUE` + el sandbox de `test_local.js`) muestra el daño antes de hacerlo.

@@ -16,7 +16,7 @@
  * publica: cada implementacion queda clavada a una foto del codigo, y sin este
  * marcador la unica forma de notar que el deploy no tomo es que los datos
  * salgan mal. Subirla en cada cambio de Codigo.gs. */
-var VERSION = 'r10-aborto-gemelos-muertos-2026-10-12';
+var VERSION = 'r10-dc-calostro-2026-10-13';
 // Un operario corrige solo lo cargado HOY; despues, solo un admin.
 var FUERA_DE_VENTANA = 'solo se corrigen partos cargados hoy: pedile a un admin';
 
@@ -1425,13 +1425,19 @@ function reconstruirDC_(ss) {
   // vacia: asi se puede crear la pestaña con la app en marcha, sin apuro.
   if (!esquemaOk_(ss)) return -1;
 
-  // Lo que ya escribio Nahuel, indexado por clave.
+  // Lo que ya escribio Nahuel, indexado por clave. Una fila con otra forma no
+  // se lee: ahi manda Registros.
   var previo = {};
+  var descartadas = 0;
   if (dc.getLastRow() > 1) {
     dc.getRange(2, 1, dc.getLastRow() - 1, DC_ANCHO).getValues().forEach(function (f) {
-      var k = str_(f[DC.clave]);
-      if (k) previo[k] = { rodeo: f[DC.rodeo], cargado: f[DC.cargado] === true };
+      if (!filaDCok_(f)) { if (str_(f[DC.id_vaca]) !== '') descartadas++; return; }
+      previo[str_(f[DC.clave])] = { rodeo: f[DC.rodeo], cargado: f[DC.cargado] === true };
     });
+  }
+  if (descartadas) {
+    Logger.log(descartadas + ' filas de ' + HOJA_DC + ' no tienen la forma de ' + VERSION +
+               ': su rodeo y su tilde salen de Registros.');
   }
 
   var datos = hoja.getLastRow() > 1
@@ -1506,6 +1512,9 @@ function reconstruirDC_(ss) {
     dc.getRange(2, 1, dc.getLastRow() - 1, DC_ANCHO).clearContent();
   }
   if (salida.length) dc.getRange(2, 1, salida.length, DC_ANCHO).setValues(salida);
+  // El encabezado lo escribe el mismo codigo que escribe los datos: asi no
+  // pueden quedar de layouts distintos (paso con r10, 12/10/2026).
+  dc.getRange(1, 1, 1, DC_ANCHO).setValues([DC_ENCABEZADOS]);
 
   replicar.forEach(function (r) {
     hoja.getRange(r.fila, COL.rodeo + 1).setValue(r.rodeo);
@@ -1513,6 +1522,15 @@ function reconstruirDC_(ss) {
   });
 
   return salida.length;
+}
+
+/* Una fila de la vista se cree solo si tiene la forma del layout de ESTE codigo:
+   la clave uuid|n/m en su columna y el tilde como booleano. Si la escribio un
+   codigo con otro layout, o alguien inserto una columna, el rodeo y el tilde
+   estan corridos: leerlos pondria TRUE/FALSE como rodeo en Registros. */
+function filaDCok_(f) {
+  return /^[^|]+\|\d+\/\d+$/.test(str_(f[DC.clave])) &&
+         typeof f[DC.cargado] === 'boolean' && typeof f[DC.rodeo] !== 'boolean';
 }
 
 /** Los Brix con los que quedo el calostro de la madre: el mejorado si se mejoro. */
@@ -1577,13 +1595,12 @@ function onEdit(e) {
     for (var i = 0; i < e.range.getNumRows(); i++) {
       var fila = e.range.getRow() + i;
       if (fila < 2) continue;
-      var clave = str_(vista.getRange(fila, DC.clave + 1).getValue());
-      var destino = clave ? filaPorClave_(hoja, clave) : 0;
+      var f = vista.getRange(fila, 1, 1, DC_ANCHO).getValues()[0];
+      if (!filaDCok_(f)) continue;
+      var destino = filaPorClave_(hoja, str_(f[DC.clave]));
       if (!destino) continue;
-      hoja.getRange(destino, COL.rodeo + 1)
-          .setValue(vista.getRange(fila, DC.rodeo + 1).getValue());
-      hoja.getRange(destino, COL.cargado_dc + 1)
-          .setValue(vista.getRange(fila, DC.cargado + 1).getValue() === true);
+      hoja.getRange(destino, COL.rodeo + 1).setValue(f[DC.rodeo]);
+      hoja.getRange(destino, COL.cargado_dc + 1).setValue(f[DC.cargado] === true);
     }
   } catch (err) {
     // Un trigger simple no puede romperle la edicion al usuario.

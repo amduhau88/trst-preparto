@@ -1156,6 +1156,62 @@ check('un rodeo escrito en Registros aparece en la vista',
       (vista().find((f) => f[DC.clave] === 'u-dc-2|1/1') || {})[DC.rodeo] === '26',
       JSON.stringify(vista().map((f) => f[DC.rodeo])));
 
+console.log('\n18f2. Una vista escrita con otro layout no se lee');
+/* Paso en produccion (12/10/2026): la hoja ya tenia el encabezado de 19 columnas
+   y los datos los seguia escribiendo el codigo publicado, de 18. Leidos con el
+   layout nuevo, el tilde cae en la columna del rodeo: la primera reconstruccion
+   habria puesto TRUE/FALSE como rodeo en Registros y destildado Cargado a DC. */
+{
+  libro = nuevoLibro();
+  post(partoBase({ uuid: 'u-lay-1', id_vaca: '950' }));
+  post(partoBase({ uuid: 'u-lay-2', id_vaca: '951' }));
+  const reg = libro._hojas[libro._hoja];
+  const regDe = (u) => reg.filas.find((f) => f[COL.uuid] === u);
+  // Nahuel le pone rodeo y tilde a la primera, en la vista.
+  const hv = libro._hojas['Datos Carga DC'];
+  const fila1 = hv.filas.findIndex((f) => f[DC.clave] === 'u-lay-1|1/1') + 1;
+  hv.filas[fila1 - 1][DC.rodeo] = 'T1 - 201';
+  hv.filas[fila1 - 1][DC.cargado] = true;
+  sandbox.onEdit({ range: hv.getRange(fila1, DC.rodeo + 1, 1, 2) });
+  check('(armado) rodeo y tilde bajaron a Registros',
+        regDe('u-lay-1')[COL.rodeo] === 'T1 - 201' && regDe('u-lay-1')[COL.cargado_dc] === true);
+
+  // Cada fila como la dejaba el codigo de 18 columnas: sin Calostro Mejorado, lo
+  // de la derecha un lugar a la izquierda, y la clave vieja en la ultima columna.
+  for (let i = 1; i < hv.filas.length; i++) {
+    const f = hv.filas[i];
+    hv.filas[i] = f.slice(0, DC.calostro_mejorado).concat(f.slice(DC.calostro_mejorado + 1), [f[DC.clave]]);
+  }
+  check('(armado) el tilde quedo donde el codigo nuevo busca el rodeo',
+        typeof hv.filas[1][DC.rodeo] === 'boolean', JSON.stringify(hv.filas[1]));
+
+  sandbox.onEdit({ range: hv.getRange(2, DC.rodeo + 1, 1, 1) });
+  check('onEdit sobre una fila corrida no toca Registros',
+        regDe('u-lay-1')[COL.rodeo] === 'T1 - 201' && regDe('u-lay-1')[COL.cargado_dc] === true,
+        JSON.stringify([regDe('u-lay-1')[COL.rodeo], regDe('u-lay-1')[COL.cargado_dc]]));
+
+  sandbox.reconstruirDC_(libro);
+  check('la reconstruccion no pone TRUE/FALSE como rodeo en Registros',
+        regDe('u-lay-1')[COL.rodeo] === 'T1 - 201' && regDe('u-lay-2')[COL.rodeo] === '',
+        JSON.stringify([regDe('u-lay-1')[COL.rodeo], regDe('u-lay-2')[COL.rodeo]]));
+  check('ni destilda Cargado a DC', regDe('u-lay-1')[COL.cargado_dc] === true,
+        JSON.stringify(regDe('u-lay-1')[COL.cargado_dc]));
+  const v = hv.filas.slice(1).find((f) => f[DC.clave] === 'u-lay-1|1/1');
+  check('la vista vuelve al layout del codigo, con rodeo y tilde de Registros',
+        v && v.length === sandbox.DC_ANCHO && v[DC.rodeo] === 'T1 - 201' && v[DC.cargado] === true,
+        JSON.stringify(v));
+  check('y el encabezado es el del mismo codigo',
+        JSON.stringify(hv.filas[0]) === JSON.stringify(sandbox.DC_ENCABEZADOS),
+        JSON.stringify(hv.filas[0]));
+
+  // Ya en el layout nuevo, lo que escribe Nahuel vuelve a bajar.
+  hv.filas.slice(1).find((f) => f[DC.clave] === 'u-lay-2|1/1')[DC.rodeo] = 'T3 - 202';
+  const filaV2 = hv.filas.findIndex((f) => f[DC.clave] === 'u-lay-2|1/1') + 1;
+  sandbox.onEdit({ range: hv.getRange(filaV2, DC.rodeo + 1, 1, 1) });
+  check('con la vista sana, onEdit vuelve a bajar el rodeo',
+        regDe('u-lay-2')[COL.rodeo] === 'T3 - 202', JSON.stringify(regDe('u-lay-2')[COL.rodeo]));
+}
+
 console.log('\n18g. La marca de carga es del Guardar inicial, y no la mueve nada');
 /* Es la hora del corral: un parto cargado sin señal a las 3 de la mañana puede
    sincronizar a las 9, y lo que interesa es la primera. Pesar, corregir o
